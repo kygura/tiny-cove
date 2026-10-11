@@ -173,7 +173,12 @@ fn sync_scene(
     let mut kept = HashMap::new();
     for part in &scene.parts {
         let same = old.and_then(|o| o.parts.iter().find(|p| p.id == part.id)).is_some_and(|p| p.mesh == part.mesh);
-        let e = match st.parts.remove(&part.id).filter(|_| same) {
+        let prev = st.parts.remove(&part.id);
+        if let Some(e) = prev.filter(|_| !same) {
+            // Same id, new mesh (e.g. a moving placement ghost): drop the stale entity.
+            commands.entity(e).despawn();
+        }
+        let e = match prev.filter(|_| same) {
             Some(e) => Some(e),
             None if part.mesh.is_empty() => None,
             None => {

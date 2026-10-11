@@ -465,6 +465,8 @@ pub struct ToolState {
     /// Ring drawn around the cursor (brushes) in metres.
     ring: Option<f32>,
     last_tool: Option<Tool>,
+    /// Left button was pressed and released in one frame; deliver the release next frame.
+    release_pending: bool,
 }
 
 impl ToolState {
@@ -615,8 +617,12 @@ fn run_tools(
     };
 
     let lmb_down = mouse.just_pressed(MouseButton::Left) && !over_ui && cursor.is_some();
-    let lmb_up = mouse.just_released(MouseButton::Left);
-    let lmb_held = mouse.pressed(MouseButton::Left);
+    // A press and release in the same frame (fast clicks at low frame rates): the press
+    // starts the gesture now, the release is delivered on the next frame.
+    let released_now = mouse.just_released(MouseButton::Left);
+    let lmb_up = (released_now && !lmb_down) || std::mem::take(&mut st.release_pending);
+    st.release_pending = lmb_down && released_now;
+    let lmb_held = (mouse.pressed(MouseButton::Left) || st.release_pending) && !lmb_up;
     let base = glade.committed();
     let mut state = if ground.is_some() { DrawState::Hover } else { DrawState::Idle };
     let mut preview: Option<Option<Document>> = None; // Some(x) → set_preview(x)

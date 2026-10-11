@@ -33,9 +33,13 @@ shot
 key 5                      # path through the wall
 drag 620 150 640 450 6
 key g                      # tree
+xdotool mousemove 950 450; p 2
 click 950 450
+shot                       # expect: tree at (950,450)
 key c
+xdotool mousemove 300 450; p 2
 click 300 450              # clutter
+shot                       # expect: barrel at (300,450), tree still at (950,450)
 key 0                      # roof tool
 key 9                      # window on wall
 click 450 230
@@ -45,5 +49,8 @@ shot
 key ctrl+y
 key x                      # eraser on tree
 click 950 430
+shot                       # expect: tree gone, barrel stays
+key 9                      # window/door: second click on the same spot upgrades to a door
+click 450 230
 shot
 kill $G; sleep 1; kill $XV
