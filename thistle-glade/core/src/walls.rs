@@ -291,7 +291,10 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         let g = ground(terr, p);
         (g, wlevel(terr, p).map_or(g, |l| l.max(g)))
     };
-    let top = line.p.iter().map(|&p| eff(p).1).fold(f32::MIN, f32::max) + hgt;
+    // Roofed rings keep a flat top (the scene roofs at max ground + height); everything else follows the ground.
+    let flat = line.closed && w.roofed;
+    let top_flat = line.p.iter().map(|&p| eff(p).1).fold(f32::MIN, f32::max) + hgt;
+    let topat = |ge: f32| if flat { top_flat } else { ge + hgt };
 
     // ---- gaps (cuts, doors, water arches) and windows -------------------------------------
     let mut gaps: Vec<Gap> = Vec::new();
@@ -315,6 +318,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
             continue;
         }
         let ge = eff(line.at(sc).0).1;
+        let top = topat(ge);
         let hmax = top - ge - 0.5;
         let (apex, lintel) = if hmax < 1.0 { (top, false) } else { (ge + c.height.max(1.0).min(hmax), true) };
         let rv = if wood { 0.0 } else { (wd * 0.5).min((apex - ge - 0.5).max(0.0)) };
@@ -334,6 +338,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
             continue;
         }
         let ge = eff(line.at(o.along).0).1;
+        let top = topat(ge);
         match o.kind {
             OpeningKind::Window => {
                 let sill = ge + 1.0_f32.max(fh + 0.3);
@@ -384,7 +389,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
                     let (pt, _) = line.at((ba + bb) * 0.5);
                     let g = ground(terr, pt);
                     let wl = wlevel(terr, pt).unwrap_or(g);
-                    let apex = (wl + 1.2).min(top - 0.45);
+                    let apex = (wl + 1.2).min(topat(wl) - 0.45);
                     if apex < wl + 0.5 {
                         continue;
                     }
@@ -467,6 +472,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         let (a, b) = (&st[k], &st[k + 1]);
         let sm = (a.s + b.s) * 0.5;
         let mid = (a.pt + b.pt) * 0.5;
+        let top = topat((a.ge + b.ge) * 0.5);
         let mut hi = top;
         if w.ruined {
             let mut r = Rng::at(seed ^ 0x51, mid.x, mid.y);
@@ -661,6 +667,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         let n = nlv(d);
         let n3 = Vec3::new(n.x, 0.0, n.y);
         let ge = eff(pt).1;
+        let top = topat(ge);
         match g.kind {
             GK::Door | GK::Wide => {
                 mk.push(Marker { kind: MarkerKind::Door, pos: v3(pt + n * (half + 0.8), ge), dir: n3 });
@@ -670,7 +677,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
                     for s in [g.a - 0.3, g.b + 0.3] {
                         let (p, dd) = line.at(s.clamp(0.0, total));
                         let nn = nlv(dd);
-                        let y = (eff(p).1 + 2.4).min(top - 0.35);
+                        let y = (eff(p).1 + 2.4).min(topat(eff(p).1) - 0.35);
                         let face = p + nn * half;
                         let lamp = face + nn * 0.3;
                         m.beam(v3(face, y), v3(lamp, y), 0.05, 0.05, palette::metal(), Surface::Metal, 1.0);
@@ -982,6 +989,10 @@ mod tests {
             colors: Colors::default(),
         }
     }
+    fn flat_terrain() -> Terrain {
+        let poly = vec![Vec2::new(-30.0, -30.0), Vec2::new(30.0, -30.0), Vec2::new(30.0, 30.0), Vec2::new(-30.0, 30.0)];
+        Terrain::build(1, &[], &[crate::terrain::FlattenRegion { poly, height: Some(0.0), margin: 1.0 }])
+    }
     fn line20() -> Vec<Vec2> {
         vec![Vec2::new(-10.0, 0.0), Vec2::new(10.0, 0.0)]
     }
@@ -994,7 +1005,7 @@ mod tests {
 
     #[test]
     fn all_combinations_valid() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         for mat in [Material::Stone, Material::Plaster, Material::Wood] {
             for bat in [false, true] {
                 for ruin in [false, true] {
@@ -1012,7 +1023,7 @@ mod tests {
 
     #[test]
     fn triangle_budget() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         let mut w = wall(line20());
         w.battlements = true;
         w.foundation = 0.5;
@@ -1022,7 +1033,7 @@ mod tests {
 
     #[test]
     fn closed_square() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         let a = Vec2::new(-5.0, -5.0);
         let w = wall(vec![a, Vec2::new(5.0, -5.0), Vec2::new(5.0, 5.0), Vec2::new(-5.0, 5.0), a]);
         let (m, mk) = wall_mesh(&w, &[], &t, 1);
@@ -1035,7 +1046,7 @@ mod tests {
 
     #[test]
     fn cut_leaves_passage() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         let mut w = wall(line20());
         w.height = 4.0;
         let (m, mk) = wall_mesh(&w, &[Cut { along: 10.0, width: 2.0, height: 2.6 }], &t, 5);
@@ -1056,7 +1067,7 @@ mod tests {
 
     #[test]
     fn openings_make_markers() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         let mut w = wall(vec![Vec2::ZERO, Vec2::new(12.0, 0.0)]);
         w.openings = vec![
             Opening { along: 3.0, kind: OpeningKind::Window },
@@ -1077,7 +1088,7 @@ mod tests {
 
     #[test]
     fn tall_wall_buttresses_and_wood() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         let mut w = wall(line20());
         let (flat, _) = wall_mesh(&w, &[], &t, 2);
         w.height = 6.0;
@@ -1090,7 +1101,7 @@ mod tests {
 
     #[test]
     fn fences_valid_and_gap() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         for k in [FenceKind::WoodRail, FenceKind::Picket, FenceKind::Stone, FenceKind::Wattle] {
             let (m, _) = fence_mesh(&fence(k), &[], &t, 4);
             assert!(m.is_valid() && !m.is_empty(), "{k:?}");
@@ -1103,7 +1114,7 @@ mod tests {
 
     #[test]
     fn deterministic() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         let mut w = wall(line20());
         w.ruined = true;
         w.battlements = true;
@@ -1115,7 +1126,7 @@ mod tests {
 
     #[test]
     fn degenerate_inputs() {
-        let t = Terrain::build(1, &[], &[]);
+        let t = flat_terrain();
         let p = Vec2::new(1.0, 1.0);
         let nan = Vec2::new(f32::NAN, 0.0);
         for pts in [vec![], vec![p], vec![p, p, p], vec![p, nan], vec![nan, nan]] {
@@ -1142,5 +1153,42 @@ mod tests {
         assert!(wall_mesh(&w, &[], &t, 1).0.is_empty());
         let (f, _) = fence_mesh(&fence(FenceKind::Picket), &cuts, &t, 1);
         assert!(f.is_valid());
+    }
+
+    #[test]
+    fn walls_follow_hills() {
+        use crate::model::{TerrainDab, TerrainOp};
+        let hill = TerrainDab { center: Vec2::new(10.0, 0.0), radius: 8.0, op: TerrainOp::Sculpt { amount: 4.0 } };
+        let t = Terrain::build(1, &[hill], &[]);
+        let (m, _) = wall_mesh(&wall(line20()), &[], &t, 1);
+        assert!(m.is_valid());
+        // top (without lip) = ground + 3 at both ends
+        for x in [-9.5_f32, 9.5] {
+            let g = t.height(Vec2::new(x, 0.0));
+            let mx = m.positions.iter().filter(|p| (p[0] - x).abs() < 0.3).map(|p| p[1]).fold(f32::MIN, f32::max);
+            assert!((mx - (g + 3.1)).abs() < 1.2, "x {x} top {mx} ground {g}");
+        }
+    }
+
+    #[test]
+    fn water_arches() {
+        use crate::model::{TerrainDab, TerrainOp};
+        let pond = TerrainDab { center: Vec2::ZERO, radius: 6.0, op: TerrainOp::Water { depth: 1.5 } };
+        let t = Terrain::build(1, &[pond], &[]);
+        let c = Vec2::ZERO;
+        let level = t.water_level(c).expect("pond has water");
+        let mut w = wall(line20());
+        w.height = 4.0;
+        let (m, _) = wall_mesh(&w, &[], &t, 1);
+        assert!(m.is_valid());
+        // Arch crowns exist above the water, and some span leaves clear space just above the level.
+        let bay_vertices = m.positions.iter().filter(|p| p[0].abs() < 3.0 && p[1] > level + 0.1 && p[1] < level + 0.9).count();
+        let wet_x: Vec<f32> = (-100..=100).map(|i| i as f32 * 0.1).filter(|&x| t.water_level(Vec2::new(x, 0.0)).is_some()).collect();
+        assert!(wet_x.len() > 15);
+        // bay centre: no vertex strictly inside the clear opening column around x=0 at level+0.3..level+0.8
+        let inside = m.positions.iter().filter(|p| p[0].abs() < 0.3 && p[1] > level + 0.3 && p[1] < level + 0.8).count();
+        assert_eq!(inside, 0, "bay vertices {bay_vertices}");
+        // solid wall far outside the pond still reaches full height
+        assert!(m.positions.iter().any(|p| p[0] < -9.0 && p[1] > t.height(Vec2::new(-9.5, 0.0)) + 2.5));
     }
 }
