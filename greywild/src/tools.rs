@@ -760,6 +760,11 @@ pub struct ToolState {
     tool: Tool,
     scroll_acc: f32,
     rmb_travel: f32,
+    /// What the current preview was built from.
+    last_pending: Option<Pending>,
+    /// Glade revision after this system last ran; a different value at the next run means
+    /// someone else (HUD undo / redo, reset) changed the document under the gesture.
+    revision: u64,
 }
 
 /// Per-frame pointer input in world terms.
@@ -797,6 +802,16 @@ enum Mark {
     Part(StructureId, Tint),
 }
 
+/// What the preview should show on top of the committed document. Compared frame to frame so
+/// the preview document is only rebuilt when the gesture actually changed.
+#[derive(Clone, Debug, PartialEq)]
+enum Pending {
+    Add(Structure),
+    /// The stroke's working document, identified by its dab count.
+    Stroke(usize),
+    Remove(Vec<StructureId>),
+}
+
 /// Everything a tool handler touches this frame.
 struct Cx<'a> {
     s: &'a mut ToolSettings,
@@ -806,7 +821,7 @@ struct Cx<'a> {
     rig: &'a CameraRig,
     win_h: f32,
     phase: Phase,
-    preview: Option<Document>,
+    pending: Option<Pending>,
     invalid: Option<&'static str>,
     marks: Vec<Mark>,
 }
@@ -851,7 +866,11 @@ impl Cx<'_> {
     }
     fn commit(&mut self, doc: Document) {
         self.glade.commit(doc);
-        self.preview = None;
+        self.pending = None;
+    }
+    fn commit_add(&mut self, st: Structure) {
+        let doc = with_structure(self.glade.committed(), st);
+        self.commit(doc);
     }
     fn ring(&mut self, p: Vec3, r: f32) {
         let t = if self.invalid.is_some() { Tint::Bad } else { Tint::Ok };
@@ -897,7 +916,7 @@ fn drive_tools(
     let st = &mut *state;
 
     // --- keyboard: tool hotkeys, undo / redo, cancel ------------------------------------------
-    let mut cancel = keys.just_pressed(KeyCode::Escape);
+    let mut cancel = keys.just_pressed(KeyCode::Escape) || (st.revision != 0 && st.revision != g.revision);
     if ctrl {
         if keys.just_pressed(KeyCode::KeyZ) {
             if shift { g.redo() } else { g.undo() };
@@ -924,6 +943,7 @@ fn drive_tools(
     }
     if cancel {
         st.phase = Phase::Idle;
+        st.last_pending = None;
         g.set_preview(None);
     }
 
@@ -947,7 +967,9 @@ fn drive_tools(
     let scene = built.0.clone();
     let world_input = scene.is_some() && ray.is_some() && !(blocked && idle);
     // Scroll belongs to the tool while a gesture is in progress (or a prop is held).
-    if !idle && !blocked {
+    // The roof tool's scroll (pitch / style) works while hovering the world.
+    let roof_scroll = idle && s.tool == Tool::Roof && ray.is_some() && scene.is_some();
+    if (!idle || roof_scroll) && !blocked {
         st.scroll_acc += lines;
         cam_input.scroll_captured = true;
     } else {
@@ -979,7 +1001,7 @@ fn drive_tools(
             rig: &rig,
             win_h,
             phase: std::mem::take(&mut st.phase),
-            preview: None,
+            pending: None,
             invalid: None,
             marks: Vec::new(),
         };
@@ -994,7 +1016,24 @@ fn drive_tools(
         }
         let drawing = !matches!(cx.phase, Phase::Idle);
         if drawing {
-            cx.glade.set_preview(cx.preview.take());
+            let pending = cx.pending.take();
+            if pending.is_none() {
+                cx.glade.set_preview(None);
+            } else if pending != st.last_pending || !cx.glade.has_preview() {
+                let base = cx.glade.committed();
+                let doc = match (&pending, &cx.phase) {
+                    (Some(Pending::Add(a)), _) => Some(with_structure(base, a.clone())),
+                    (Some(Pending::Stroke(_)), Phase::Stroke { doc, .. }) => Some(doc.clone()),
+                    (Some(Pending::Remove(ids)), _) => {
+                        let mut d = base.clone();
+                        d.structures.retain(|(id, _)| !ids.contains(id));
+                        Some(d)
+                    }
+                    _ => None,
+                };
+                cx.glade.set_preview(doc);
+            }
+            st.last_pending = pending;
         } else if cx.glade.has_preview() {
             cx.glade.set_preview(None);
         }
@@ -1021,6 +1060,7 @@ fn drive_tools(
         }
     }
 
+    st.revision = glade.revision;
     if glade.revision != rev0 {
         glade.set_changed();
     }
@@ -1112,17 +1152,17 @@ fn line_tool(cx: &mut Cx) {
             } else {
                 None
             };
-            let doc = (all.len() >= 2).then(|| with_structure(cx.glade.committed(), line_structure(tool, cx.s, all)));
+            let st = (all.len() >= 2).then(|| line_structure(tool, cx.s, all));
             if finish {
-                if let (Some(doc), None) = (doc, cx.invalid) {
-                    cx.commit(doc);
+                if let (Some(st), None) = (st, cx.invalid) {
+                    cx.commit_add(st);
                 }
                 return;
             }
             if let Some(g) = inp.ground {
                 cx.ring(g, if closing { 0.8 } else { 0.4 });
             }
-            cx.preview = doc;
+            cx.pending = st.map(Pending::Add);
             cx.phase = Phase::Line { pts, end, held, moved };
         }
         other => cx.phase = other,
@@ -1177,7 +1217,7 @@ fn shape_tool(cx: &mut Cx) {
             if inp.release || !inp.held {
                 if cx.invalid.is_none() {
                     let base = default_height(tool);
-                    cx.preview = Some(with_structure(cx.glade.committed(), shape_structure(tool, cx.s, shape, base)));
+                    cx.pending = Some(Pending::Add(shape_structure(tool, cx.s, shape, base)));
                     cx.phase = Phase::Raise { shape, base, anchor_y: inp.cursor_y };
                 } else {
                     cx.invalid = None;
@@ -1186,7 +1226,7 @@ fn shape_tool(cx: &mut Cx) {
             }
             // Low ghost while dragging the footprint.
             let h = if tool == Tool::Deck { DECK_HEIGHT } else { 0.6 };
-            cx.preview = Some(with_structure(cx.glade.committed(), shape_structure(tool, cx.s, shape, h)));
+            cx.pending = Some(Pending::Add(shape_structure(tool, cx.s, shape, h)));
             if let Some(g) = inp.ground {
                 cx.ring(g, 0.3);
             }
@@ -1203,12 +1243,12 @@ fn shape_tool(cx: &mut Cx) {
             let per_px = VIEW_HEIGHT * cx.rig.zoom / (cx.win_h * cx.rig.pitch_deg.to_radians().cos().max(0.3));
             let height = q((base + (anchor_y - inp.cursor_y) * per_px).clamp(lo, hi));
             base = base.clamp(lo - 30.0, hi + 30.0);
-            let doc = with_structure(cx.glade.committed(), shape_structure(tool, cx.s, shape, height));
+            let st = shape_structure(tool, cx.s, shape, height);
             if inp.press {
-                cx.commit(doc);
+                cx.commit_add(st);
                 return;
             }
-            cx.preview = Some(doc);
+            cx.pending = Some(Pending::Add(st));
             cx.phase = Phase::Raise { shape, base, anchor_y };
         }
         other => cx.phase = other,
@@ -1255,16 +1295,16 @@ fn span_tool(cx: &mut Cx) {
             let (b, ok_b) = span_anchor(cx, skip).unwrap_or((b, anchored.1));
             let anchored = (anchored.0, ok_b);
             cx.invalid = span_invalid(tool, cx.s.stairs, a, b, anchored);
-            let doc = (a.distance(b) > 0.3).then(|| with_structure(cx.glade.committed(), span_structure(tool, cx.s, a, b)));
+            let st = (a.distance(b) > 0.3).then(|| span_structure(tool, cx.s, a, b));
             if inp.release || !inp.held {
-                if let (Some(doc), None) = (doc, cx.invalid) {
-                    cx.commit(doc);
+                if let (Some(st), None) = (st, cx.invalid) {
+                    cx.commit_add(st);
                 }
                 cx.invalid = None;
                 return;
             }
             cx.ring(b, 0.4);
-            cx.preview = doc;
+            cx.pending = st.map(Pending::Add);
             cx.phase = Phase::Span { a, b, anchored };
         }
         other => cx.phase = other,
@@ -1299,16 +1339,16 @@ fn prop_tool(cx: &mut Cx) {
     }
     cx.invalid = (!inside_valley(at)).then_some(OUTSIDE);
     let kind = if cx.s.tool == Tool::Tree { PropKind::Tree(cx.s.tree) } else { PropKind::Clutter(cx.s.clutter) };
-    let doc = with_structure(cx.glade.committed(), Structure::Placed(Placed { at, angle, scale, kind, colors: cx.s.colors }));
+    let st = Structure::Placed(Placed { at, angle, scale, kind, colors: cx.s.colors });
     if inp.release || !inp.held {
         if cx.invalid.is_none() {
-            cx.commit(doc);
+            cx.commit_add(st);
         }
         cx.invalid = None;
         return;
     }
     cx.ring(g, 0.5);
-    cx.preview = Some(doc);
+    cx.pending = Some(Pending::Add(st));
     cx.phase = Phase::Prop { angle, scale };
 }
 
@@ -1328,7 +1368,7 @@ fn brush_tool(cx: &mut Cx) {
             } else if inp.press {
                 let mut doc = cx.glade.committed().clone();
                 doc.terrain.push(brush_dab(cx.s, p, inp.shift, g.y));
-                cx.preview = Some(doc.clone());
+                cx.pending = Some(Pending::Stroke(doc.terrain.len()));
                 cx.phase = Phase::Stroke { doc, last: p, still: 0.0, level: g.y };
             }
             cx.ring(g, radius);
@@ -1359,7 +1399,7 @@ fn brush_tool(cx: &mut Cx) {
                 cx.commit(doc);
                 return;
             }
-            cx.preview = Some(doc.clone());
+            cx.pending = Some(Pending::Stroke(doc.terrain.len()));
             cx.phase = Phase::Stroke { doc, last, still, level };
         }
         other => cx.phase = other,
@@ -1371,6 +1411,13 @@ fn brush_tool(cx: &mut Cx) {
 fn click_tool(cx: &mut Cx) {
     let inp = cx.inp;
     cx.phase = Phase::Idle;
+    if cx.s.tool == Tool::Roof && inp.steps != 0 {
+        if inp.shift {
+            cx.s.roof = cycle_roof(cx.s.roof, inp.steps.signum(), false);
+        } else {
+            cx.s.roof_pitch_deg = (cx.s.roof_pitch_deg + inp.steps as f32 * 5.0).clamp(15.0, 60.0);
+        }
+    }
     let Some(hit) = cx.hover() else { return };
     let committed = cx.glade.committed();
     match cx.s.tool {
@@ -1442,15 +1489,15 @@ fn erase_tool(cx: &mut Cx) {
     if let Some(id) = hovered.filter(|id| !removed.contains(id)) {
         removed.push(id);
     }
-    let mut doc = cx.glade.committed().clone();
-    doc.structures.retain(|(id, _)| !removed.contains(id));
     if inp.release || !inp.held {
         if !removed.is_empty() {
+            let mut doc = cx.glade.committed().clone();
+            doc.structures.retain(|(id, _)| !removed.contains(id));
             cx.commit(doc);
         }
         return;
     }
-    cx.preview = (!removed.is_empty()).then_some(doc);
+    cx.pending = (!removed.is_empty()).then(|| Pending::Remove(removed.clone()));
     cx.phase = Phase::Erase { removed };
 }
 

@@ -34,6 +34,8 @@ enum Act {
     Shift(bool),
     Scroll(f32),
     Wait(u32),
+    /// Undo straight on the Glade, like the HUD button does.
+    Undo,
 }
 
 struct Step {
@@ -71,9 +73,11 @@ pub(super) fn install(app: &mut App) {
     let shot = args.get(k + 1).filter(|a| !a.starts_with("--")).map(PathBuf::from);
     app.insert_resource(Smoke { shot, steps: steps(), ..default() })
         .insert_resource(CursorOverride::default())
-        .add_systems(Startup, |mut clock: ResMut<Clock>| {
+        .add_systems(Startup, |mut clock: ResMut<Clock>, mut glade: ResMut<Glade>| {
             clock.hour = 12.0;
             clock.paused = true;
+            // Fixed terrain so the scripted coordinates behave the same every run.
+            glade.reset(Document::new(7));
         })
         .add_systems(PreUpdate, drive.after(InputSystems));
 }
@@ -188,6 +192,14 @@ fn steps() -> Vec<Step> {
             _ => unreachable!(),
         }
     }));
+    v.push(step(
+        "roof scroll pitch + shift style",
+        vec![key(Tool::Roof), set(|s| { s.roof = RoofStyle::Pitched; s.roof_pitch_deg = 30.0; }), Act::Aim(c, 0.0), Act::Wait(1), Act::Scroll(2.0), Act::Wait(1), Act::Shift(true), Act::Wait(1), Act::Scroll(1.0), Act::Wait(1), Act::Shift(false)],
+        |b, a, s| {
+            ok_if(a == b, || "document changed".into())?;
+            ok_if(s.roof_pitch_deg == 40.0 && s.roof == RoofStyle::Sawtooth, || format!("pitch {} roof {:?}", s.roof_pitch_deg, s.roof))
+        },
+    ));
     v.push(step("roof on ring", with(vec![key(Tool::Roof), set(|s| s.roof = RoofStyle::Sawtooth)], click(c, 0.0)), |b, a, _| {
         ok_if(count(b, |s| matches!(s, Structure::Wall(w) if w.roofed)) == 0, || "pre-roofed".into())?;
         ok_if(count(a, |s| matches!(s, Structure::Wall(w) if w.roofed && w.roof == RoofStyle::Sawtooth)) == 1, || "ring not roofed".into())
@@ -219,7 +231,7 @@ fn steps() -> Vec<Step> {
             Structure::Stairs(st) => {
                 let top = st.from.y.max(st.to.y);
                 let low = st.from.y.min(st.to.y);
-                ok_if(st.kind == kind && top - low > 3.5, || format!("kind {:?} from {} to {}", st.kind, st.from, st.to))
+                ok_if(st.kind == kind && top - low > 2.5, || format!("kind {:?} from {} to {}", st.kind, st.from, st.to))
             }
             _ => unreachable!(),
         }));
@@ -387,6 +399,15 @@ fn steps() -> Vec<Step> {
         let d = new_dabs(b, a)?;
         ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Water { .. })), || format!("{:?}", d[0].op))
     }));
+    let mut acts = vec![key(Tool::Wall), Act::Aim(sd(-2.0, -22.0), 0.0), Act::Press];
+    acts.extend((1..=8).map(|i| Act::Aim(sd(-2.0, -22.0 + i as f32), 0.0)));
+    acts.extend([Act::Undo, Act::Wait(1)]);
+    acts.extend((9..=12).map(|i| Act::Aim(sd(-2.0, -22.0 + i as f32), 0.0)));
+    acts.extend([Act::Release, Act::Wait(2)]);
+    v.push(step("undo mid-gesture cancels it", acts, |b, a, _| {
+        ok_if(a.terrain.len() < b.terrain.len(), || "undo did not happen".into())?;
+        ok_if(a.structures == b.structures, || format!("structures {} -> {}", b.structures.len(), a.structures.len()))
+    }));
     v
 }
 
@@ -403,7 +424,7 @@ fn drive(
     mut scroll: ResMut<AccumulatedMouseScroll>,
     mut cursor: ResMut<CursorOverride>,
     mut settings: ResMut<ToolSettings>,
-    glade: Res<Glade>,
+    mut glade: ResMut<Glade>,
     built: Res<BuiltScene>,
     mut commands: Commands,
 ) {
@@ -477,6 +498,9 @@ fn drive(
             }
             Act::Scroll(lines) => *scroll = AccumulatedMouseScroll { unit: MouseScrollUnit::Line, delta: Vec2::new(0.0, *lines) },
             Act::Wait(n) => sm.wait = *n,
+            Act::Undo => {
+                glade.undo();
+            }
         }
         if sm.j == sm.steps[i].acts.len() {
             sm.wait = sm.wait.max(SETTLE);

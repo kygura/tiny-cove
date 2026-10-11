@@ -389,6 +389,7 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
                 m.aabb(V(-0.26, y, -0.26), V(0.26, y + 0.16, 0.26), wood * (1.0 - 0.06 * k as f32), Surface::Cladding, 1.0);
             }
             m.aabb(V(-0.31, 1.01, -0.31), V(0.31, 1.06, 0.31), trim, Surface::Cladding, 1.0);
+        }
         ClutterKind::Solar => {
             let panel = V(0.04, 0.08, 0.2);
             // Steel A-frame: tall back legs, short front legs, rail along the panel underside.
