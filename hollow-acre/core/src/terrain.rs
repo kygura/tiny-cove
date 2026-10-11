@@ -298,22 +298,26 @@ fn crystals(grid: &mut VoxelGrid, hs: &[i32], road: &[bool], seed: u64) {
         for s in 0..shards {
             let r = |k| rnd(seed ^ S_CRYS, i * 16 + s, 10 + k, 0);
             let (bx, bz) = (cx as f32 + (r(0) - 0.5) * 4.0, cz as f32 + (r(1) - 0.5) * 4.0);
-            let h = 3 + (r(2) * 6.0) as i32;
-            let (lx, lz) = ((r(3) - 0.5) * 0.9, (r(4) - 0.5) * 0.9);
-            for t in 0..h {
-                let (x, z) = ((bx + lx * t as f32).round() as i32, (bz + lz * t as f32).round() as i32);
-                if !(0..NX).contains(&x) || !(0..NZ).contains(&z) {
-                    break;
-                }
-                let y = hs[col(x, z)] + t - 1;
-                let wide = t < (h + 2) / 3;
-                for (dx, dz) in [(0, 0), (1, 0), (0, 1)] {
-                    if (dx, dz) == (0, 0) || wide {
-                        let g = grid.get(x + dx, y, z + dz);
-                        if matches!(g, Voxel::Air | Voxel::Meadow | Voxel::Grass) {
-                            grid.set(x + dx, y, z + dz, Voxel::Crystal);
-                        }
-                    }
+            shard(grid, hs, bx, bz, 3 + (r(2) * 6.0) as i32, (r(3) - 0.5) * 0.9, (r(4) - 0.5) * 0.9);
+        }
+    }
+}
+
+/// A slanted crystal shard of height `h` rising from the ground at (bx, bz),
+/// leaning (lx, lz) voxels per layer. Wide at the base, single voxel above.
+pub(crate) fn shard(grid: &mut VoxelGrid, hs: &[i32], bx: f32, bz: f32, h: i32, lx: f32, lz: f32) {
+    for t in 0..h {
+        let (x, z) = ((bx + lx * t as f32).round() as i32, (bz + lz * t as f32).round() as i32);
+        if !(0..NX).contains(&x) || !(0..NZ).contains(&z) {
+            break;
+        }
+        let y = hs[col(x, z)] + t - 1;
+        let wide = t < (h + 2) / 3;
+        for (dx, dz) in [(0, 0), (1, 0), (0, 1)] {
+            if (dx, dz) == (0, 0) || wide {
+                let g = grid.get(x + dx, y, z + dz);
+                if matches!(g, Voxel::Air | Voxel::Meadow | Voxel::Grass) {
+                    grid.set(x + dx, y, z + dz, Voxel::Crystal);
                 }
             }
         }
