@@ -1,6 +1,7 @@
 //! THISTLE GLADE core: document model, terrain and procedural geometry. No Bevy.
 
 pub mod buildings;
+pub mod demo;
 pub mod geom;
 pub mod mesh;
 pub mod model;
