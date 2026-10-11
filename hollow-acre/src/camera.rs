@@ -2,6 +2,11 @@
 //! smoothed orbit/zoom/pan, pixel-snapped to the low-res texel grid, plus [`CursorRay`].
 
 use crate::render::{CAMERA_DISTANCE, GameCamera, LOW_RES_HEIGHT, LowRes};
+
+/// Low-res target height used for pixel snapping until [`LowRes`] exists.
+fn target_height(low: Option<&LowRes>) -> f32 {
+    low.map_or(LOW_RES_HEIGHT, |l| l.size.y.max(1)) as f32
+}
 use bevy::camera::ScalingMode;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::picking::hover::HoverMap;
@@ -65,10 +70,11 @@ impl RigPose {
         Transform::from_translation(self.focus + back * CAMERA_DISTANCE).looking_at(self.focus, Vec3::Y)
     }
 
-    /// Transform snapped so the camera moves in whole low-res texels in its view plane.
-    pub fn snapped_transform(&self) -> Transform {
+    /// Transform snapped so the camera moves in whole low-res texels in its view plane;
+    /// `target_height` is the low-res image height in pixels.
+    pub fn snapped_transform(&self, target_height: f32) -> Transform {
         let mut tf = self.transform();
-        let texel = self.view_height / LOW_RES_HEIGHT as f32;
+        let texel = self.view_height / target_height.max(1.0);
         let (right, up) = (tf.rotation * Vec3::X, tf.rotation * Vec3::Y);
         let (r, u) = (tf.translation.dot(right), tf.translation.dot(up));
         let snap = |v: f32| (v / texel).round() * texel;
@@ -108,7 +114,7 @@ impl CameraRig {
 }
 
 /// World-space ray from the mouse through the low-res camera, `None` when the cursor is
-/// outside the window or in the letterbox. Updated every `Update`.
+/// outside the window. Updated every `Update`.
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub struct CursorRay(pub Option<Ray3d>);
 
@@ -149,7 +155,7 @@ fn rig_input(
         // Window px -> world units on the view plane; screen-up maps to ground-forward
         // stretched by 1/sin(pitch).
         let px_scale = low.as_deref().map_or(1.0, |l| l.scale.max(1e-3));
-        let wu = t.view_height / LOW_RES_HEIGHT as f32 / px_scale;
+        let wu = t.view_height / target_height(low.as_deref()) / px_scale;
         let up_k = 1.0 / PITCH_DEG.to_radians().sin();
         t.focus += (-right * motion.delta.x + fwd * motion.delta.y * up_k) * wu;
     }
@@ -188,8 +194,10 @@ fn smooth_damp(cur: f32, target: f32, vel: &mut f32, dt: f32) -> f32 {
 fn apply_rig(
     mut rig: ResMut<CameraRig>,
     time: Res<Time>,
+    low: Option<Res<LowRes>>,
     mut cam: Query<(&mut Transform, &mut Projection), With<GameCamera>>,
 ) {
+    let height = target_height(low.as_deref());
     let dt = time.delta_secs();
     let r = &mut *rig;
     let (c, t) = (r.current, r.target);
@@ -217,7 +225,7 @@ fn apply_rig(
     }
     let pose = r.current;
     for (mut tf, mut proj) in &mut cam {
-        let new = pose.snapped_transform();
+        let new = pose.snapped_transform(height);
         if *tf != new {
             *tf = new;
         }
@@ -279,7 +287,7 @@ mod tests {
     #[test]
     fn snapping_moves_less_than_a_texel_and_is_stable() {
         let p = RigPose { focus: Vec3::new(1.234, 5.0, -7.89), ..default() };
-        let (a, b) = (p.transform(), p.snapped_transform());
+        let (a, b) = (p.transform(), p.snapped_transform(LOW_RES_HEIGHT as f32));
         let texel = p.view_height / LOW_RES_HEIGHT as f32;
         assert!(a.translation.distance(b.translation) <= texel * 0.75);
         assert_eq!(b.rotation, a.rotation);

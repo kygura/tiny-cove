@@ -1,11 +1,11 @@
 //! Low-res toon rendering.
 //!
 //! - [`GameCamera`]: orthographic `Camera3d` (order -1) rendering into the low-res
-//!   [`LowResTarget`] image (height [`LOW_RES_HEIGHT`], width follows the window aspect),
+//!   [`LowResTarget`] image (about [`LOW_RES_HEIGHT`] px tall, sized by [`fill_layout`]),
 //!   with depth+normal prepass, outline post-process ([`outline`]) and HDR bloom for
 //!   emissives. Its `Transform` and projection are driven by `crate::camera`.
-//! - [`WindowCamera`]: `Camera2d` (order 0, `IsDefaultUiCamera`) showing the image at the
-//!   largest integer scale that fits, letterboxed in `#1d2347`. Bevy UI without a
+//! - [`WindowCamera`]: `Camera2d` (order 0, `IsDefaultUiCamera`) showing the image at
+//!   integer scale `round(window_h / 270)`, filling the window (see [`fill_layout`]). Bevy UI without a
 //!   `UiTargetCamera` renders here at full window resolution.
 //! - [`Sun`]: the one shadow-casting `DirectionalLight` (2048², 1 cascade, hard edges).
 //! - [`Atmosphere`] is read every frame and pushed into the light, clear colour,
@@ -53,7 +53,7 @@ const FLASH_SKY: Color = Color::srgb(0x8e as f32 / 255.0, 0x7a as f32 / 255.0, 0
 pub struct LowRes {
     /// Target size in pixels.
     pub size: UVec2,
-    /// Top-left of the upscaled image in the window, logical px.
+    /// Top-left of the upscaled image in the window, logical px (always zero now).
     pub offset: Vec2,
     /// Logical window px per low-res pixel (integer in physical px).
     pub scale: f32,
@@ -61,7 +61,7 @@ pub struct LowRes {
 
 impl LowRes {
     /// Window cursor position (logical px, top-left origin) → low-res pixel position,
-    /// or `None` in the letterbox.
+    /// or `None` outside the image.
     pub fn window_to_low_res(&self, cursor: Vec2) -> Option<Vec2> {
         let p = (cursor - self.offset) / self.scale.max(1e-6);
         let s = self.size.as_vec2();
@@ -123,29 +123,23 @@ impl Plugin for ToonRenderPlugin {
     }
 }
 
-/// Low-res size for a window: height 270, width from the aspect rounded to even.
-pub fn low_res_size(window_physical: Vec2) -> UVec2 {
-    let aspect = window_physical.x / window_physical.y.max(1.0);
-    let aspect = if aspect.is_finite() && aspect > 0.1 { aspect } else { 16.0 / 9.0 };
-    let w = ((LOW_RES_HEIGHT as f32 * aspect / 2.0).round() as u32 * 2).max(2);
-    UVec2::new(w, LOW_RES_HEIGHT)
+/// Fill layout for a window (physical px): integer scale `s = round(h / 270)` (min 1)
+/// and low-res size `ceil(window / s)`, so the upscaled image covers the whole window
+/// (at most `s - 1` px cropped at the right/bottom edge). Returns (size, scale).
+pub fn fill_layout(window_physical: Vec2) -> (UVec2, u32) {
+    let w = window_physical.max(Vec2::ONE);
+    let w = if w.is_finite() { w } else { Vec2::new(1280.0, 720.0) };
+    let scale = ((w.y / LOW_RES_HEIGHT as f32).round() as u32).max(1);
+    let size = (w / scale as f32).ceil().as_uvec2().max(UVec2::ONE);
+    (size, scale)
 }
 
-/// Integer scale + centred placement in physical px; returns (offset, scale).
-pub fn letterbox(window_physical: Vec2, size: UVec2) -> (Vec2, u32) {
-    let fit = (window_physical / size.as_vec2()).min_element().floor();
-    let scale = (fit as u32).max(1);
-    let img = (size * scale).as_vec2();
-    (((window_physical - img) / 2.0).max(Vec2::ZERO).floor(), scale)
-}
-
-fn window_layout(window: Option<&Window>) -> (LowRes, f32) {
+fn window_layout(window: Option<&Window>) -> LowRes {
     let (phys, sf) = window.map_or((Vec2::new(1280.0, 720.0), 1.0), |w| {
         (w.physical_size().as_vec2(), w.scale_factor())
     });
-    let size = low_res_size(phys);
-    let (off, scale) = letterbox(phys, size);
-    (LowRes { size, offset: off / sf, scale: scale as f32 / sf }, sf)
+    let (size, scale) = fill_layout(phys);
+    LowRes { size, offset: Vec2::ZERO, scale: scale as f32 / sf }
 }
 
 fn setup(
@@ -154,7 +148,7 @@ fn setup(
     mut materials: ResMut<Assets<ToonMaterial>>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
-    let (low, _) = window_layout(window.single().ok());
+    let low = window_layout(window.single().ok());
     let mut target = Image::new_target_texture(low.size.x, low.size.y, TextureFormat::Rgba8UnormSrgb, None);
     target.sampler = ImageSampler::nearest();
     let target = images.add(target);
@@ -254,7 +248,7 @@ fn fit_to_window(
     mut display: Query<&mut Node, With<LowResDisplay>>,
 ) {
     let Ok(window) = window.single() else { return };
-    let (new, _) = window_layout(Some(window));
+    let new = window_layout(Some(window));
     if new == *low {
         return;
     }
@@ -308,26 +302,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn low_res_follows_aspect() {
-        assert_eq!(low_res_size(Vec2::new(1920.0, 1080.0)), UVec2::new(480, 270));
-        assert_eq!(low_res_size(Vec2::new(1280.0, 720.0)), UVec2::new(480, 270));
-        assert_eq!(low_res_size(Vec2::new(2560.0, 1080.0)).x % 2, 0);
+    fn fill_layout_covers_window() {
+        assert_eq!(fill_layout(Vec2::new(1920.0, 1080.0)), (UVec2::new(480, 270), 4));
+        assert_eq!(fill_layout(Vec2::new(1280.0, 720.0)), (UVec2::new(427, 240), 3));
+        assert_eq!(fill_layout(Vec2::new(100.0, 50.0)), (UVec2::new(100, 50), 1));
+        for w in [Vec2::new(1366.0, 768.0), Vec2::new(2560.0, 1080.0), Vec2::new(801.0, 599.0)] {
+            let (size, s) = fill_layout(w);
+            let covered = (size * s).as_vec2();
+            assert!(covered.x >= w.x && covered.y >= w.y);
+            assert!(covered.x - w.x < s as f32 && covered.y - w.y < s as f32);
+        }
     }
 
     #[test]
-    fn letterbox_integer_scale() {
-        let (off, s) = letterbox(Vec2::new(1280.0, 720.0), UVec2::new(480, 270));
-        assert_eq!(s, 2);
-        assert_eq!(off, Vec2::new(160.0, 90.0));
-        let (off, s) = letterbox(Vec2::new(1920.0, 1080.0), UVec2::new(480, 270));
-        assert_eq!((off, s), (Vec2::ZERO, 4));
-    }
-
-    #[test]
-    fn cursor_mapping_respects_letterbox() {
-        let low = LowRes { size: UVec2::new(480, 270), offset: Vec2::new(160.0, 90.0), scale: 2.0 };
-        assert_eq!(low.window_to_low_res(Vec2::new(100.0, 100.0)), None);
-        assert_eq!(low.window_to_low_res(Vec2::new(160.0, 90.0)), Some(Vec2::ZERO));
-        assert_eq!(low.window_to_low_res(Vec2::new(162.0, 94.0)), Some(Vec2::new(1.0, 2.0)));
+    fn cursor_mapping_follows_scale() {
+        let low = LowRes { size: UVec2::new(427, 240), offset: Vec2::ZERO, scale: 3.0 };
+        assert_eq!(low.window_to_low_res(Vec2::new(-1.0, 10.0)), None);
+        assert_eq!(low.window_to_low_res(Vec2::ZERO), Some(Vec2::ZERO));
+        assert_eq!(low.window_to_low_res(Vec2::new(6.0, 9.0)), Some(Vec2::new(2.0, 3.0)));
+        assert_eq!(low.window_to_low_res(Vec2::new(1279.0, 719.0)), Some(Vec2::new(1279.0 / 3.0, 719.0 / 3.0)));
     }
 }
