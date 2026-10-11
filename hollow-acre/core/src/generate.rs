@@ -399,6 +399,17 @@ fn gravel_path(c: &mut Ctx, pts: &[P2]) {
     let Some(poly) = Poly::new(pts, 1.5) else { return };
     poly.for_columns(2.6, |x, z, hit| {
         let h = c.height(x, z);
+        let mut carved = false;
+        if (h..h + 8).any(|y| c.g.get(x, y, z).is_structure()) {
+            let u = hit.d / 2.6;
+            let top = (5.0 + 2.0 * (1.0 - u * u).max(0.0).sqrt()).floor() as i32;
+            for y in h..h + top {
+                if c.g.get(x, y, z) != Voxel::Water {
+                    c.set(x, y, z, Voxel::Air);
+                }
+            }
+            carved = true;
+        }
         if hit.d <= 1.5 {
             c.clear_column(x, z);
             for y in h..h + 3 {
@@ -407,17 +418,8 @@ fn gravel_path(c: &mut Ctx, pts: &[P2]) {
                 }
             }
             let below = c.g.get(x, h - 1, z);
-            if c.g.get(x, h, z) != Voxel::Water && !below.is_structure() && below != Voxel::Water {
+            if c.g.get(x, h, z) != Voxel::Water && (carved || !below.is_structure()) && below != Voxel::Water {
                 c.set(x, h - 1, z, Voxel::Gravel);
-            }
-        }
-        if (h..h + 8).any(|y| c.g.get(x, y, z).is_structure()) {
-            let u = hit.d / 2.6;
-            let top = (5.0 + 2.0 * (1.0 - u * u).max(0.0).sqrt()).floor() as i32;
-            for y in h..h + top {
-                if c.g.get(x, y, z) != Voxel::Water {
-                    c.set(x, y, z, Voxel::Air);
-                }
             }
         }
     });

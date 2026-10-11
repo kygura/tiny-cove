@@ -5,7 +5,7 @@ use crate::noise::{hash, rnd, smoothstep, value_noise};
 use crate::voxel::{NX, NY, NZ, SIZE_X, SIZE_Z, Voxel, VoxelGrid};
 
 /// Ponds are filled with water up to (not including) this voxel y.
-pub const WATER_LEVEL: i32 = 9;
+pub const WATER_LEVEL: i32 = 7;
 /// Voxel-space centre of the map.
 const CX: f32 = (SIZE_X / 2) as f32;
 const CZ: f32 = (SIZE_Z / 2) as f32;
@@ -44,7 +44,7 @@ fn hill(seed: u64, fx: f32, fz: f32) -> f32 {
     let m = smoothstep(CALM - 4.0, CALM + 30.0, d);
     let n = value_noise(seed ^ S_HILL, fx / 48.0, fz / 48.0) * 0.65 + value_noise(seed ^ S_HILL ^ 1, fx / 21.0, fz / 21.0) * 0.35;
     let gentle = (value_noise(seed ^ S_HILL ^ 2, fx / 26.0, fz / 26.0) - 0.5) * 3.0;
-    11.0 + gentle * (1.0 - m) + (n - 0.5) * 26.0 * m
+    (12.0 + gentle * (1.0 - m) + (n - 0.5) * 26.0 * m).max((WATER_LEVEL + 2) as f32)
 }
 
 struct Highway {
@@ -90,7 +90,7 @@ pub fn terrain(seed: u64) -> Terrain {
                 let dd = ((fx - px).powi(2) + (fz - pz).powi(2)).sqrt() / r;
                 if dd < 2.0 {
                     let w = smoothstep(2.0, 1.0, dd);
-                    let target = if dd < 1.0 { (WATER_LEVEL + 1) as f32 - (1.0 - dd * dd) * 4.0 } else { (WATER_LEVEL + 1) as f32 };
+                    let target = if dd < 1.0 { (WATER_LEVEL + 1) as f32 - (1.0 - dd * dd) * 4.5 } else { (WATER_LEVEL + 1) as f32 };
                     base += (target - base) * w;
                     if dd < 1.3 {
                         surf[col(x, z)] = Surf::Sand;
@@ -207,8 +207,8 @@ fn ponds(seed: u64, hw: &Highway) -> Vec<(f32, f32, f32)> {
     (0..count)
         .map(|i| {
             let ang = rnd(seed ^ S_POND, i, 1, 0) * std::f32::consts::TAU;
-            let dist = 58.0 + rnd(seed ^ S_POND, i, 2, 0) * 14.0;
-            let r = 8.0 + rnd(seed ^ S_POND, i, 3, 0) * 5.0;
+            let dist = 56.0 + rnd(seed ^ S_POND, i, 2, 0) * 12.0;
+            let r = 10.0 + rnd(seed ^ S_POND, i, 3, 0) * 6.0;
             let mut c = (CX + ang.cos() * dist, CZ + ang.sin() * dist);
             if hw.at(c.0, c.1).0.abs() < r * 2.0 + 8.0 {
                 c = (CX - ang.cos() * dist, CZ - ang.sin() * dist);
