@@ -10,6 +10,8 @@ use concrete_glade::ui::HudPlugin;
 
 /// Frames to let the scene settle (pipelines compile, particles spread) before capture.
 const DEMO_SETTLE_FRAMES: u32 = 120;
+/// Give up (exit code 1) if the screenshot hasn't been written this many frames later.
+const DEMO_TIMEOUT_FRAMES: u32 = 600;
 
 #[derive(Resource)]
 struct DemoShot {
@@ -35,10 +37,10 @@ fn main() {
             .insert_resource(DemoShot { path, frames: 0 })
             .add_systems(Startup, |mut orbit: ResMut<Orbit>| {
                 orbit.snap(OrbitPose {
-                    focus: Vec2::new(0.0, 3.0),
-                    yaw: 8f32.to_radians(),
-                    pitch: 30f32.to_radians(),
-                    distance: 56.0,
+                    focus: Vec2::new(-7.0, 8.0),
+                    yaw: -25f32.to_radians(),
+                    pitch: 29f32.to_radians(),
+                    distance: 54.0,
                 })
             })
             .add_systems(Last, demo_shot);
@@ -47,11 +49,20 @@ fn main() {
 }
 
 /// Waits until the grid is meshed plus a few frames, then saves the window and exits.
-fn demo_shot(mut commands: Commands, mut shot: ResMut<DemoShot>, grid: Res<Grid>) {
-    if shot.frames > DEMO_SETTLE_FRAMES || (shot.frames == 0 && grid.0 == Default::default()) {
+fn demo_shot(
+    mut commands: Commands,
+    mut shot: ResMut<DemoShot>,
+    grid: Res<Grid>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if shot.frames == 0 && grid.0 == Default::default() {
         return;
     }
     shot.frames += 1;
+    if shot.frames == DEMO_SETTLE_FRAMES + DEMO_TIMEOUT_FRAMES {
+        error!("demo shot: screenshot never arrived");
+        exit.write(AppExit::error());
+    }
     if shot.frames == DEMO_SETTLE_FRAMES {
         info!("demo shot -> {}", shot.path);
         request_screenshot(&mut commands, shot.path.clone()).observe(

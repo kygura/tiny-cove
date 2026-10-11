@@ -16,7 +16,6 @@ struct VoxelParams {
     ambient: vec3<f32>,
     emissive_fog_start: f32,
     snap_res: vec2<f32>,
-    time: f32,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> params: VoxelParams;

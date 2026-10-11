@@ -51,6 +51,13 @@ impl Voxel {
     pub fn is_solid(self) -> bool {
         self != Voxel::Air
     }
+    /// Placed by structures (as opposed to terrain).
+    pub fn is_structure(self) -> bool {
+        matches!(
+            self,
+            Voxel::Concrete | Voxel::ConcreteDark | Voxel::WindowDark | Voxel::WindowLit | Voxel::Rust | Voxel::Lamp
+        )
+    }
     /// Tile index into the 4x4 texture atlas: tile i sits at column i % 4, row i / 4.
     pub fn atlas_tile(self) -> u32 {
         self as u32

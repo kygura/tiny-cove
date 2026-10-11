@@ -1,7 +1,6 @@
-//! The PS1 voxel material. Shader: `assets/shaders/voxel.wesl` (embedded).
+//! The PS1 voxel material. Shader: `voxel.wesl` next to this file (embedded asset).
 
 use bevy::{
-    asset::uuid_handle,
     mesh::MeshVertexBufferLayoutRef,
     pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
@@ -11,9 +10,8 @@ use bevy::{
     shader::ShaderRef,
 };
 
-/// Embedded at compile time so the binary does not depend on the asset directory.
-pub(crate) const SHADER: Handle<Shader> = uuid_handle!("7c1d6c55-2a4e-4f0b-9a63-5b0e8f3c2d91");
-pub(crate) const SHADER_SOURCE: &str = include_str!("../../assets/shaders/voxel.wesl");
+/// Registered by `Ps1Plugin` with `embedded_asset!`.
+const SHADER_PATH: &str = "embedded://concrete_glade/render/voxel.wesl";
 
 /// Sky / fog colour `#6b6258`.
 pub const FOG_COLOR: Color = Color::srgb_u8(0x6b, 0x62, 0x58);
@@ -33,8 +31,6 @@ pub struct VoxelParams {
     pub emissive_fog_start: f32,
     /// Vertex snap grid in pixels; kept in sync with `LowRes` by `Ps1Plugin`.
     pub snap_res: Vec2,
-    /// Free for animation; the plugin does not update it.
-    pub time: f32,
 }
 
 impl Default for VoxelParams {
@@ -48,7 +44,6 @@ impl Default for VoxelParams {
             ambient: Vec3::new(0.56, 0.55, 0.56),
             emissive_fog_start: 60.0,
             snap_res: Vec2::new(427.0, 240.0),
-            time: 0.0,
         }
     }
 }
@@ -69,11 +64,11 @@ pub struct VoxelMaterialHandle(pub Handle<VoxelMaterial>);
 
 impl Material for VoxelMaterial {
     fn vertex_shader() -> ShaderRef {
-        SHADER.into()
+        SHADER_PATH.into()
     }
 
     fn fragment_shader() -> ShaderRef {
-        SHADER.into()
+        SHADER_PATH.into()
     }
 
     fn enable_prepass() -> bool {

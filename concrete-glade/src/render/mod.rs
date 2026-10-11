@@ -14,6 +14,7 @@ mod material;
 pub use material::{FOG_COLOR, VoxelMaterial, VoxelMaterialHandle, VoxelParams};
 
 use crate::mesher::ChunkMesh;
+use crate::voxel::Voxel;
 use bevy::{
     asset::RenderAssetUsages,
     camera::RenderTarget,
@@ -28,7 +29,6 @@ use bevy::{
             screenshot::{Screenshot, save_to_disk},
         },
     },
-    shader::Shader,
     window::PrimaryWindow,
 };
 use std::path::PathBuf;
@@ -65,13 +65,10 @@ pub struct Ps1Setup;
 
 impl Plugin for Ps1Plugin {
     fn build(&self, app: &mut App) {
-        let shader = Shader::from_wesl(material::SHADER_SOURCE, "shaders/voxel.wesl");
-        if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
-            let _ = shaders.insert(material::SHADER.id(), shader);
-        }
+        bevy::asset::embedded_asset!(app, "voxel.wesl");
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .add_systems(PreStartup, setup.in_set(Ps1Setup))
-            .add_systems(Update, (fit_to_window, screenshot_on_f12));
+            .add_systems(Update, (fit_to_window, screenshot_on_f12, slow_sun));
     }
 }
 
@@ -178,6 +175,27 @@ fn fit_to_window(
     }
 }
 
+/// The sun circles the sky a few degrees a minute; the material (and so every chunk's
+/// bind group) is only rewritten twice a second.
+const SUN_DEG_PER_SEC: f32 = 4.0 / 60.0;
+
+fn slow_sun(
+    time: Res<Time>,
+    material: Res<VoxelMaterialHandle>,
+    mut materials: ResMut<Assets<VoxelMaterial>>,
+    mut last: Local<f32>,
+) {
+    let now = time.elapsed_secs();
+    if now - *last < 0.5 {
+        return;
+    }
+    *last = now;
+    if let Some(mut m) = materials.get_mut(&material.0) {
+        let turn = Quat::from_rotation_y((now * SUN_DEG_PER_SEC).to_radians());
+        m.params.sun_dir = turn * VoxelParams::default().sun_dir;
+    }
+}
+
 /// Converts a [`ChunkMesh`] to a Bevy triangle-list mesh with POSITION, NORMAL,
 /// COLOR (Float32x4) and UV_0. An empty `ChunkMesh` gives a valid mesh with no
 /// vertices; callers should skip spawning (or despawn) such chunks instead.
@@ -191,6 +209,33 @@ pub fn chunk_mesh_to_bevy(m: &ChunkMesh) -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, m.colors.clone())
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone())
     .with_inserted_indices(Indices::U32(m.indices.clone()))
+}
+
+/// Unit cube centred on the origin, textured with `v`'s atlas tile.
+pub fn cube_mesh(v: Voxel) -> Mesh {
+    // (normal, shade, corners CCW seen from outside)
+    const FACES: [([f32; 3], f32, [[f32; 3]; 4]); 6] = [
+        ([0., 1., 0.], 1.0, [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]]),
+        ([0., -1., 0.], 0.5, [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]]),
+        ([1., 0., 0.], 0.8, [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]]),
+        ([-1., 0., 0.], 0.8, [[0., 0., 0.], [0., 0., 1.], [0., 1., 1.], [0., 1., 0.]]),
+        ([0., 0., 1.], 0.68, [[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]]),
+        ([0., 0., -1.], 0.68, [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]]),
+    ];
+    let (uv0, uv1) = atlas::tile_uv_rect(v);
+    let uvs = [uv0, [uv1[0], uv0[1]], uv1, [uv0[0], uv1[1]]];
+    let mut m = ChunkMesh::default();
+    for (n, shade, corners) in FACES {
+        let base = m.positions.len() as u32;
+        for (c, uv) in corners.iter().zip(uvs) {
+            m.positions.push([c[0] - 0.5, c[1] - 0.5, c[2] - 0.5]);
+            m.normals.push(n);
+            m.colors.push([shade, shade, shade, 0.0]);
+            m.uvs.push(uv);
+        }
+        m.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    chunk_mesh_to_bevy(&m)
 }
 
 /// Maps a window cursor position (logical px, top-left origin) to low-res target pixels.

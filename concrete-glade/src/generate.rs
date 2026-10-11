@@ -4,16 +4,16 @@
 //! never from structure ids or placement order, so a live preview of a structure
 //! rasterizes exactly like the committed one.
 
-use crate::structure::{Structure, World};
-use crate::voxel::{GROUND_Y, SIZE_X, SIZE_Y, SIZE_Z, VOXEL_SIZE, Voxel, VoxelGrid};
-use bevy::math::{IVec3, Vec2};
+use crate::structure::{Structure, World, polyline_len};
+use crate::voxel::{GROUND_Y, SIZE_X, SIZE_Y, SIZE_Z, VOXEL_SIZE, Voxel, VoxelGrid, voxel_to_world};
+use bevy::math::{IVec3, Vec2, Vec3};
 
 /// Wall thickness in voxels (normal, dam).
 const WALL_T: f32 = 3.0;
 const DAM_T: f32 = 5.0;
 /// Road width in voxels and clearance height of the carved opening.
-const ROAD_W: f32 = 4.0;
-const ROAD_CLEAR: i32 = 6;
+const ROAD_W: f32 = 6.0;
+const ROAD_CLEAR: i32 = 8;
 /// Tallest block body; leaves room for antennas and stacks above the roof.
 const MAX_BLOCK_H: i32 = SIZE_Y - GROUND_Y - 14;
 
@@ -24,7 +24,6 @@ const S_TREE: u64 = 0x7ee;
 const S_RUBBLE: u64 = 0x7bb;
 const S_WALL: u64 = 0xa11;
 const S_BLOCK: u64 = 0xb10;
-const S_ROAD: u64 = 0x70d;
 
 /// Builds the full voxel grid for a world: terrain, walls/blocks in order, roads last.
 pub fn generate(world: &World) -> VoxelGrid {
@@ -63,7 +62,7 @@ pub fn apply(grid: &mut VoxelGrid, s: &Structure, seed: u64) {
     match s {
         Structure::Wall { points, height, dam } => wall(grid, points, *height as i32, *dam, seed),
         Structure::Block { min, max, height } => block(grid, *min, *max, *height as i32, seed),
-        Structure::Road { points } => road(grid, points, seed),
+        Structure::Road { points } => road(grid, points),
     }
 }
 
@@ -106,14 +105,6 @@ fn at(x: i32, y: i32, z: i32) -> IVec3 {
     IVec3::new(x, y, z)
 }
 
-/// Placed voxels that belong to structures (as opposed to terrain).
-fn is_structure(v: Voxel) -> bool {
-    matches!(
-        v,
-        Voxel::Concrete | Voxel::ConcreteDark | Voxel::WindowDark | Voxel::WindowLit | Voxel::Rust | Voxel::Lamp
-    )
-}
-
 /// Prepares a footprint column: removes trees/rubble above ground and fills
 /// any crater hollow below ground with a concrete foundation (y >= 1).
 fn site_column(grid: &mut VoxelGrid, x: i32, z: i32) {
@@ -140,10 +131,6 @@ fn fill_column(grid: &mut VoxelGrid, x: i32, z: i32, y0: i32, y1: i32, v: Voxel)
 /// World point -> continuous voxel-space x/z (voxel (x, z) spans [x, x+1)).
 fn to_voxel_space(p: Vec2) -> Vec2 {
     p / VOXEL_SIZE + Vec2::new((SIZE_X / 2) as f32, (SIZE_Z / 2) as f32)
-}
-
-fn polyline_len(points: &[Vec2]) -> f32 {
-    points.windows(2).map(|w| w[0].distance(w[1])).sum()
 }
 
 /// Distance from `p` to segment ab and the clamped parameter along it.
@@ -507,7 +494,16 @@ impl Rect {
     }
 }
 
-fn block(g: &mut VoxelGrid, min: Vec2, max: Vec2, height: i32, seed: u64) {
+/// Footprint, hash key and stair core of a block; None if under 4x4 voxels.
+struct BlockLayout {
+    r: Rect,
+    core: Rect,
+    key: u64,
+    cs: i32,
+    side: i32,
+}
+
+fn block_layout(min: Vec2, max: Vec2, seed: u64) -> Option<BlockLayout> {
     let (a, b) = (to_voxel_space(min.min(max)), to_voxel_space(min.max(max)));
     let r = Rect {
         x0: (a.x.round() as i32).clamp(0, SIZE_X),
@@ -517,28 +513,63 @@ fn block(g: &mut VoxelGrid, min: Vec2, max: Vec2, height: i32, seed: u64) {
     };
     let (w, d) = (r.x1 - r.x0, r.z1 - r.z0);
     if w < 4 || d < 4 {
-        return;
+        return None;
     }
-    let seed = seed ^ S_BLOCK;
-    let key = hash(seed, r.x0, r.z0, r.x1 * 1000 + r.z1);
-    let h = height.clamp(6, MAX_BLOCK_H);
-    let ytop = GROUND_Y + h - 1; // roof slab
-    let pilotis = w >= 8 && d >= 8;
-    // Bands sit at rel % 3 == 0; rel 0 is the transfer slab / plinth top.
-    let base = if pilotis { GROUND_Y + 3 } else { GROUND_Y + 1 };
-
+    let key = hash(seed ^ S_BLOCK, r.x0, r.z0, r.x1 * 1000 + r.z1);
     // Stair/elevator core straddling one facade.
     let cs = if w.min(d) >= 10 { 3 } else { 2 };
     let side = (key % 4) as i32;
-    let core = {
-        let (cx, cz) = (r.x0 + (w - cs) / 2, r.z0 + (d - cs) / 2);
-        match side {
-            0 => Rect { x0: cx, z0: r.z0 - 1, x1: cx + cs, z1: r.z0 - 1 + cs },
-            1 => Rect { x0: r.x1 + 1 - cs, z0: cz, x1: r.x1 + 1, z1: cz + cs },
-            2 => Rect { x0: cx, z0: r.z1 + 1 - cs, x1: cx + cs, z1: r.z1 + 1 },
-            _ => Rect { x0: r.x0 - 1, z0: cz, x1: r.x0 - 1 + cs, z1: cz + cs },
-        }
+    let (cx, cz) = (r.x0 + (w - cs) / 2, r.z0 + (d - cs) / 2);
+    let core = match side {
+        0 => Rect { x0: cx, z0: r.z0 - 1, x1: cx + cs, z1: r.z0 - 1 + cs },
+        1 => Rect { x0: r.x1 + 1 - cs, z0: cz, x1: r.x1 + 1, z1: cz + cs },
+        2 => Rect { x0: cx, z0: r.z1 + 1 - cs, x1: cx + cs, z1: r.z1 + 1 },
+        _ => Rect { x0: r.x0 - 1, z0: cz, x1: r.x0 - 1 + cs, z1: cz + cs },
     };
+    Some(BlockLayout { r, core, key, cs, side })
+}
+
+/// Roof height (voxel y of the roof slab) for a requested block height.
+fn block_top(height: i32) -> i32 {
+    GROUND_Y + height.clamp(6, MAX_BLOCK_H) - 1
+}
+
+const STACK_H: i32 = 12;
+
+/// Min-corner voxel x/z of the 2x2 rooftop smokestack, if this block gets one.
+fn stack_cell(l: &BlockLayout) -> Option<(i32, i32)> {
+    let (r, core) = (&l.r, &l.core);
+    let (ix0, iz0, ix1, iz1) = (r.x0 + 2, r.z0 + 2, r.x1 - 2, r.z1 - 2);
+    let (iw, id) = (ix1 - ix0, iz1 - iz0);
+    if iw < 2 || id < 2 || (r.x1 - r.x0) * (r.z1 - r.z0) <= 200 {
+        return None;
+    }
+    let pick = |k: i32, n: i32, m: i32| (hash(l.key, k, n, 0) % m.max(1) as u64) as i32;
+    let (sx, sz) = (ix0 + pick(90, 0, iw - 1), iz0 + pick(90, 1, id - 1));
+    (roof_free(core, sx, sz) && roof_free(core, sx + 1, sz + 1)).then_some((sx, sz))
+}
+
+fn roof_free(core: &Rect, x: i32, z: i32) -> bool {
+    !(x >= core.x0 - 1 && x <= core.x1 && z >= core.z0 - 1 && z <= core.z1)
+}
+
+/// World-space top centre of a block's smokestack, if it has one.
+pub fn stack_pos(min: Vec2, max: Vec2, height: u32, seed: u64) -> Option<Vec3> {
+    let l = block_layout(min, max, seed)?;
+    let (sx, sz) = stack_cell(&l)?;
+    let top = (block_top(height as i32) + 1 + STACK_H).min(SIZE_Y);
+    Some(voxel_to_world(at(sx + 1, top, sz + 1)))
+}
+
+fn block(g: &mut VoxelGrid, min: Vec2, max: Vec2, height: i32, seed: u64) {
+    let Some(layout) = block_layout(min, max, seed) else { return };
+    let (r, core, key, cs, side) = (&layout.r, &layout.core, layout.key, layout.cs, layout.side);
+    let (w, d) = (r.x1 - r.x0, r.z1 - r.z0);
+    let seed = seed ^ S_BLOCK;
+    let ytop = block_top(height); // roof slab
+    let pilotis = w >= 8 && d >= 8;
+    // Bands sit at rel % 3 == 0; rel 0 is the transfer slab / plinth top.
+    let base = if pilotis { GROUND_Y + 3 } else { GROUND_Y + 1 };
 
     for z in r.z0 - 1..=r.z1 {
         for x in r.x0 - 1..=r.x1 {
@@ -564,7 +595,7 @@ fn block(g: &mut VoxelGrid, min: Vec2, max: Vec2, height: i32, seed: u64) {
                 } else if rel % 3 == 0 || y == ytop {
                     Some(Voxel::ConcreteDark)
                 } else {
-                    facade(&r, seed, x, z, rel)
+                    facade(r, seed, x, z, rel)
                 };
                 if let Some(v) = v {
                     g.set(at(x, y, z), v);
@@ -589,7 +620,7 @@ fn block(g: &mut VoxelGrid, min: Vec2, max: Vec2, height: i32, seed: u64) {
     };
     fill_column(g, sx, sz, base + 1, ytop + ext - 1, Voxel::WindowLit);
 
-    roof(g, &r, &core, ytop + 1, key);
+    roof(g, &layout, ytop + 1);
 }
 
 /// Facade cell between floor bands: windows, balconies, or plain concrete.
@@ -614,22 +645,24 @@ fn facade(r: &Rect, seed: u64, x: i32, z: i32, rel: i32) -> Option<Voxel> {
 }
 
 /// Machinery, tanks, antennas and (for large blocks) a smokestack on the roof at `y`.
-fn roof(g: &mut VoxelGrid, r: &Rect, core: &Rect, y: i32, key: u64) {
+fn roof(g: &mut VoxelGrid, l: &BlockLayout, y: i32) {
+    let (r, core, key) = (&l.r, &l.core, l.key);
     let (ix0, iz0, ix1, iz1) = (r.x0 + 2, r.z0 + 2, r.x1 - 2, r.z1 - 2);
     if ix1 - ix0 < 2 || iz1 - iz0 < 2 {
         return;
     }
     let (iw, id) = (ix1 - ix0, iz1 - iz0);
     let area = (r.x1 - r.x0) * (r.z1 - r.z0);
-    let free = |x: i32, z: i32| !(x >= core.x0 - 1 && x <= core.x1 && z >= core.z0 - 1 && z <= core.z1);
+    let stack = stack_cell(l);
+    // Machinery keeps clear of the core and the smokestack.
+    let free = |x: i32, z: i32| {
+        roof_free(core, x, z) && stack.is_none_or(|(sx, sz)| !((sx - 1..=sx + 2).contains(&x) && (sz - 1..=sz + 2).contains(&z)))
+    };
     let pick = |k: i32, n: i32, m: i32| (hash(key, k, n, 0) % m.max(1) as u64) as i32;
 
-    if area > 200 {
-        let (sx, sz) = (ix0 + pick(90, 0, iw - 1), iz0 + pick(90, 1, id - 1));
-        if free(sx, sz) && free(sx + 1, sz + 1) {
-            for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                fill_column(g, sx + dx, sz + dz, y, (y + 12).min(SIZE_Y), Voxel::ConcreteDark);
-            }
+    if let Some((sx, sz)) = stack {
+        for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            fill_column(g, sx + dx, sz + dz, y, (y + STACK_H).min(SIZE_Y), Voxel::ConcreteDark);
         }
     }
 
@@ -675,22 +708,20 @@ fn roof(g: &mut VoxelGrid, r: &Rect, core: &Rect, y: i32, key: u64) {
 
 // ---------------------------------------------------------------- roads
 
-fn road(g: &mut VoxelGrid, points: &[Vec2], seed: u64) {
+/// Asphalt strip with kerbs. Where it cuts through structures it carves a gate:
+/// dark jambs with a lamp on top and a lintel above.
+fn road(g: &mut VoxelGrid, points: &[Vec2]) {
     let path = Path::new(clean_path(points));
     if path.pts.len() < 2 || path.len < 2.0 {
         return;
     }
-    let seed = seed ^ S_ROAD;
     let half = ROAD_W / 2.0;
     let lintel = GROUND_Y + ROAD_CLEAR;
+    let mut carved_cols = Vec::new();
+    let mut edges = Vec::new();
     path.for_columns(half + 1.0, |x, z, d, _| {
         if d > half {
-            // Gate jambs: structure flanking the opening turns dark.
-            for y in GROUND_Y..lintel {
-                if is_structure(g.get(at(x, y, z))) {
-                    g.set(at(x, y, z), Voxel::ConcreteDark);
-                }
-            }
+            edges.push((x, z));
             return;
         }
         for y in 1..GROUND_Y - 1 {
@@ -698,24 +729,35 @@ fn road(g: &mut VoxelGrid, points: &[Vec2], seed: u64) {
                 g.set(at(x, y, z), Voxel::Ash);
             }
         }
-        let c = rnd(seed, x, z, 0);
-        let surface = if c < 0.04 {
-            Voxel::Scorch
-        } else if c < 0.1 {
-            Voxel::Ash
-        } else {
-            Voxel::Asphalt
-        };
-        g.set(at(x, GROUND_Y - 1, z), surface);
+        g.set(at(x, GROUND_Y - 1, z), Voxel::Asphalt);
         let mut carved = false;
         for y in GROUND_Y..lintel {
-            carved |= is_structure(g.get(at(x, y, z)));
+            carved |= g.get(at(x, y, z)).is_structure();
             g.set(at(x, y, z), Voxel::Air);
         }
-        if carved && is_structure(g.get(at(x, lintel, z))) {
-            g.set(at(x, lintel, z), Voxel::ConcreteDark);
+        if carved {
+            carved_cols.push((x, z));
+            if g.get(at(x, lintel, z)).is_structure() {
+                g.set(at(x, lintel, z), Voxel::ConcreteDark);
+            }
         }
     });
+    for (x, z) in edges {
+        let mut jamb = false;
+        for y in GROUND_Y..lintel {
+            if g.get(at(x, y, z)).is_structure() {
+                g.set(at(x, y, z), Voxel::ConcreteDark);
+                jamb = true;
+            }
+        }
+        let beside_gate = carved_cols.iter().any(|&(cx, cz)| (cx - x).abs() + (cz - z).abs() == 1);
+        if jamb && beside_gate && g.get(at(x, lintel, z)).is_structure() {
+            g.set(at(x, lintel - 1, z), Voxel::Lamp);
+        } else if !jamb && g.get(at(x, GROUND_Y - 1, z)) != Voxel::Asphalt {
+            // Kerb, except where it would cross another road.
+            g.set(at(x, GROUND_Y, z), Voxel::ConcreteDark);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -870,18 +912,55 @@ mod tests {
         w.add(road_s(&[(0.0, -10.0), (0.0, 10.0)]));
         w.add(wall_s(&[(-10.0, 0.0), (10.0, 0.0)]));
         let g = generate(&w);
-        let surface = [Voxel::Asphalt, Voxel::Ash, Voxel::Scorch];
         for y in GROUND_Y..GROUND_Y + ROAD_CLEAR {
             assert_eq!(vox(&g, 0.1, 0.1, y), Voxel::Air);
         }
-        assert!(surface.contains(&vox(&g, 0.1, 0.1, GROUND_Y - 1)));
+        assert_eq!(vox(&g, 0.1, 0.1, GROUND_Y - 1), Voxel::Asphalt);
         assert_eq!(vox(&g, 0.1, 0.1, GROUND_Y + ROAD_CLEAR), Voxel::ConcreteDark, "lintel");
         assert!(vox(&g, 0.1, 0.1, GROUND_Y + ROAD_CLEAR + 2).is_solid(), "wall above gate");
         assert!(vox(&g, 5.0, 0.1, GROUND_Y + 1).is_solid(), "wall beside gate");
         let asphalt = (-18..18)
             .filter(|&i| vox(&g, 0.1, i as f32 * 0.5, GROUND_Y - 1) == Voxel::Asphalt)
             .count();
-        assert!(asphalt > 28, "{asphalt}");
+        assert_eq!(asphalt, 36, "no speckle");
+        for x in [-1.8, 1.8] {
+            assert_eq!(vox(&g, x, -5.0, GROUND_Y), Voxel::ConcreteDark, "kerb at x={x}");
+            assert_eq!(vox(&g, x, -5.0, GROUND_Y + 1), Voxel::Air);
+            let lamp = (-4..4).any(|i| vox(&g, x, i as f32 * 0.5 + 0.25, GROUND_Y + ROAD_CLEAR - 1) == Voxel::Lamp);
+            assert!(lamp, "lamp on jamb at x={x}");
+        }
+    }
+
+    #[test]
+    fn generate_crossing_roads_have_no_kerb_across() {
+        let mut w = World::new(SEED);
+        w.add(road_s(&[(0.0, -10.0), (0.0, 10.0)]));
+        w.add(road_s(&[(-10.0, 0.0), (10.0, 0.0)]));
+        let g = generate(&w);
+        // Inside the other road's lane (|c| < 1.5) neither kerb survives.
+        for i in -3..3 {
+            let c = i as f32 * 0.5 + 0.25;
+            assert_eq!(vox(&g, c, 1.8, GROUND_Y), Voxel::Air, "x={c}");
+            assert_eq!(vox(&g, 1.8, c, GROUND_Y), Voxel::Air, "z={c}");
+        }
+    }
+
+    #[test]
+    fn stack_pos_matches_rooftop_stack() {
+        let mut found = 0;
+        for i in 0..12 {
+            let (min, max, h) = (Vec2::new(-12.0 + i as f32, -10.0), Vec2::new(4.0, 6.0 + i as f32 * 0.5), 20);
+            let mut g = VoxelGrid::new();
+            apply(&mut g, &Structure::Block { min, max, height: h }, SEED);
+            let Some(p) = stack_pos(min, max, h, SEED) else { continue };
+            found += 1;
+            let v = world_to_voxel(p - Vec3::splat(0.25));
+            assert_eq!(g.get(v), Voxel::ConcreteDark, "stack top at {v}");
+            assert_eq!(g.get(v + IVec3::Y), Voxel::Air);
+            assert_eq!(g.get(v - IVec3::Y * 11), Voxel::ConcreteDark, "stack base");
+        }
+        assert!(found > 3, "{found}");
+        assert_eq!(stack_pos(Vec2::ZERO, Vec2::splat(4.0), 20, SEED), None, "small blocks have none");
     }
 
     #[test]
@@ -897,7 +976,7 @@ mod tests {
         assert!(!hits(&b, Vec2::new(5.0, 0.0), 0.5));
         let r = road_s(&[(0.0, 0.0), (0.0, 10.0)]);
         assert!(hits(&r, Vec2::new(0.9, 5.0), 0.0));
-        assert!(!hits(&r, Vec2::new(2.0, 5.0), 0.5));
+        assert!(!hits(&r, Vec2::new(2.5, 5.0), 0.5));
     }
 
     #[test]

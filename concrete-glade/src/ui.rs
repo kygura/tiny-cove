@@ -1,14 +1,14 @@
 //! HUD: bottom-centre toolbar, hint line and the top-left title and pour tally.
 //!
 //! The default font is ASCII-only: the cubic-metre sign is written `m3`.
-//!
-//! Slots carry `Interaction` (deprecated in 0.20 but still driven by `ui_focus_system`;
-//! the `Button` marker is private, so we spawn `Interaction` + `FocusPolicy::Block`).
-#![allow(deprecated)]
 
-use crate::game::{Doc, EditCommand, Grid, Tool, ToolState};
-use crate::voxel::{GROUND_Y, SIZE_X, SIZE_Y, SIZE_Z, Voxel};
-use bevy::{picking::Pickable, prelude::*, ui::FocusPolicy};
+use crate::game::{Doc, EditCommand, Tool, ToolState};
+use crate::scene::{Terrain, rebuild_grid};
+use crate::voxel::{GROUND_Y, SIZE_X, SIZE_Y, SIZE_Z};
+use bevy::picking::{Pickable, hover::Hovered};
+use bevy::prelude::*;
+use bevy::ui::Pressed;
+use bevy::ui_widgets::{Activate, ActivateOnPress, Button};
 
 pub struct HudPlugin;
 
@@ -17,7 +17,8 @@ impl Plugin for HudPlugin {
         app.init_resource::<ToolState>()
             .add_message::<EditCommand>()
             .add_systems(Startup, spawn_hud)
-            .add_systems(Update, (click_slots, style_slots, update_hint, update_tally));
+            .add_observer(activate_slot)
+            .add_systems(Update, (style_slots, update_hint, update_tally));
     }
 }
 
@@ -67,8 +68,9 @@ fn slot(parent: &mut ChildSpawnerCommands, slot: Slot, width: f32, label: &str, 
     let size = if hotkey.is_some() { 16.0 } else { 11.0 };
     parent
         .spawn((
-            Interaction::None,
-            FocusPolicy::Block,
+            Button,
+            ActivateOnPress,
+            Hovered::default(),
             slot,
             Node {
                 width: px(width),
@@ -148,36 +150,34 @@ fn spawn_hud(mut commands: Commands) {
         });
 }
 
-fn click_slots(
-    q: Query<(&Interaction, &Slot), Changed<Interaction>>,
-    mut out: MessageWriter<EditCommand>,
-) {
-    for (i, s) in &q {
-        if *i == Interaction::Pressed {
-            out.write(match *s {
-                Slot::Tool(t) => EditCommand::SelectTool(t),
-                Slot::Undo => EditCommand::Undo,
-                Slot::Redo => EditCommand::Redo,
-            });
-        }
+fn activate_slot(ev: On<Activate>, slots: Query<&Slot>, mut out: MessageWriter<EditCommand>) {
+    if let Ok(s) = slots.get(ev.entity) {
+        out.write(match *s {
+            Slot::Tool(t) => EditCommand::SelectTool(t),
+            Slot::Undo => EditCommand::Undo,
+            Slot::Redo => EditCommand::Redo,
+        });
     }
 }
 
+type SlotView<'a> =
+    (&'a Slot, &'a Hovered, Has<Pressed>, &'a mut BackgroundColor, &'a mut BorderColor, &'a Children);
+
 fn style_slots(
-    mut slots: Query<(&Slot, &Interaction, &mut BackgroundColor, &mut BorderColor, &Children)>,
+    mut slots: Query<SlotView>,
     mut texts: Query<(&mut TextColor, &TextAlpha)>,
     tool: Res<ToolState>,
     doc: Option<Res<Doc>>,
 ) {
     let can_undo = doc.as_ref().is_none_or(|d| d.0.can_undo());
     let can_redo = doc.as_ref().is_none_or(|d| d.0.can_redo());
-    for (s, interaction, mut bg, mut border, children) in &mut slots {
+    for (s, hovered, pressed, mut bg, mut border, children) in &mut slots {
         let (selected, dim) = match s {
             Slot::Tool(t) => (*t == tool.tool, 1.0),
             Slot::Undo => (false, if can_undo { 1.0 } else { DIM }),
             Slot::Redo => (false, if can_redo { 1.0 } else { DIM }),
         };
-        let hovered = *interaction != Interaction::None;
+        let hovered = hovered.get() || pressed;
         bg.0 = if selected { rgba(ACCENT, 1.0) } else { Color::NONE };
         *border = BorderColor::all(if hovered { rgba(ACCENT, dim) } else { Color::NONE });
         let ink = if selected { DARK_INK } else { INK };
@@ -197,34 +197,17 @@ fn update_hint(tool: Res<ToolState>, mut hint: Single<&mut Text, With<HintText>>
     }
 }
 
-/// Recounting is ~1.6M cells, so it is throttled while a drag regenerates the grid.
+/// Counts the committed document only (not the drag preview); `Doc` changes are
+/// discrete edits, so no throttling is needed.
 fn update_tally(
-    grid: Option<Res<Grid>>,
-    time: Res<Time>,
-    mut state: Local<(bool, f32)>,
+    doc: Option<Res<Doc>>,
+    terrain: Option<Res<Terrain>>,
     mut label: Single<&mut Text, With<TallyText>>,
 ) {
-    let Some(grid) = grid else { return };
-    let (dirty, last) = &mut *state;
-    *dirty |= grid.is_changed();
-    let now = time.elapsed_secs();
-    if *dirty && now - *last > 0.25 {
-        *dirty = false;
-        *last = now;
-        label.0 = tally_label(count_structure(&grid.0));
+    let (Some(doc), Some(terrain)) = (doc, terrain) else { return };
+    if (doc.is_changed() || terrain.is_changed()) && terrain.seed == doc.0.seed {
+        label.0 = tally_label(count_structure(&rebuild_grid(&doc.0, &terrain.grid, None, &[])));
     }
-}
-
-fn is_structure(v: Voxel) -> bool {
-    matches!(
-        v,
-        Voxel::Concrete
-            | Voxel::ConcreteDark
-            | Voxel::WindowDark
-            | Voxel::WindowLit
-            | Voxel::Rust
-            | Voxel::Lamp
-    )
 }
 
 fn count_structure(grid: &crate::voxel::VoxelGrid) -> u64 {
@@ -232,7 +215,7 @@ fn count_structure(grid: &crate::voxel::VoxelGrid) -> u64 {
     for y in GROUND_Y..SIZE_Y {
         for z in 0..SIZE_Z {
             for x in 0..SIZE_X {
-                n += is_structure(grid.get(IVec3::new(x, y, z))) as u64;
+                n += grid.get(IVec3::new(x, y, z)).is_structure() as u64;
             }
         }
     }
@@ -259,7 +242,7 @@ fn tally_label(voxels: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::VoxelGrid;
+    use crate::voxel::{Voxel, VoxelGrid};
 
     #[test]
     fn thousands_separators() {

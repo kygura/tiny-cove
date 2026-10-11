@@ -1,10 +1,10 @@
 //! Ash, smoke and walking figures, all drawn with the PS1 voxel material.
 
 use crate::game::Doc;
-use crate::mesher::ChunkMesh;
-use crate::render::{GameCamera, VoxelMaterialHandle, atlas::tile_uv_rect, chunk_mesh_to_bevy};
-use crate::structure::Structure;
-use crate::voxel::{VOXEL_SIZE, Voxel};
+use crate::render::{GameCamera, VoxelMaterialHandle, cube_mesh};
+use crate::generate::stack_pos;
+use crate::structure::{Structure, polyline_len};
+use crate::voxel::Voxel;
 use bevy::prelude::*;
 
 pub struct AmbiencePlugin;
@@ -35,7 +35,7 @@ const SMOKE_LIFE: f32 = 7.0;
 const FIGURE_CAP: usize = 200;
 const FIGURE_SPACING: f32 = 4.0;
 const FIGURE_SPEED: f32 = 0.6;
-const FIGURE_SIZE: Vec3 = Vec3::new(0.25, 0.5, 0.25);
+const FIGURE_SIZE: Vec3 = Vec3::new(0.5, 1.0, 0.5);
 
 #[derive(Resource)]
 struct Assets3d {
@@ -73,33 +73,6 @@ fn hash01(i: u32) -> f32 {
     x = x.wrapping_mul(0x2C1B_3C6D);
     x ^= x >> 12;
     (x & 0xffff) as f32 / 65536.0
-}
-
-/// Unit cube centred on the origin, textured with `v`'s atlas tile.
-fn cube_mesh(v: Voxel) -> Mesh {
-    // (normal, shade, corners CCW seen from outside)
-    const FACES: [([f32; 3], f32, [[f32; 3]; 4]); 6] = [
-        ([0., 1., 0.], 1.0, [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]]),
-        ([0., -1., 0.], 0.5, [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]]),
-        ([1., 0., 0.], 0.8, [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]]),
-        ([-1., 0., 0.], 0.8, [[0., 0., 0.], [0., 0., 1.], [0., 1., 1.], [0., 1., 0.]]),
-        ([0., 0., 1.], 0.68, [[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]]),
-        ([0., 0., -1.], 0.68, [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]]),
-    ];
-    let (uv0, uv1) = tile_uv_rect(v);
-    let uvs = [uv0, [uv1[0], uv0[1]], uv1, [uv0[0], uv1[1]]];
-    let mut m = ChunkMesh::default();
-    for (n, shade, corners) in FACES {
-        let base = m.positions.len() as u32;
-        for (c, uv) in corners.iter().zip(uvs) {
-            m.positions.push([c[0] - 0.5, c[1] - 0.5, c[2] - 0.5]);
-            m.normals.push(n);
-            m.colors.push([shade, shade, shade, 0.0]);
-            m.uvs.push(uv);
-        }
-        m.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    chunk_mesh_to_bevy(&m)
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, material: Res<VoxelMaterialHandle>) {
@@ -140,10 +113,6 @@ fn figure_counts(lengths: &[f32], cap: usize) -> Vec<usize> {
         .collect()
 }
 
-fn polyline_length(pts: &[Vec2]) -> f32 {
-    pts.windows(2).map(|w| w[0].distance(w[1])).sum()
-}
-
 /// Point and unit direction at distance `d` along the polyline (clamped to its ends).
 fn point_at(pts: &[Vec2], d: f32) -> (Vec2, Vec2) {
     let mut left = d.max(0.0);
@@ -173,18 +142,18 @@ fn rebuild(
         commands.entity(e).despawn();
     }
 
-    let mut blocks: Vec<(u32, Vec2)> = doc
+    // Smoke rises from the tallest blocks' real rooftop stacks.
+    let mut stacks: Vec<Vec3> = doc
         .0
         .placed
         .iter()
         .filter_map(|p| match &p.structure {
-            Structure::Block { min, max, height } => Some((*height, (*min + *max) * 0.5)),
+            Structure::Block { min, max, height } => stack_pos(*min, *max, *height, doc.0.seed),
             _ => None,
         })
         .collect();
-    blocks.sort_by_key(|b| std::cmp::Reverse(b.0));
-    for (c, (height, centre)) in blocks.into_iter().take(SMOKE_COLUMNS).enumerate() {
-        let origin = Vec3::new(centre.x, height as f32 * VOXEL_SIZE + 2.0, centre.y);
+    stacks.sort_by(|a, b| b.y.total_cmp(&a.y));
+    for (c, origin) in stacks.into_iter().take(SMOKE_COLUMNS).enumerate() {
         for i in 0..SMOKE_PER_COLUMN {
             commands.spawn((
                 Smoke {
@@ -208,7 +177,7 @@ fn rebuild(
             _ => None,
         })
         .collect();
-    let lengths: Vec<f32> = roads.0.iter().map(|r| polyline_length(r)).collect();
+    let lengths: Vec<f32> = roads.0.iter().map(|r| polyline_len(r)).collect();
     for (road, n) in figure_counts(&lengths, FIGURE_CAP).into_iter().enumerate() {
         for i in 0..n {
             commands.spawn((
@@ -269,7 +238,7 @@ fn walk_figures(time: Res<Time>, roads: Res<Roads>, mut figures: Query<(&Figure,
     let now = time.elapsed_secs();
     for (f, mut t) in &mut figures {
         let Some(pts) = roads.0.get(f.road) else { continue };
-        let len = polyline_length(pts);
+        let len = polyline_len(pts);
         if len <= 0.0 {
             continue;
         }
@@ -291,7 +260,7 @@ mod tests {
     #[test]
     fn length_and_point_at() {
         let p = l_shape();
-        assert_eq!(polyline_length(&p), 7.0);
+        assert_eq!(polyline_len(&p), 7.0);
         assert_eq!(point_at(&p, 1.5).0, Vec2::new(1.5, 0.0));
         let (pt, dir) = point_at(&p, 5.0);
         assert_eq!(pt, Vec2::new(3.0, 2.0));

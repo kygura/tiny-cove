@@ -4,10 +4,9 @@
 use crate::camera::pointer_over_ui;
 use crate::game::{Doc, EditCommand, Ghost, Grid, Tool, ToolState};
 use crate::generate::hits;
-use crate::mesher::mesh_chunk;
-use crate::render::{GameCamera, LowRes, VoxelMaterialHandle, chunk_mesh_to_bevy, cursor_ray};
+use crate::render::{GameCamera, LowRes, VoxelMaterialHandle, cube_mesh, cursor_ray};
 use crate::scene::{SceneSync, time_seed};
-use crate::structure::{Structure, StructureId, World};
+use crate::structure::{Structure, StructureId, World, polyline_len};
 use crate::voxel::{GROUND_Y, SIZE_X, SIZE_Y, SIZE_Z, VOXEL_SIZE, Voxel, VoxelGrid};
 use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
@@ -27,8 +26,11 @@ const PX_PER_VOXEL: f32 = 6.0;
 const SAMPLE: f32 = 0.5;
 const MIN_WALL_LEN: f32 = 2.0;
 const MIN_ROAD_LEN: f32 = 1.5;
-const MIN_BLOCK_SIDE: f32 = 1.5;
+/// 4 voxels: the generator ignores smaller footprints.
+const MIN_BLOCK_SIDE: f32 = 2.0;
 const RAZE_RADIUS: f32 = 1.0;
+/// Cursor marker edge length, world units.
+const MARKER_SIZE: f32 = 1.0;
 const HALF: Vec2 = Vec2::new(SIZE_X as f32 * VOXEL_SIZE / 2.0, SIZE_Z as f32 * VOXEL_SIZE / 2.0);
 
 /// In-progress gesture. Path variants keep the live cursor point as their last point.
@@ -59,14 +61,10 @@ pub enum Action {
     Remove(Vec<StructureId>),
 }
 
-fn path_len(points: &[Vec2]) -> f32 {
-    points.windows(2).map(|w| w[0].distance(w[1])).sum()
-}
-
 fn track(points: &mut Vec<Vec2>, p: Vec2) {
     let n = points.len();
     points[n - 1] = p;
-    if n < 2 || points[n - 1].distance(points[n - 2]) >= SAMPLE {
+    if points[n - 1].distance(points[n - 2]) >= SAMPLE {
         points.push(p);
     }
 }
@@ -123,11 +121,11 @@ pub fn on_move(drag: &mut Drag, ptr: Pointer, doc: &World) {
 /// Left button released. Degenerate gestures are dropped silently.
 pub fn on_release(drag: &mut Drag, ptr: Pointer) -> Option<Action> {
     match std::mem::take(drag) {
-        Drag::Wall { points, dam } if path_len(&points) >= MIN_WALL_LEN => {
+        Drag::Wall { points, dam } if polyline_len(&points) >= MIN_WALL_LEN => {
             let height = if dam { DAM_HEIGHT } else { WALL_HEIGHT };
             Some(Action::Commit(Structure::Wall { points, height, dam }))
         }
-        Drag::Road { points } if path_len(&points) >= MIN_ROAD_LEN => {
+        Drag::Road { points } if polyline_len(&points) >= MIN_ROAD_LEN => {
             Some(Action::Commit(Structure::Road { points }))
         }
         Drag::Rect { a, b } if ((a - b).abs().cmpge(Vec2::splat(MIN_BLOCK_SIDE))).all() => {
@@ -146,12 +144,12 @@ pub fn on_release(drag: &mut Drag, ptr: Pointer) -> Option<Action> {
 /// Preview for the current gesture.
 pub fn ghost_of(drag: &Drag) -> Ghost {
     let pending = match drag {
-        Drag::Wall { points, dam } if path_len(points) >= SAMPLE => Some(Structure::Wall {
+        Drag::Wall { points, dam } if polyline_len(points) >= SAMPLE => Some(Structure::Wall {
             points: points.clone(),
             height: if *dam { DAM_HEIGHT } else { WALL_HEIGHT },
             dam: *dam,
         }),
-        Drag::Road { points } if path_len(points) >= SAMPLE => Some(Structure::Road { points: points.clone() }),
+        Drag::Road { points } if polyline_len(points) >= SAMPLE => Some(Structure::Road { points: points.clone() }),
         Drag::Rect { a, b } if a != b => Some(block(*a, *b, BLOCK_START_H)),
         Drag::Raise { a, b, height, .. } => Some(block(*a, *b, *height)),
         _ => None,
@@ -282,19 +280,11 @@ fn handle_commands(
 }
 
 fn spawn_marker(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, material: Res<VoxelMaterialHandle>) {
-    let mut g = VoxelGrid::new();
-    let v = IVec3::splat(1);
-    g.set(v, Voxel::Rust);
-    let mut m = mesh_chunk(&g, IVec3::ZERO);
-    let centre = crate::voxel::voxel_to_world(v) + Vec3::new(0.5, 0.0, 0.5) * VOXEL_SIZE;
-    for p in &mut m.positions {
-        *p = (Vec3::from(*p) - centre).into();
-    }
     commands.spawn((
         CursorMarker,
-        Mesh3d(meshes.add(chunk_mesh_to_bevy(&m))),
+        Mesh3d(meshes.add(cube_mesh(Voxel::Rust))),
         MeshMaterial3d(material.0.clone()),
-        Transform::from_scale(Vec3::splat(2.0)),
+        Transform::from_scale(Vec3::splat(MARKER_SIZE)),
         Visibility::Hidden,
     ));
 }
@@ -374,7 +364,7 @@ fn pointer(
         let show = sample.is_some() && !over_ui;
         vis.set_if_neq(if show { Visibility::Visible } else { Visibility::Hidden });
         if let Some((ptr, y)) = sample {
-            tf.translation = Vec3::new(ptr.ground.x, y, ptr.ground.y);
+            tf.translation = Vec3::new(ptr.ground.x, y + MARKER_SIZE / 2.0, ptr.ground.y);
         }
     }
 }
@@ -461,6 +451,15 @@ mod tests {
                 height: BLOCK_START_H + 10
             }))
         );
+        assert_eq!(d, Drag::Idle);
+    }
+
+    #[test]
+    fn footprint_under_four_voxels_is_ignored() {
+        let mut d = Drag::Idle;
+        on_press(&mut d, Tool::Block, at(0.0, 0.0), &World::new(1));
+        on_move(&mut d, at(1.9, 6.0), &World::new(1));
+        assert_eq!(on_release(&mut d, at(1.9, 6.0)), None);
         assert_eq!(d, Drag::Idle);
     }
 

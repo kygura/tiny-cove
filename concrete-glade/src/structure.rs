@@ -5,6 +5,11 @@ use bevy::math::Vec2;
 /// Stable id so demolish/undo can refer to structures.
 pub type StructureId = u32;
 
+/// Total length of a polyline.
+pub fn polyline_len(points: &[Vec2]) -> f32 {
+    points.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
 /// A placed thing. Coordinates are world-space x/z on the ground plane.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Structure {

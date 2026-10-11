@@ -11,6 +11,8 @@ Everything is voxels and goes through a PS1-style renderer: a 240p internal
 target upscaled with nearest-neighbour, vertices snapped to the pixel grid,
 affine texture warp, 15-bit color with Bayer dithering, and thick brown fog.
 
+![Demo scene](docs/demo.png)
+
 ## Run
 
 ```sh

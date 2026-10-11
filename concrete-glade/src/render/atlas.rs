@@ -92,10 +92,11 @@ fn texel(v: Voxel, x: u32, y: u32) -> [f32; 3] {
             // Wandering crack down the tile plus a short branch.
             let cx = 5 + (0..=y).map(|i| hash(0, i, 4) > 0.6).filter(|&b| b).count() as u32 / 2;
             let crack = x == cx.min(15) || (y == 10 && (cx..cx + 5).contains(&x));
+            // Cooler and darker than scorch (#3d3833) so roads read as roads.
             if crack {
-                hex(0x4b4946)
+                hex(0x45484c)
             } else {
-                shade(hex(0x2c2b2a), 1.0 + noise(x, y, 5) * 0.06)
+                shade(hex(0x222428), 1.0 + noise(x, y, 5) * 0.05)
             }
         }
         Voxel::Rubble => {
