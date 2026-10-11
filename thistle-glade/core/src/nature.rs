@@ -250,7 +250,7 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
             let rc = palette::roof(colors);
             let (e, r) = (0.75, 2.95);
             let (a0, a1, b0, b1) = (V(-1.1, 2.3, -e), V(1.1, 2.3, -e), V(-1.1, r, 0.0), V(1.1, r, 0.0));
-            m.quad(a0, a1, b1, b0, rc, Surface::RoofTile, 1.0);
+            m.quad(a1, a0, b0, b1, rc, Surface::RoofTile, 1.0);
             m.quad(V(-1.1, 2.3, e), V(-1.1, r, 0.0), V(1.1, r, 0.0), V(1.1, 2.3, e), rc, Surface::RoofTile, 1.0);
             tri2(&mut m, V(-1.1, 2.3, -e), V(-1.1, r, 0.0), V(-1.1, 2.3, e), trim, Surface::Timber);
             tri2(&mut m, V(1.1, 2.3, -e), V(1.1, 2.3, e), V(1.1, r, 0.0), trim, Surface::Timber);
