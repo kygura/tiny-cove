@@ -150,6 +150,26 @@ impl Terrain {
         if !(d.radius > 0.0) || !d.center.is_finite() {
             return;
         }
+        let ok = match d.op {
+            TerrainOp::Sculpt { amount } => amount.is_finite(),
+            TerrainOp::Flatten { height, strength } => height.is_finite() && strength.is_finite(),
+            TerrainOp::Water { depth } => depth.is_finite(),
+            TerrainOp::Paint { strength, .. } => strength.is_finite(),
+        };
+        if !ok {
+            return;
+        }
+        let d = &TerrainDab {
+            op: match d.op {
+                TerrainOp::Sculpt { amount } => TerrainOp::Sculpt { amount: amount.clamp(-50.0, 50.0) },
+                TerrainOp::Flatten { height, strength } => {
+                    TerrainOp::Flatten { height: height.clamp(-50.0, 50.0), strength: strength.clamp(0.0, 1.0) }
+                }
+                TerrainOp::Water { depth } => TerrainOp::Water { depth: depth.clamp(0.0, 20.0) },
+                op @ TerrainOp::Paint { .. } => op,
+            },
+            ..*d
+        };
         let (i0, i1, j0, j1) = range(d.center, d.radius);
         for j in j0..=j1 {
             for i in i0..=i1 {
@@ -471,6 +491,21 @@ mod tests {
 
     fn dab(x: f32, z: f32, r: f32, op: TerrainOp) -> TerrainDab {
         TerrainDab { center: Vec2::new(x, z), radius: r, op }
+    }
+
+    #[test]
+    fn non_finite_dabs_are_ignored() {
+        let ops = [
+            TerrainOp::Sculpt { amount: f32::NAN },
+            TerrainOp::Flatten { height: f32::INFINITY, strength: 1.0 },
+            TerrainOp::Water { depth: f32::NAN },
+        ];
+        let base = Terrain::build(3, &[], &[]);
+        for op in ops {
+            let t = Terrain::build(3, &[dab(0.0, 0.0, 5.0, op)], &[]);
+            assert!(t.h.iter().all(|v| v.is_finite()));
+            assert_eq!(t.h, base.h);
+        }
     }
 
     #[test]

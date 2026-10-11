@@ -229,7 +229,19 @@ impl Plugin for ToolsPlugin {
             .init_resource::<ToolState>()
             .add_systems(Startup, thin_gizmos)
             .add_systems(Update, drive_tools.run_if(not(resource_exists::<RenderTest>)));
+        smoke::install(app);
     }
+}
+
+mod smoke;
+
+/// Test hook (`--tool-smoke`): replaces the OS cursor with the screen position of a world
+/// point (plus a pixel offset), so the real ray / gesture code runs on synthetic input.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct CursorOverride {
+    pub target: Option<Vec3>,
+    /// Window-pixel offset added after projecting `target`.
+    pub px: Vec2,
 }
 
 // =============================================================================================
@@ -874,6 +886,7 @@ fn drive_tools(
     mut cam_input: ResMut<CameraInput>,
     mut state: ResMut<ToolState>,
     mut gizmos: Gizmos,
+    cursor_override: Option<Res<CursorOverride>>,
 ) {
     let (keys, mouse, scroll, motion, time) = input;
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
@@ -917,8 +930,16 @@ fn drive_tools(
     // --- pointer ---------------------------------------------------------------------------------
     let lines = if scroll.unit == MouseScrollUnit::Line { scroll.delta.y } else { scroll.delta.y / 30.0 };
     let idle = matches!(st.phase, Phase::Idle);
-    let blocked = over_ui.0;
-    let cursor = window.as_ref().and_then(|w| w.cursor_position());
+    let blocked = over_ui.0 && cursor_override.is_none();
+    let cursor = match cursor_override.as_deref() {
+        Some(o) => match (o.target, window.as_ref(), camera.single().ok(), low.as_ref()) {
+            (Some(t), Some(w), Some((cam, tf)), Some(low)) => {
+                cam.world_to_viewport(tf, t).ok().map(|v| v * w.size() / low.size.as_vec2() + o.px)
+            }
+            _ => None,
+        },
+        None => window.as_ref().and_then(|w| w.cursor_position()),
+    };
     let ray = match (cursor, window.as_ref(), camera.single().ok(), low.as_ref()) {
         (Some(c), Some(w), Some((cam, tf)), Some(low)) => cursor_ray(c, w, cam, tf, low.size).map(|r| (r.origin, *r.direction)),
         _ => None,

@@ -46,7 +46,8 @@ finishes it.
   markers (lamps, vent steam, doors, perches, light windows) that the Bevy
   side turns into lights, particles and agents. Interactions are resolved
   here: a path through a wall cuts a portal; a wall over water becomes an
-  aqueduct on arches; terrain under blocks and paths is flattened.
+  aqueduct on arches; terrain under blocks is flattened, paths follow
+  the ground.
 - Decoration randomness hashes `(seed, world position)`, so a live preview
   equals the committed result.
 
@@ -60,7 +61,7 @@ stacked or cantilevered, and nature grows into it.
 
 | Tool | Tiny Glade original | Greywild behaviour |
 |---|---|---|
-| Wall | stone wall polyline, height, battlements, ruined, foundation, buttresses, wall walk, gate cutting, roofable ring, spans water | board-formed concrete / rammed earth / charred-timber wall; height + thickness; **planter parapet** (crenellated planter boxes with spilling greenery) instead of battlements; **ruined** = broken top with exposed rebar; plinth height; raking buttress fins on tall walls; walkway on top; a path through it cuts a portal; a closed ring can be roofed; spans water as an aqueduct on arches |
+| Wall | stone wall polyline, height, battlements, ruined, foundation, buttresses, wall walk, gate cutting, roofable ring, spans water | board-formed concrete / rammed earth / charred-timber wall; height + thickness; **planter parapet** (crenellated planter boxes with spilling greenery) instead of battlements; **ruined** = broken top with exposed rebar; plinth height; raking buttress fins on tall walls; walkway with low upstands on top of thick walls (automatic); a path through it cuts a portal; a closed ring can be roofed; spans water as an aqueduct on arches |
 | Fence | wooden rail, picket, dry-stone, wattle | steel railing, concrete balustrade, gabion, hedge planter; gaps where paths cross |
 | House → **Block** | rectangle + raise; material; roofs gable/hip/cone/flat with pitch; half-timbering; auto windows, door, chimney; decor; foundation | rectangle + raise; concrete / rammed earth / timber; roofs **Pitched** (sharp slab gable), **Sawtooth** (north-light), **Shell** (pyramid / dome-cone), **Green** (flat sedum roof with parapet); pitch slider; **fins** (brise-soleil grid) instead of half-timber; auto deep slot windows, recessed door, vent stack with steam; balconies, rain chains, planters, ivy; plinth; very low walls give a pavilion canopy on pilotis |
 | Tower | circle; tall → cone roof, arrow slits, flat + battlements | round silo tower: ribbed shell, slit windows, shell/cone roof or green roof with planters |

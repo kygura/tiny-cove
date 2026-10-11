@@ -1,6 +1,6 @@
 //! Command line (`--demo`, `--demo-shot`, …) and the headless demo-shot driver.
 //!
-//! `--demo-shot out.png [--time H] [--weather NAME] [--seed N] [--yaw D] [--zoom S]` builds the
+//! `--demo-shot out.png [--time H] [--weather NAME] [--seed N] [--yaw D] [--zoom S] [--hud]` builds the
 //! demo glade, freezes the clock/weather, waits for the scene plus a few frames, saves a
 //! screenshot and exits. `--demo` just starts interactively with the demo glade.
 
@@ -9,12 +9,22 @@ use crate::render::{LowResDisplay, request_screenshot};
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::BuiltScene;
 use bevy::prelude::*;
+use bevy::render::{
+    Render, RenderApp, RenderSystems,
+    render_resource::{CachedPipelineState, PipelineCache},
+};
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 /// Frames to wait after the scene exists before capturing (shadows, fog, smoothing settle).
 const SETTLE_FRAMES: u32 = 30;
 /// Give up if the screenshot never arrives.
 const TIMEOUT_FRAMES: u32 = 600;
+/// Consecutive frames with no pipeline compiling before capturing (render runs a frame behind).
+const READY_FRAMES: u32 = 5;
 
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct Cli {
@@ -25,6 +35,8 @@ pub struct Cli {
     pub seed: Option<u64>,
     pub yaw: Option<f32>,
     pub zoom: Option<f32>,
+    /// Keep the HUD in the demo shot (default: glade only).
+    pub hud: bool,
 }
 
 impl Cli {
@@ -42,6 +54,7 @@ impl Cli {
             seed: num(value("--seed")),
             yaw: num(value("--yaw")),
             zoom: num(value("--zoom")),
+            hud: args.iter().any(|a| a == "--hud"),
         }
     }
 
@@ -63,9 +76,17 @@ impl Plugin for ShotPlugin {
     fn build(&self, app: &mut App) {
         let Some(cli) = app.world().get_resource::<Cli>().cloned() else { return };
         let Some(path) = cli.shot.clone() else { return };
-        app.insert_resource(ShotState { path, frames: 0, requested: false })
+        let pending = PendingPipelines::default();
+        app.insert_resource(ShotState { path, frames: 0, ready_frames: 0, requested: false })
+            .insert_resource(pending.clone())
             .add_systems(Startup, apply_cli)
-            .add_systems(Last, (hide_hud, capture));
+            .add_systems(Last, capture);
+        if !cli.hud {
+            app.add_systems(Last, hide_hud.before(capture));
+        }
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.insert_resource(pending).add_systems(Render, count_pending.in_set(RenderSystems::Cleanup));
+        }
     }
 }
 
@@ -73,7 +94,22 @@ impl Plugin for ShotPlugin {
 struct ShotState {
     path: PathBuf,
     frames: u32,
+    /// Consecutive frames with every render pipeline compiled.
+    ready_frames: u32,
     requested: bool,
+}
+
+/// Render pipelines still queued / compiling, written by the render world each frame and
+/// read by `capture`. Pipelines compile asynchronously (slowly on lavapipe); a capture
+/// taken while e.g. the UI image pipeline that shows the low-res target is still
+/// compiling comes out all black.
+#[derive(Resource, Clone, Default)]
+struct PendingPipelines(Arc<AtomicU32>);
+
+fn count_pending(cache: Res<PipelineCache>, pending: Res<PendingPipelines>) {
+    let n = cache.pipelines().filter(|p| matches!(p.state, CachedPipelineState::Queued | CachedPipelineState::Creating(_))).count()
+        + cache.waiting_pipelines().count();
+    pending.0.store(n as u32, Ordering::Relaxed);
 }
 
 fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weather>, mut rig: ResMut<CameraRig>) {
@@ -99,15 +135,26 @@ fn hide_hud(mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>, Wit
     }
 }
 
-fn capture(mut commands: Commands, mut st: ResMut<ShotState>, built: Res<BuiltScene>, mut exit: MessageWriter<AppExit>) {
+fn capture(
+    mut commands: Commands,
+    mut st: ResMut<ShotState>,
+    built: Res<BuiltScene>,
+    pending: Res<PendingPipelines>,
+    mut exit: MessageWriter<AppExit>,
+) {
     if built.0.is_none() {
         return;
     }
     st.frames += 1;
+    let waiting = pending.0.load(Ordering::Relaxed);
+    st.ready_frames = if waiting == 0 { st.ready_frames + 1 } else { 0 };
+    if st.frames == SETTLE_FRAMES && waiting > 0 {
+        info!("demo shot: {waiting} pipelines still compiling after {SETTLE_FRAMES} frames, waiting");
+    }
     if st.frames >= SETTLE_FRAMES + TIMEOUT_FRAMES {
-        error!("demo shot: screenshot never arrived");
+        error!("demo shot: screenshot never arrived ({waiting} pipelines still compiling)");
         exit.write(AppExit::error());
-    } else if st.frames >= SETTLE_FRAMES && !st.requested {
+    } else if st.frames >= SETTLE_FRAMES && st.ready_frames >= READY_FRAMES && !st.requested {
         st.requested = true;
         request_screenshot(&mut commands, st.path.clone()).observe(
             |_: On<bevy::render::view::screenshot::ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
@@ -130,7 +177,8 @@ mod tests {
         let c = Cli::parse(a("bin --demo-shot x.png --time 19.5 --weather Rain --seed 3 --yaw 225 --zoom 0.8"));
         assert_eq!(c.shot, Some("x.png".into()));
         assert_eq!((c.time, c.weather, c.seed, c.yaw, c.zoom), (Some(19.5), Some(WeatherKind::Rain), Some(3), Some(225.0), Some(0.8)));
-        assert!(!c.demo);
+        assert!(!c.demo && !c.hud);
+        assert!(Cli::parse(a("bin --demo-shot x.png --hud")).hud);
     }
 
     #[test]

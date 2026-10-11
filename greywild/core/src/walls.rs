@@ -25,6 +25,13 @@ pub struct Cut {
 }
 
 const UV: f32 = 0.5;
+/// Slot window width (matches the block windows in buildings.rs and `OpeningKind::Window`).
+const WINDOW_W: f32 = 0.8;
+/// Minimum thickness for a walkable wall top.
+const WALK_MIN_TH: f32 = 0.8;
+/// Walkway parapet upstand height / width.
+const UPSTAND_H: f32 = 0.4;
+const UPSTAND_W: f32 = 0.16;
 /// Rusty rebar tint.
 const RUST: Vec3 = Vec3::new(0.30, 0.12, 0.05);
 
@@ -359,7 +366,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
             continue;
         }
         let wd = match o.kind {
-            OpeningKind::Window => 0.6,
+            OpeningKind::Window => WINDOW_W,
             OpeningKind::Door => 1.1,
             OpeningKind::WideDoor => 2.4,
         };
@@ -528,6 +535,8 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
     // Thick flat coping overhanging both faces (not on ruins: their tops are broken).
     let lip = !w.ruined;
     let lip_h = 0.18;
+    // Thick walls without planters get a walkable top (stairs lead up to it).
+    let walk = lip && th >= WALK_MIN_TH && !w.planters;
     let lip_x = 0.08;
     let pl_x = 0.08;
     let has_pl = |pi: usize| fh > 0.0 && matches!(pcs[pi].kind, PK::Solid | PK::Window(_));
@@ -646,6 +655,27 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
             m.quad(v3(p1, hi), v3(p0, hi), v3(l0, hi), v3(l1, hi), cc * 0.7, cs, UV);
             m.quad(v3(r0, hi), v3(q0, hi), v3(q1, hi), v3(r1, hi), cc * 0.7, cs, UV);
             m.quad(v3(p0, hi + lip_h), v3(p1, hi + lip_h), v3(q1, hi + lip_h), v3(q0, hi + lip_h), cc * 1.06, cs, UV);
+            if walk {
+                // low upstands on both coping edges; the coping between them is the walk slab
+                let (y0, y1) = (hi + lip_h, hi + lip_h + UPSTAND_H);
+                let (eo, ei) = (half + lip_x, half + lip_x - UPSTAND_W);
+                let prev = if k > 0 { Some(k - 1) } else if line.closed { Some(np - 1) } else { None };
+                let next = if k + 1 < np { Some(k + 1) } else if line.closed { Some(0) } else { None };
+                let open_end = |j: Option<usize>| j.is_none_or(|j| pcs[j].kind == PK::Open || (pcs[j].hi - hi).abs() > 1e-3);
+                for sg in [1.0_f32, -1.0] {
+                    let (ao, bo, ai, bi) = if sg > 0.0 { (a.l(eo), b.l(eo), a.l(ei), b.l(ei)) } else { (a.r(eo), b.r(eo), a.r(ei), b.r(ei)) };
+                    side(m, ao, bo, y0, y0, y1, y1, sg > 0.0, cc, cs, UV);
+                    side(m, ai, bi, y0, y0, y1, y1, sg < 0.0, cc * 0.92, cs, UV);
+                    let (ll0, ll1, rr0, rr1) = if sg > 0.0 { (ao, bo, ai, bi) } else { (ai, bi, ao, bo) };
+                    m.quad(v3(ll0, y1), v3(ll1, y1), v3(rr1, y1), v3(rr0, y1), cc * 1.06, cs, UV);
+                    if open_end(prev) {
+                        cap(m, ll0, rr0, y0, y1, -1.0, cc * 0.95, cs, UV);
+                    }
+                    if open_end(next) {
+                        cap(m, ll1, rr1, y0, y1, 1.0, cc * 0.95, cs, UV);
+                    }
+                }
+            }
         } else {
             let (ts, tc) = if wood { (cs, cc) } else { (bs, col) };
             m.quad(v3(l0, hi), v3(l1, hi), v3(r1, hi), v3(r0, hi), tc * 1.05, ts, UV);
@@ -1166,6 +1196,28 @@ mod tests {
         assert!(has(&pn, Surface::Plinth));
         w.material = Material::RammedEarth;
         assert!(has(&wall_mesh(&w, &[], &t, 3).0, Surface::Earth));
+    }
+
+    #[test]
+    fn walkway_on_thick_walls() {
+        let t = flat_terrain();
+        let top = |m: &MeshData| m.positions.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
+        let mut w = wall(line20());
+        w.overgrowth = 0.0;
+        w.thickness = 1.0;
+        let (walk, mk) = wall_mesh(&w, &[], &t, 1);
+        assert!((top(&walk) - (3.0 + 0.18 + UPSTAND_H)).abs() < 1e-3, "upstands {}", top(&walk));
+        let perches: Vec<_> = mk.iter().filter(|k| k.kind == MarkerKind::Perch).collect();
+        assert!(!perches.is_empty() && perches.iter().all(|k| (k.pos.y - 3.18).abs() < 1e-3), "perch on walk slab");
+        w.thickness = 0.6;
+        assert!((top(&wall_mesh(&w, &[], &t, 1).0) - 3.18).abs() < 1e-3, "thin wall keeps plain coping");
+        w.thickness = 1.0;
+        w.planters = true;
+        let (pl, _) = wall_mesh(&w, &[], &t, 1);
+        assert!(!pl.positions.iter().any(|p| (p[1] - (3.18 + UPSTAND_H)).abs() < 1e-4), "planters replace upstands");
+        // portal through a walkway wall: upstands end with caps, mesh stays valid
+        let (cut, _) = wall_mesh(&wall(line20()), &[Cut { along: 10.0, width: 2.0, height: 2.0 }], &t, 1);
+        assert!(cut.is_valid() && !cut.is_empty());
     }
 
     #[test]

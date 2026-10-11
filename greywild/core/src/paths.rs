@@ -267,7 +267,8 @@ pub fn stairs_mesh(stairs: &Stairs, terrain: &Terrain, seed: u64) -> (MeshData, 
     let side = dir.cross(Vec3::Y);
     let trim = palette::trim(stairs.colors);
 
-    if stairs.kind == StairKind::Ladder || run < 0.05 {
+    // Anything steeper than 1.5 rise/run cannot be a flight of steps: build a ladder.
+    if stairs.kind == StairKind::Ladder || run < 0.05 || rise > run * 1.5 {
         let w = fin(stairs.width, 0.3, 0.6, 0.6).min(0.6);
         let off = side * (w * 0.5);
         for sg in [-1.0, 1.0] {

@@ -1,5 +1,5 @@
 //! `build`: document → terrain + meshes + markers, resolving interactions between structures
-//! (paths cut gates through walls / doors through houses / gaps in fences; houses flatten the
+//! (paths cut portals through walls / doors through houses / gaps in fences; houses flatten the
 //! ground; closed wall rings can be roofed). Also ray picking against the result.
 
 use crate::buildings::{house_mesh, roof_mesh};
@@ -34,7 +34,7 @@ pub struct Scene {
 pub fn build(doc: &Document) -> Scene {
     let seed = doc.seed;
 
-    // Ground under houses and platforms is levelled.
+    // Ground under houses is levelled (paths follow the terrain).
     let flatten: Vec<FlattenRegion> = doc
         .structures
         .iter()
@@ -86,12 +86,18 @@ pub fn build(doc: &Document) -> Scene {
             Structure::Wall(w) => {
                 let cuts = cuts_through(&w.points, 0.6, (w.height - 0.6).clamp(2.2, 3.4));
                 let (mut mesh, mut mk) = wall_mesh(w, &cuts, &terrain, seed);
-                if w.roofed && is_closed(&w.points) {
+                if w.roofed && is_closed(&w.points) && w.height.is_finite() && w.height >= 0.3 {
                     let mut ring: Vec<Vec2> = w.points[..w.points.len() - 1].to_vec();
                     if signed_area(&ring) < 0.0 {
                         ring.reverse();
                     }
-                    let base = ring.iter().map(|p| terrain.height(*p)).fold(f32::MIN, f32::max) + w.height;
+                    // Same flat top as `wall_mesh`: highest ground-or-water + height (capped at 40).
+                    let eff = |p: &Vec2| {
+                        let g = terrain.height(*p);
+                        let g = if g.is_finite() { g } else { 0.0 };
+                        terrain.water_level(*p).filter(|l| l.is_finite()).map_or(g, |l| l.max(g))
+                    };
+                    let base = ring.iter().map(eff).fold(f32::MIN, f32::max) + w.height.min(40.0);
                     let (roof, rmk) = roof_mesh(&ring, base, w.roof, w.roof_pitch, w.colors, seed);
                     mesh.append(&roof);
                     mk.extend(rmk);
@@ -123,6 +129,8 @@ pub fn build(doc: &Document) -> Scene {
             Structure::Bridge(b) => bridge_mesh(b, &terrain, seed),
             Structure::Placed(p) => placed_mesh(p, &terrain, seed),
         };
+        // Never hand the renderer a non-finite or out-of-range mesh.
+        let (mesh, mk) = if mesh.is_valid() { (mesh, mk) } else { (MeshData::default(), Vec::new()) };
         markers.extend(mk);
         parts.push(Part { id: *id, mesh });
     }

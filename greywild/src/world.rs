@@ -56,15 +56,19 @@ impl Glade {
         self.revision += 1;
     }
     pub fn undo(&mut self) -> bool {
-        self.preview = None;
+        let had_preview = self.preview.take().is_some();
         let ok = self.history.undo();
-        self.revision += 1;
+        if ok || had_preview {
+            self.revision += 1;
+        }
         ok
     }
     pub fn redo(&mut self) -> bool {
-        self.preview = None;
+        let had_preview = self.preview.take().is_some();
         let ok = self.history.redo();
-        self.revision += 1;
+        if ok || had_preview {
+            self.revision += 1;
+        }
         ok
     }
     pub fn can_undo(&self) -> bool {
@@ -178,7 +182,15 @@ fn sync_scene(
     let mut kept = HashMap::new();
     for part in &scene.parts {
         let same = old.and_then(|o| o.parts.iter().find(|p| p.id == part.id)).is_some_and(|p| p.mesh == part.mesh);
-        let e = match st.parts.remove(&part.id).filter(|_| same) {
+        let prev = match st.parts.remove(&part.id) {
+            Some(e) if same => Some(e),
+            Some(e) => {
+                commands.entity(e).despawn();
+                None
+            }
+            None => None,
+        };
+        let e = match prev {
             Some(e) => Some(e),
             None if part.mesh.is_empty() => None,
             None => {
