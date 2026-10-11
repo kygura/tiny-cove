@@ -585,7 +585,7 @@ mod tests {
             let (m, mk) = put(PropKind::Tree(k), 1.0);
             assert!(m.is_valid() && !m.is_empty(), "{k:?}");
             assert!(tris(&m) <= 600, "{k:?} {}", tris(&m));
-            let top = m.bounds().unwrap().1.y;
+            let top = m.bounds().unwrap().1.y - terrain().height(Vec2::new(3.0, -2.0));
             assert!(top > lo && top < hi, "{k:?} height {top}");
             assert!(mk.iter().any(|x| x.kind == MarkerKind::Perch));
         }
@@ -614,7 +614,7 @@ mod tests {
                 ClutterKind::Beehive => (0.6, 1.5),
                 ClutterKind::Scarecrow => (1.8, 2.8),
             };
-            let top = m.bounds().unwrap().1.y;
+            let top = m.bounds().unwrap().1.y - terrain().height(Vec2::new(3.0, -2.0));
             assert!(top > lo && top < hi, "{k:?} height {top}");
         }
     }
@@ -637,7 +637,7 @@ mod tests {
         let mut p = Placed { at: Vec2::new(5.0, 5.0), angle: 1.3, scale: 1.0, kind: k, colors: Colors::default() };
         let (m, _) = placed_mesh(&p, &terrain(), 1);
         let (lo, hi) = m.bounds().unwrap();
-        assert!(((lo + hi) * 0.5 - V(5.0, 0.45, 5.0)).abs().max_element() < 0.2);
+        assert!(((lo + hi) * 0.5 - V(5.0, 0.45 + terrain().height(Vec2::new(5.0, 5.0)), 5.0)).abs().max_element() < 0.2);
         p.angle = f32::NAN;
         assert!(placed_mesh(&p, &terrain(), 1).0.is_valid());
     }
