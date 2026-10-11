@@ -336,9 +336,15 @@ pub fn hint_lines(tool: Tool, state: DrawState, hover: &ToolHover, s: &ToolSetti
         ]
     } else if drawing {
         match tool {
+            Tool::Wall | Tool::Fence | Tool::Path if hover.clicking => vec![
+                l("Click", "add a point"),
+                l("Click last", "finish"),
+                ("Scroll".into(), scroll),
+                l("Shift", if tool == Tool::Wall { "snap 45 deg, close ring" } else { "snap 45 deg" }),
+                l("Esc / RMB", "cancel"),
+            ],
             Tool::Wall | Tool::Fence | Tool::Path => vec![
                 l("Release", "finish"),
-                l("Click", "add a point"),
                 ("Scroll".into(), scroll),
                 l("Shift", if tool == Tool::Wall { "snap 45 deg, close ring" } else { "snap 45 deg" }),
                 l("Esc / RMB", "cancel"),
@@ -366,8 +372,17 @@ pub fn hint_lines(tool: Tool, state: DrawState, hover: &ToolHover, s: &ToolSetti
             Tool::Stairs => vec![l("Drag", "from low to high"), ("Scroll".into(), scroll), l("Shift", "snap to wall top")],
             Tool::Bridge => vec![l("Drag", "across a gap"), ("Scroll".into(), scroll), l("Shift", "snap to wall top")],
             Tool::Opening => vec![l("Click", "add a window"), l("On opening", "window>door>wide"), l("Shift+Click", "remove")],
-            Tool::Roof => vec![l("Click ring", "roof / unroof"), l("Click house", "next roof style"), l("Scroll", "pitch"), l("Shift+Scroll", "style")],
-            Tool::Tree | Tool::Clutter => vec![l("Click", "plant"), l("Scroll", "rotate"), l("Shift+Scroll", &format!("scale {:.2}", s.prop_scale))],
+            Tool::Roof => vec![
+                l("Click ring", "roof / unroof"),
+                l("Click house", "apply strip roof"),
+                l("Alt+Scroll", "pitch"),
+                l("Alt+Shift+Scr", "style"),
+            ],
+            Tool::Tree | Tool::Clutter => vec![
+                l("Click", "plant"),
+                l("Alt+Scroll", "rotate (or hold LMB)"),
+                l("+Shift", &format!("scale {:.2}", s.prop_scale)),
+            ],
             Tool::Paint => vec![l("Drag", "paint"), l("Shift+Drag", "erase"), l("Scroll", "radius (painting)")],
             Tool::Sculpt => vec![l("Drag", "raise ground"), l("Shift+Drag", "lower"), l("Scroll", "radius (dragging)")],
             Tool::Flatten => vec![l("Drag", "level to start height"), l("Scroll", "radius (dragging)")],
@@ -416,7 +431,7 @@ mod tests {
                 assert!(!h.is_empty() && h.len() <= 7);
             }
         }
-        let inv = ToolHover { invalid: Some("Too short"), target: None, busy: true };
+        let inv = ToolHover { invalid: Some("Too short"), busy: true, ..default() };
         assert_eq!(hint_lines(Tool::Wall, DrawState::Invalid, &inv, &s)[0].1, "Too short");
     }
 }

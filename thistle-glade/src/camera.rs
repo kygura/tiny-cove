@@ -1,5 +1,5 @@
 //! Orbiting isometric camera rig: orbit (RMB drag, Q/E 45° steps), zoom (scroll), pan
-//! (WASD / arrows / MMB drag), tilt (R/F), Home to reset. Distance stays [`CAMERA_DISTANCE`].
+//! (WASD / arrows / MMB drag), tilt (PageUp/PageDown), Home to reset. Distance stays [`CAMERA_DISTANCE`].
 
 use crate::render::{DEFAULT_PITCH, DEFAULT_YAW, GameCamera, RenderTest, camera_transform};
 use bevy::{
@@ -14,6 +14,10 @@ const MIN_PITCH: f32 = 25.0;
 const MAX_PITCH: f32 = 55.0;
 const PAN_SPEED: f32 = 14.0;
 const ORBIT_DEG_PER_PX: f32 = 0.3;
+/// Pixel-unit wheel deltas (trackpads) per notch; shared with the tools.
+pub const SCROLL_PIXELS_PER_LINE: f32 = 30.0;
+/// A right-button drag longer than this (px) orbits; shorter is a tap (tools cancel).
+pub const RMB_DRAG_PX: f32 = 6.0;
 /// Exponential smoothing rate (1/s).
 const SMOOTH: f32 = 12.0;
 
@@ -69,6 +73,13 @@ pub struct CameraInput {
     pub rmb_captured: bool,
 }
 
+/// Right-button travel since the press.
+#[derive(Default)]
+pub struct RmbDrag {
+    travel: f32,
+    orbiting: bool,
+}
+
 /// Next 45° yaw step from `yaw` in direction `dir` (+1 / -1).
 pub fn step_yaw(yaw: f32, dir: f32) -> f32 {
     let s = yaw / 45.0;
@@ -103,6 +114,7 @@ fn drive_camera(
     window: Option<Single<&Window, With<bevy::window::PrimaryWindow>>>,
     mut input: ResMut<CameraInput>,
     mut rig: ResMut<CameraRig>,
+    mut rmb: Local<RmbDrag>,
     mut cam: Query<(&mut Transform, &mut Projection), With<GameCamera>>,
 ) {
     let dt = time.delta_secs().min(0.1);
@@ -117,13 +129,21 @@ fn drive_camera(
     if keys.just_pressed(KeyCode::KeyE) {
         rig.target_yaw = step_yaw(rig.target_yaw, 1.0);
     }
-    if mouse.pressed(MouseButton::Right) && !captured.rmb_captured {
-        rig.target_yaw -= motion.delta.x * ORBIT_DEG_PER_PX;
+    // RMB drag orbits once it moved past RMB_DRAG_PX (a shorter tap belongs to the tools).
+    if mouse.just_pressed(MouseButton::Right) {
+        *rmb = RmbDrag::default();
     }
-    let tilt = keys.pressed(KeyCode::KeyF) as i8 - keys.pressed(KeyCode::KeyR) as i8;
+    if mouse.pressed(MouseButton::Right) && !captured.rmb_captured {
+        rmb.travel += motion.delta.length();
+        if rmb.orbiting || rmb.travel > RMB_DRAG_PX {
+            rmb.orbiting = true;
+            rig.target_yaw -= motion.delta.x * ORBIT_DEG_PER_PX;
+        }
+    }
+    let tilt = keys.pressed(KeyCode::PageDown) as i8 - keys.pressed(KeyCode::PageUp) as i8;
     rig.target_pitch = (rig.target_pitch + tilt as f32 * 40.0 * dt).clamp(MIN_PITCH, MAX_PITCH);
     if !captured.scroll_captured && scroll.delta.y != 0.0 {
-        let lines = if scroll.unit == MouseScrollUnit::Line { scroll.delta.y } else { scroll.delta.y / 30.0 };
+        let lines = if scroll.unit == MouseScrollUnit::Line { scroll.delta.y } else { scroll.delta.y / SCROLL_PIXELS_PER_LINE };
         rig.target_zoom = (rig.target_zoom * 0.88_f32.powf(lines)).clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
