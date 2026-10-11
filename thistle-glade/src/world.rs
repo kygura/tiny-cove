@@ -159,7 +159,7 @@ fn sync_scene(
         return;
     }
     let t0 = std::time::Instant::now();
-    let scene = Arc::new(glade_core::build(glade.doc()));
+    let scene = Arc::new(glade_core::scene::build_incremental(glade.doc(), built.0.as_deref()));
     let t_build = t0.elapsed();
     let old = built.0.take();
     let old = old.as_deref();

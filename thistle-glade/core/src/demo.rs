@@ -191,6 +191,14 @@ mod tests {
         let tris: usize = s.parts.iter().map(|p| p.mesh.indices.len() / 3).sum::<usize>()
             + (s.ground.indices.len() + s.water.indices.len() + s.scatter.indices.len()) / 3;
         println!("build: {:?}, triangles: {tris}, scatter tris: {}", t.elapsed(), s.scatter.indices.len() / 3);
+        // Live preview of one moved tree.
+        let mut moved = doc.clone();
+        if let Some((_, Structure::Placed(p))) = moved.structures.iter_mut().rev().find(|(_, s)| matches!(s, Structure::Placed(_))) {
+            p.at.x += 0.5;
+        }
+        let t = std::time::Instant::now();
+        let _ = crate::scene::build_incremental(&moved, Some(&s));
+        println!("incremental (one prop moved): {:?}", t.elapsed());
     }
 }
 

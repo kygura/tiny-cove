@@ -5,7 +5,7 @@
 use crate::buildings::{house_mesh, roof_mesh};
 use crate::geom::{closed, closest_on_polyline, footprint_polygon, is_closed, polyline_crossings, signed_area};
 use crate::mesh::{Marker, MarkerKind, MeshData};
-use crate::model::{Document, Footprint, Structure, StructureId};
+use crate::model::{Document, Footprint, Structure, StructureId, TerrainDab};
 use crate::nature::{placed_mesh, scatter_mesh};
 use crate::paths::{bridge_mesh, path_mesh, platform_mesh, stairs_mesh};
 use crate::terrain::{FlattenRegion, Terrain};
@@ -28,10 +28,26 @@ pub struct Scene {
     pub scatter: MeshData,
     pub parts: Vec<Part>,
     pub markers: Vec<Marker>,
+    /// Inputs of the last build, so the next one can reuse what did not change.
+    cache: Cache,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Cache {
+    terrain_key: Option<(u64, Vec<TerrainDab>, Vec<FlattenRegion>)>,
+    /// Per part: the structure and the cuts it was built with, and its markers.
+    parts: Vec<(Structure, Vec<Cut>, Vec<Marker>)>,
+    blockers: Vec<Vec<Vec2>>,
 }
 
 /// Builds the whole scene. Pure and deterministic.
 pub fn build(doc: &Document) -> Scene {
+    build_incremental(doc, None)
+}
+
+/// Same result as [`build`], reusing terrain, structure meshes and scatter from `prev` where
+/// their inputs are unchanged (live previews only touch one structure).
+pub fn build_incremental(doc: &Document, prev: Option<&Scene>) -> Scene {
     let seed = doc.seed;
 
     // Ground under houses and platforms is levelled.
@@ -43,7 +59,12 @@ pub fn build(doc: &Document) -> Scene {
             _ => None,
         })
         .collect();
-    let terrain = Terrain::build(seed, &doc.terrain, &flatten);
+    let terrain_key = (seed, doc.terrain.clone(), flatten);
+    let reuse_terrain = prev.filter(|p| p.cache.terrain_key.as_ref() == Some(&terrain_key));
+    let terrain = match reuse_terrain {
+        Some(p) => p.terrain.clone(),
+        None => Terrain::build(seed, &terrain_key.1, &terrain_key.2),
+    };
 
     let paths: Vec<(&[Vec2], f32)> = doc
         .structures
@@ -81,49 +102,35 @@ pub fn build(doc: &Document) -> Scene {
     let mut markers = Vec::new();
     let mut blockers: Vec<Vec<Vec2>> = Vec::new();
 
+    let mut part_cache = Vec::new();
     for (id, s) in &doc.structures {
-        let (mesh, mk) = match s {
-            Structure::Wall(w) => {
-                let cuts = cuts_through(&w.points, 0.6, (w.height - 0.6).clamp(2.2, 3.4));
-                let (mut mesh, mut mk) = wall_mesh(w, &cuts, &terrain, seed);
-                if w.roofed && is_closed(&w.points) {
-                    let mut ring: Vec<Vec2> = w.points[..w.points.len() - 1].to_vec();
-                    if signed_area(&ring) < 0.0 {
-                        ring.reverse();
-                    }
-                    let base = ring.iter().map(|p| terrain.height(*p)).fold(f32::MIN, f32::max) + w.height;
-                    let (roof, rmk) = roof_mesh(&ring, base, w.roof, w.roof_pitch, w.colors, seed);
-                    mesh.append(&roof);
-                    mk.extend(rmk);
-                }
-                blockers.push(ribbon(&w.points, w.thickness + 0.6));
-                (mesh, mk)
-            }
-            Structure::House(h) => {
-                let poly = footprint_polygon(&h.footprint);
-                let ring = closed(&poly);
-                let cuts = cuts_through(&ring, 0.2, 2.4);
-                blockers.push(grow(&poly, 0.4));
-                house_mesh(h, &cuts, &terrain, seed)
-            }
-            Structure::Fence(f) => {
-                let cuts = cuts_through(&f.points, 0.4, 3.0);
-                blockers.push(ribbon(&f.points, 0.6));
-                fence_mesh(f, &cuts, &terrain, seed)
-            }
-            Structure::Path(p) => {
-                blockers.push(ribbon(&p.points, p.width + 0.3));
-                (path_mesh(p, &terrain, seed), Vec::new())
-            }
-            Structure::Stairs(st) => stairs_mesh(st, &terrain, seed),
-            Structure::Platform(pl) => {
-                blockers.push(footprint_polygon(&Footprint::Rect { center: pl.center, half: pl.half, angle: pl.angle }));
-                platform_mesh(pl, &terrain, seed)
-            }
-            Structure::Bridge(b) => bridge_mesh(b, &terrain, seed),
-            Structure::Placed(p) => placed_mesh(p, &terrain, seed),
+        let cuts = match s {
+            Structure::Wall(w) => cuts_through(&w.points, 0.6, (w.height - 0.6).clamp(2.2, 3.4)),
+            Structure::House(h) => cuts_through(&closed(&footprint_polygon(&h.footprint)), 0.2, 2.4),
+            Structure::Fence(f) => cuts_through(&f.points, 0.4, 3.0),
+            _ => Vec::new(),
         };
-        markers.extend(mk);
+        match s {
+            Structure::Wall(w) => blockers.push(ribbon(&w.points, w.thickness + 0.6)),
+            Structure::House(h) => blockers.push(grow(&footprint_polygon(&h.footprint), 0.4)),
+            Structure::Fence(f) => blockers.push(ribbon(&f.points, 0.6)),
+            Structure::Path(p) => blockers.push(ribbon(&p.points, p.width + 0.3)),
+            Structure::Platform(pl) => {
+                blockers.push(footprint_polygon(&Footprint::Rect { center: pl.center, half: pl.half, angle: pl.angle }))
+            }
+            _ => {}
+        }
+        let cached = reuse_terrain.and_then(|p| {
+            let i = p.parts.iter().position(|part| part.id == *id)?;
+            let (ps, pc, pm) = p.cache.parts.get(i)?;
+            (ps == s && *pc == cuts).then(|| (p.parts[i].mesh.clone(), pm.clone()))
+        });
+        let (mesh, mk) = match cached {
+            Some(hit) => hit,
+            None => build_part(s, &cuts, &terrain, seed),
+        };
+        markers.extend(mk.iter().copied());
+        part_cache.push((s.clone(), cuts, mk));
         parts.push(Part { id: *id, mesh });
     }
 
@@ -144,13 +151,49 @@ pub fn build(doc: &Document) -> Scene {
         }
     }
 
+    let (ground, water) = match reuse_terrain {
+        Some(p) => (p.ground.clone(), p.water.clone()),
+        None => (terrain.ground_mesh(), terrain.water_mesh()),
+    };
+    let scatter = match reuse_terrain.filter(|p| p.cache.blockers == blockers) {
+        Some(p) => p.scatter.clone(),
+        None => scatter_mesh(&terrain, seed, &blockers),
+    };
     Scene {
-        ground: terrain.ground_mesh(),
-        water: terrain.water_mesh(),
-        scatter: scatter_mesh(&terrain, seed, &blockers),
+        ground,
+        water,
+        scatter,
         terrain,
         parts,
         markers,
+        cache: Cache { terrain_key: Some(terrain_key), parts: part_cache, blockers },
+    }
+}
+
+/// Mesh and markers of one structure, given the passages cut through it.
+fn build_part(s: &Structure, cuts: &[Cut], terrain: &Terrain, seed: u64) -> (MeshData, Vec<Marker>) {
+    match s {
+        Structure::Wall(w) => {
+            let (mut mesh, mut mk) = wall_mesh(w, cuts, terrain, seed);
+            if w.roofed && is_closed(&w.points) {
+                let mut ring: Vec<Vec2> = w.points[..w.points.len() - 1].to_vec();
+                if signed_area(&ring) < 0.0 {
+                    ring.reverse();
+                }
+                let base = ring.iter().map(|p| terrain.height(*p)).fold(f32::MIN, f32::max) + w.height;
+                let (roof, rmk) = roof_mesh(&ring, base, w.roof, w.roof_pitch, w.colors, seed);
+                mesh.append(&roof);
+                mk.extend(rmk);
+            }
+            (mesh, mk)
+        }
+        Structure::House(h) => house_mesh(h, cuts, terrain, seed),
+        Structure::Fence(f) => fence_mesh(f, cuts, terrain, seed),
+        Structure::Path(p) => (path_mesh(p, terrain, seed), Vec::new()),
+        Structure::Stairs(st) => stairs_mesh(st, terrain, seed),
+        Structure::Platform(pl) => platform_mesh(pl, terrain, seed),
+        Structure::Bridge(b) => bridge_mesh(b, terrain, seed),
+        Structure::Placed(p) => placed_mesh(p, terrain, seed),
     }
 }
 
@@ -307,6 +350,45 @@ mod tests {
         let s = build(&doc);
         assert_eq!(s.parts.len(), 2);
         assert_eq!(build(&doc).markers, s.markers);
+    }
+
+    #[test]
+    fn incremental_build_matches_full_build() {
+        let a = crate::demo::demo_document(5);
+        let full_a = build(&a);
+        let mut b = a.clone();
+        if let Some((_, Structure::Placed(p))) = b.structures.iter_mut().find(|(_, s)| matches!(s, Structure::Placed(_))) {
+            p.at += Vec2::new(1.0, 0.5);
+        }
+        b.add(Structure::Path(Path { points: vec![Vec2::new(-20.0, 20.0), Vec2::new(-10.0, 24.0)], width: 1.2, kind: PathKind::Dirt }));
+        let same = |x: &Scene, y: &Scene| {
+            assert_eq!(x.parts.len(), y.parts.len());
+            for (p, q) in x.parts.iter().zip(&y.parts) {
+                assert_eq!(p.id, q.id);
+                assert_eq!(p.mesh, q.mesh, "part {}", p.id);
+            }
+            assert_eq!(x.markers, y.markers);
+            assert_eq!(x.ground, y.ground);
+            assert_eq!(x.water, y.water);
+            assert_eq!(x.scatter, y.scatter);
+        };
+        let inc = build_incremental(&b, Some(&full_a));
+        same(&inc, &build(&b));
+        // A house changes the flattened terrain and the scatter blockers.
+        let mut c = b.clone();
+        c.add(Structure::House(House {
+            footprint: Footprint::Rect { center: Vec2::new(20.0, 20.0), half: Vec2::new(2.0, 2.0), angle: 0.0 },
+            wall_height: 3.0,
+            roof: RoofStyle::Gable,
+            roof_pitch: 0.8,
+            material: Material::Stone,
+            half_timber: false,
+            foundation: 0.0,
+            battlements: false,
+            openings: vec![],
+            colors: Colors::default(),
+        }));
+        same(&build_incremental(&c, Some(&inc)), &build(&c));
     }
 
     #[test]
