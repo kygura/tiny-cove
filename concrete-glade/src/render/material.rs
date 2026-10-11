@@ -1,8 +1,9 @@
-//! The PS1 voxel material. Shader: `assets/shaders/voxel.wesl`.
+//! The PS1 voxel material. Shader: `assets/shaders/voxel.wesl` (embedded).
 
 use bevy::{
     mesh::MeshVertexBufferLayoutRef,
     pbr::{MaterialPipeline, MaterialPipelineKey},
+    asset::uuid_handle,
     prelude::*,
     render::render_resource::{
         AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
@@ -10,7 +11,9 @@ use bevy::{
     shader::ShaderRef,
 };
 
-const SHADER_PATH: &str = "shaders/voxel.wesl";
+/// Embedded at compile time so the binary does not depend on the asset directory.
+pub(crate) const SHADER: Handle<Shader> = uuid_handle!("7c1d6c55-2a4e-4f0b-9a63-5b0e8f3c2d91");
+pub(crate) const SHADER_SOURCE: &str = include_str!("../../assets/shaders/voxel.wesl");
 
 /// Sky / fog colour `#6b6258`.
 pub const FOG_COLOR: Color = Color::srgb_u8(0x6b, 0x62, 0x58);
@@ -66,11 +69,11 @@ pub struct VoxelMaterialHandle(pub Handle<VoxelMaterial>);
 
 impl Material for VoxelMaterial {
     fn vertex_shader() -> ShaderRef {
-        SHADER_PATH.into()
+        SHADER.into()
     }
 
     fn fragment_shader() -> ShaderRef {
-        SHADER_PATH.into()
+        SHADER.into()
     }
 
     fn enable_prepass() -> bool {

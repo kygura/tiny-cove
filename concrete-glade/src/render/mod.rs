@@ -28,6 +28,7 @@ use bevy::{
             screenshot::{Screenshot, save_to_disk},
         },
     },
+    shader::Shader,
     window::PrimaryWindow,
 };
 use std::path::PathBuf;
@@ -64,6 +65,10 @@ pub struct Ps1Setup;
 
 impl Plugin for Ps1Plugin {
     fn build(&self, app: &mut App) {
+        let shader = Shader::from_wesl(material::SHADER_SOURCE, "shaders/voxel.wesl");
+        if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
+            let _ = shaders.insert(material::SHADER.id(), shader);
+        }
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .add_systems(PreStartup, setup.in_set(Ps1Setup))
             .add_systems(Update, (fit_to_window, screenshot_on_f12));
