@@ -375,19 +375,8 @@ fn spire(c: &mut Ctx, at: P2, kind: u8) {
                     c.set(x, b + 1, z, if ring { Voxel::Rune } else { Voxel::Concrete });
                 }
             }
-            // Floating monolith ~4 voxels above the plinth top.
-            let y0 = b + 2 + 4;
-            for k in 0..10 {
-                for dz in 0..2 {
-                    for dx in -1..=1 {
-                        if k == 9 && dx != 0 {
-                            continue;
-                        }
-                        let inlay = dx == 0 && k % 3 != 0 && rnd(seed, cx, k, dz) > 0.2;
-                        c.set(cx + dx, y0 + k, cz + dz, if inlay { Voxel::Rune } else { Voxel::Monolith });
-                    }
-                }
-            }
+            // The floating monolith is a separate bobbing entity (see `life`): plinth and
+            // rune ring only here.
         }
         _ => {
             clear(c, 6);
