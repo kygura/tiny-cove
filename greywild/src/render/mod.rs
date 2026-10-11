@@ -89,7 +89,7 @@ pub struct WindowCamera;
 pub struct Sun;
 
 #[derive(Component)]
-struct LowResDisplay;
+pub struct LowResDisplay;
 
 /// Shared material handles; inserted in `PreStartup` (set [`RenderSetup`]).
 #[derive(Resource, Clone)]

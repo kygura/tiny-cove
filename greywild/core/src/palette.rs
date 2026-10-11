@@ -74,7 +74,7 @@ pub fn wood() -> Vec3 {
 }
 /// Lush meadow green, saturated so it pops against the concrete.
 pub fn grass() -> Vec3 {
-    srgb(0x6FAE3E)
+    srgb(0x62A23A)
 }
 pub fn grass_dry() -> Vec3 {
     srgb(0x9DAE52)

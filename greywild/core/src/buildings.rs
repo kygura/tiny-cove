@@ -225,21 +225,12 @@ fn sane_footprint(fp: Footprint) -> Footprint {
     }
 }
 
+/// Wall surface and tint: board-formed concrete, warm rammed-earth strata, charred cladding.
 fn material_look(m: Material, c: Colors) -> (Surface, Vec3) {
     match m {
-        Material::Concrete => (Surface::Concrete, palette::stone()),
-        Material::RammedEarth => (Surface::Earth, palette::wall(c)),
+        Material::Concrete => (Surface::Concrete, palette::wall(c)),
+        Material::RammedEarth => (Surface::Earth, palette::wall(c).lerp(palette::wood(), 0.35)),
         Material::Timber => (Surface::Cladding, palette::wood().lerp(palette::trim(c), 0.3)),
-    }
-}
-
-/// Roof covering by palette entry: slate blue → slate, gold → thatch, else clay tiles.
-/// Returns (surface, thickness).
-fn roof_cover(c: Colors) -> (Surface, f32) {
-    match c.roof % crate::model::ROOF_COLORS {
-        1 => (Surface::Seam, 0.12),
-        4 => (Surface::Precast, 0.3),
-        _ => (Surface::Sedum, 0.14),
     }
 }
 
@@ -462,11 +453,11 @@ enum Hk {
 }
 
 impl Hk {
+    /// Recess of the glass / door panel behind the wall face (thick reveals).
     fn depth(self) -> f32 {
         match self {
-            Hk::Window => 0.12,
-            Hk::Slit => 0.2,
-            Hk::Door | Hk::Wide => 0.16,
+            Hk::Window | Hk::Slit => 0.3,
+            Hk::Door | Hk::Wide => 0.45,
         }
     }
     fn is_door(self) -> bool {
@@ -561,7 +552,7 @@ fn reveal(b: &mut B, wf: &Wf, h: &Hole, c0: f32, c1: f32, band: &Band, trim: Vec
         b.face([p(u0, c1), p(u1, c1), q(u1, c1), q(u0, c1)], uvh, -Vec3::Y, rc * 0.8, band.surf);
     }
     let (surf, col) = match h.kind {
-        Hk::Window | Hk::Slit => (Surface::Window, palette::white()),
+        Hk::Window | Hk::Slit => (Surface::Window, Vec3::ONE),
         Hk::Door | Hk::Wide => (Surface::Door, trim),
     };
     let w = (u1 - u0).max(1e-3);
@@ -842,7 +833,9 @@ fn door_details(b: &mut B, wf: &Wf, h: &Hole, wall_h: f32, slab: Vec3, terrain: 
         b.lbox(wf, mid, cy - 0.14, 0.8, Vec3::new(0.12, 0.02, 0.12), palette::glow(), Surface::Glow);
         b.marker(MarkerKind::Lantern, wf.at(mid, cy - 0.25, 0.8), Vec3::Y);
     }
-    b.lbox(wf, mid, 0.0, 0.3, Vec3::new(w * 0.5 + 0.3, 0.09, 0.3), palette::foundation(), Surface::Plinth);
+    let sp = wf.at(mid, 0.0, 0.25);
+    let sy = (fin(terrain.height(Vec2::new(sp.x, sp.z)), sp.y) - sp.y).max(0.0);
+    b.lbox(wf, mid, sy, 0.25, Vec3::new(w * 0.5 + 0.3, 0.09, 0.25), palette::foundation(), Surface::Plinth);
     let spot = wf.at(mid, 0.0, 0.8);
     let gy = fin(terrain.height(Vec2::new(spot.x, spot.z)), spot.y);
     b.marker(MarkerKind::Door, Vec3::new(spot.x, gy, spot.z), wf.n);
@@ -1515,18 +1508,22 @@ fn decor(
         let hl = rng.range(0.6, 1.2).min(wf.len * 0.5 - 0.4);
         let u = rng.range(hl + 0.3, wf.len - hl - 0.3);
         if !door_near(e, u - hl, u + hl) {
+            // Stepped segments, each seated on its own patch of ground.
             let out = reach + 0.4;
-            let gp = wf.at(u, 0.0, out);
-            let gy = ground(Vec2::new(gp.x, gp.z)) - y0;
-            b.lbox(&wf, u, gy + 0.2, out, Vec3::new(hl, 0.26, 0.3), slab * 0.85, Surface::Plinth);
-            b.lbox(&wf, u, gy + 0.47, out, Vec3::new(hl - 0.05, 0.03, 0.26), leaves * 0.8, Surface::Leaves);
-            for _ in 0..2 + (rng.f() * 2.0) as usize {
-                let su = u + rng.range(-hl + 0.25, hl - 0.25);
-                let r = rng.range(0.18, 0.32);
-                b.lbox(&wf, su, gy + 0.5 + r, out + rng.range(-0.08, 0.08), Vec3::new(r, r, r * 0.9), leaves * rng.range(0.75, 1.1), Surface::Leaves);
+            let segs = ((hl * 2.0 / 0.75).ceil() as usize).clamp(1, 4);
+            let sl = hl / segs as f32;
+            for j in 0..segs {
+                let su = u - hl + sl * (2 * j + 1) as f32;
+                let gp = wf.at(su, 0.0, out);
+                let gy = ground(Vec2::new(gp.x, gp.z)) - y0;
+                b.lbox(&wf, su, gy + 0.2, out, Vec3::new(sl - 0.02, 0.26, 0.3), slab * 0.85, Surface::Plinth);
+                b.lbox(&wf, su, gy + 0.47, out, Vec3::new(sl - 0.06, 0.03, 0.26), leaves * 0.8, Surface::Leaves);
+                let r = rng.range(0.16, 0.3).min(sl);
+                b.lbox(&wf, su + rng.range(-0.1, 0.1), gy + 0.5 + r, out + rng.range(-0.08, 0.08), Vec3::new(r, r, r * 0.9), leaves * rng.range(0.75, 1.1), Surface::Leaves);
+                if rng.f() < 0.5 {
+                    b.wquad(&wf, su - sl * 0.6, su + sl * 0.6, gy + 0.1 + rng.range(0.0, 0.2), gy + 0.47, out + 0.31, false, leaves * 0.7, Surface::Fiber);
+                }
             }
-            let sw = hl * rng.range(0.3, 0.8);
-            b.wquad(&wf, u - sw, u + sw, gy + 0.1 + rng.range(0.0, 0.2), gy + 0.47, out + 0.31, false, leaves * 0.7, Surface::Fiber);
         }
     }
 

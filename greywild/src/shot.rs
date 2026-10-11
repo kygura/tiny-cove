@@ -5,7 +5,7 @@
 //! screenshot and exits. `--demo` just starts interactively with the demo glade.
 
 use crate::camera::CameraRig;
-use crate::render::request_screenshot;
+use crate::render::{LowResDisplay, request_screenshot};
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::BuiltScene;
 use bevy::prelude::*;
@@ -91,7 +91,7 @@ fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weathe
 }
 
 /// Demo shots show the glade only: hide every root UI node (the HUD).
-fn hide_hud(mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>)>) {
+fn hide_hud(mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>, Without<LowResDisplay>)>) {
     for mut v in &mut roots {
         if *v != Visibility::Hidden {
             *v = Visibility::Hidden;

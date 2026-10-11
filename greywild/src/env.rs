@@ -43,7 +43,7 @@ impl Default for Environment {
             sun_color: Vec3::new(1.0, 0.94, 0.82) * 2.2,
             ambient_sky: Vec3::new(0.42, 0.50, 0.62),
             ambient_ground: Vec3::new(0.30, 0.28, 0.20),
-            shadow_tint: Vec3::new(0.55, 0.58, 0.85),
+            shadow_tint: Vec3::new(0.76, 0.74, 0.94),
             sky_top: Vec3::new(0.25, 0.48, 0.85),
             sky_horizon: Vec3::new(0.75, 0.85, 0.95),
             fog_color: Vec3::new(0.75, 0.85, 0.95),

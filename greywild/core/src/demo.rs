@@ -12,7 +12,9 @@ use glam::{Vec2, Vec3};
 use std::f32::consts::FRAC_1_SQRT_2;
 
 /// Screen-aligned (u right, w towards the viewer) → world (x, z).
+/// Depth is squeezed slightly (and shifted forward) so tall back-row structures stay in frame.
 fn s(u: f32, w: f32) -> Vec2 {
+    let w = w * 0.9 + 1.5;
     Vec2::new((u + w) * FRAC_1_SQRT_2, (w - u) * FRAC_1_SQRT_2)
 }
 
@@ -76,9 +78,9 @@ pub fn demo_document(seed: u64) -> Document {
             d.terrain.push(TerrainDab { center: c, radius: 7.5, op: TerrainOp::Flatten { height: 0.8, strength: 0.85 } });
         }
     }
-    for i in 0..=12 {
-        let u = 17.5 - i as f32 * 1.7;
-        d.terrain.push(TerrainDab { center: stream_at(u), radius: 2.1, op: TerrainOp::Water { depth: 1.0 } });
+    for i in 0..=22 {
+        let u = 18.0 - i as f32 * 1.0;
+        d.terrain.push(TerrainDab { center: stream_at(u), radius: 2.4, op: TerrainOp::Water { depth: 1.3 } });
     }
     d.terrain.push(TerrainDab { center: s(-7.0, 9.0), radius: 4.4, op: TerrainOp::Water { depth: 1.4 } });
     d.terrain.push(TerrainDab { center: s(-9.5, 11.0), radius: 3.2, op: TerrainOp::Water { depth: 1.2 } });

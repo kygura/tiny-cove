@@ -176,8 +176,9 @@ fn point_lights(world: vec4<f32>, n: vec3<f32>, frag: vec4<f32>) -> vec3<f32> {
         if dist < range && dist > 1e-4 {
             let att = 1.0 - dist / range;
             let k = att * att * max(dot(n, to / dist) * 0.7 + 0.3, 0.0);
-            let band = select(select(0.0, 0.45, k > 0.04), 1.0, k > 0.25);
-            acc += light.color_inverse_square_range.xyz * (1.0 / 80.0) * band;
+            // Small sodium pools: hard inner disc, dimmer ring, nothing beyond.
+            let band = select(select(0.0, 0.4, k > 0.2), 1.0, k > 0.45);
+            acc += light.color_inverse_square_range.xyz * (1.0 / 100.0) * band;
         }
     }
     return acc;
@@ -215,8 +216,8 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     }
 
     // Nature reclaiming: blotchy moss on up-facing cast surfaces (hard-edged patches).
-    let cast = is_cast(s);
-    if cast && n.y > 0.6 {
+    let mineral = is_cast(s);
+    if mineral && n.y > 0.6 {
         let m = value_noise(world.xz * 0.7) * 0.65 + hash2(floor(world.xz * 4.0)) * 0.35;
         if m > 0.66 {
             albedo = mix(albedo, vec3(0.16, 0.3, 0.05) * (0.8 + tex.r * 0.4), 0.7);
@@ -240,8 +241,8 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     // Wet darkening (ground and cast concrete strongest), plus run-off streaks on walls.
     let ground = is_ground(s);
     if wet > 0.0 && !snowed && !glass {
-        albedo *= 1.0 - wet * select(0.2, 0.38, ground || cast);
-        if (cast || s == S_STEEL) && abs(n.y) < 0.4 {
+        albedo *= 1.0 - wet * select(0.2, 0.38, ground || mineral);
+        if (mineral || s == S_STEEL) && abs(n.y) < 0.4 {
             let along = dot(world.xz, normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0)));
             let streak = hash2(vec2(floor(along * 5.0), 3.0));
             let run = value_noise(vec2(floor(along * 5.0), world.y * 0.6));
@@ -261,7 +262,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         col = albedo * 1.2;
     } else {
         // 3 hard bands: lit / mid / shadow (shadow = albedo x ambient x cool tint).
-        let shade = albedo * amb * g.tint_fog_density.xyz * 1.3;
+        let shade = albedo * amb * g.tint_fog_density.xyz * 1.5;
         let mid = albedo * (amb * 0.6 + sun * 0.2);
         let lit = albedo * (amb * 0.38 + sun * 0.4);
         if light < 0.08 {
