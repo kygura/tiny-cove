@@ -473,6 +473,13 @@ fn update_clock(
     }
 }
 
+#[derive(Default)]
+struct TallyState {
+    counted: Option<u64>,
+    last_t: f32,
+    shown: Option<(u64, u64)>,
+}
+
 /// Recounts from `DisplayedGrid` only when its version changed, at most 4×/s.
 fn update_tally(
     mut commands: Commands,
@@ -480,9 +487,9 @@ fn update_tally(
     time: Res<Time<Real>>,
     poured: Single<Entity, With<PouredText>>,
     mut harvest: Single<&mut Text, With<HarvestText>>,
-    mut state: Local<(Option<u64>, f32, Option<(u64, u64)>)>,
+    mut state: Local<TallyState>,
 ) {
-    let (counted, last_t, shown) = &mut *state;
+    let TallyState { counted, last_t, shown } = &mut *state;
     let now = time.elapsed_secs();
     if *counted == Some(grid.version) || (counted.is_some() && now - *last_t < 0.25) {
         return;

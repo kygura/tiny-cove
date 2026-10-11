@@ -477,10 +477,10 @@ fn pointer(
         {
             commit = gesture.press(&ctx, p, y_px);
         } else if gesture.phase() == ToolPhase::Dragging {
-            if mouse.pressed(MouseButton::Left) {
-                if let Some(p) = p {
-                    gesture.drag(&ctx, p);
-                }
+            if mouse.pressed(MouseButton::Left)
+                && let Some(p) = p
+            {
+                gesture.drag(&ctx, p);
             }
             if mouse.just_released(MouseButton::Left) {
                 commit = gesture.release(&ctx, y_px);

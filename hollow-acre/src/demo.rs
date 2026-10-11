@@ -46,7 +46,7 @@ fn setup_demo(
     let seed = args.seed.unwrap_or(world.history.doc().seed);
     world.history = History::new(Document::new(seed));
     world.history.push(demo_document(seed));
-    rig.snap(RigPose { focus: Vec3::new(2.0, 6.0, -2.0), yaw: 40f32.to_radians(), view_height: 52.0 });
+    rig.snap(RigPose { focus: Vec3::new(1.0, 6.0, -7.0), yaw: 40f32.to_radians(), view_height: 44.0 });
     shot.hold = true;
 }
 
