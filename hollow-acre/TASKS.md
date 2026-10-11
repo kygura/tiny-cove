@@ -20,11 +20,11 @@ Harness: Claude Code (cloud). Planner: Opus 5.5 (this session). Single provider
 1. SPEC.md — done (planner)
 2. DESIGN.md — designer (opus) — done
 3. core crate (model, generation, mesher) — worker (sonnet) — done, reviewed (opus), 6 findings fixed
-4. render pipeline + camera — heavy (opus) — done; follow-up: fill window, fog-faded outlines, lamp lights — frontier
-5. scene sync + tools + demo mode — worker (sonnet) — frontier
-6. weather + time + life — worker (sonnet) — frontier
-7. HUD — ui-impl (opus) — frontier
-8. verification gate — reviewers + demo shot — after all
+4. render pipeline + camera — heavy (opus) — done (+ follow-ups, review fixes, drift fixes)
+5. scene sync + tools + demo mode — worker (sonnet) — done (+ 11 review fixes)
+6. weather + time + life — worker (sonnet) — done (+ floating monolith, review fixes)
+7. HUD — ui-impl (opus) — done (+ legibility, tally cost)
+8. verification gate — done: 2 reviewers (opus gameplay, sonnet render/UI + drift), live xdotool harness, 80 tests, clippy clean
 
 ## Decisions so far
 
@@ -34,3 +34,5 @@ Harness: Claude Code (cloud). Planner: Opus 5.5 (this session). Single provider
 - Render: ExtendedMaterial-style toon material, depth/normal prepass outline post-process, Bevy Bloom for emissives, single hard shadow cascade.
 - Core: generation ~1.4 ms/doc, structures clamp to grid, NaN structures dropped.
 - src/game.rs is the shared contract: one writer per resource; HUD talks to tools/weather via UiCommand messages.
+- Layout: fill window at integer scale (no letterbox); DESIGN updated.
+- Monolith slab is a bobbing entity in life, not voxels.
