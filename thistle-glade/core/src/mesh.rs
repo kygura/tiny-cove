@@ -149,12 +149,12 @@ impl MeshData {
         let z = x_axis.normalize_or_zero().cross(Vec3::Y).normalize_or_zero() * half.z;
         let c = |sx: f32, sy: f32, sz: f32| center + x * sx + y * sy + z * sz;
         // +x, -x, +y, -y, +z, -z faces (counter-clockwise seen from outside)
-        self.quad(c(1., -1., -1.), c(1., -1., 1.), c(1., 1., 1.), c(1., 1., -1.), color, s, uv_scale);
-        self.quad(c(-1., -1., 1.), c(-1., -1., -1.), c(-1., 1., -1.), c(-1., 1., 1.), color, s, uv_scale);
-        self.quad(c(-1., 1., -1.), c(1., 1., -1.), c(1., 1., 1.), c(-1., 1., 1.), color, s, uv_scale);
-        self.quad(c(-1., -1., 1.), c(1., -1., 1.), c(1., -1., -1.), c(-1., -1., -1.), color, s, uv_scale);
-        self.quad(c(1., -1., 1.), c(-1., -1., 1.), c(-1., 1., 1.), c(1., 1., 1.), color, s, uv_scale);
-        self.quad(c(-1., -1., -1.), c(1., -1., -1.), c(1., 1., -1.), c(-1., 1., -1.), color, s, uv_scale);
+        self.quad(c(1., -1., -1.), c(1., 1., -1.), c(1., 1., 1.), c(1., -1., 1.), color, s, uv_scale);
+        self.quad(c(-1., -1., 1.), c(-1., 1., 1.), c(-1., 1., -1.), c(-1., -1., -1.), color, s, uv_scale);
+        self.quad(c(-1., 1., -1.), c(-1., 1., 1.), c(1., 1., 1.), c(1., 1., -1.), color, s, uv_scale);
+        self.quad(c(-1., -1., 1.), c(-1., -1., -1.), c(1., -1., -1.), c(1., -1., 1.), color, s, uv_scale);
+        self.quad(c(1., -1., 1.), c(1., 1., 1.), c(-1., 1., 1.), c(-1., -1., 1.), color, s, uv_scale);
+        self.quad(c(-1., -1., -1.), c(-1., 1., -1.), c(1., 1., -1.), c(1., -1., -1.), color, s, uv_scale);
     }
 
     /// Axis-aligned box from `min` to `max`.
@@ -370,6 +370,10 @@ mod tests {
         b.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Stone, 1.0);
         assert!(b.normals.iter().any(|n| n[1] > 0.99));
         assert!(b.normals.iter().any(|n| n[1] < -0.99));
+        // Every face of a box points away from its centre (outward winding).
+        for (p, n) in b.positions.iter().zip(&b.normals) {
+            assert!((Vec3::from_array(*p) - Vec3::splat(0.5)).dot(Vec3::from_array(*n)) > 0.0);
+        }
     }
 
     #[test]
