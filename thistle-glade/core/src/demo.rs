@@ -193,3 +193,127 @@ mod tests {
         println!("build: {:?}, triangles: {tris}, scatter tris: {}", t.elapsed(), s.scatter.indices.len() / 3);
     }
 }
+
+/// Every primitive variant laid out in rows on flattened ground (visual QA).
+/// Rows (z): -24 walls, -14 fences + paths, -4 houses, 8 towers + roofed rings,
+/// 18 stairs/platform/bridges, 27 trees + clutter.
+pub fn showcase_document(seed: u64) -> Document {
+    let mut d = Document::new(seed);
+    // Level the glade so heights are comparable.
+    for zi in (-28..=28).step_by(8) {
+        for xi in (-28..=28).step_by(8) {
+            d.terrain.push(TerrainDab { center: v(xi as f32, zi as f32), radius: 9.0, op: TerrainOp::Flatten { height: 0.5, strength: 1.0 } });
+        }
+    }
+    // A pond under the bridges.
+    for x in [-2.0, 4.0, 10.0] {
+        d.terrain.push(TerrainDab { center: v(x, 18.0), radius: 3.0, op: TerrainOp::Water { depth: 1.2 } });
+    }
+
+    // Walls: material × battlements × ruined × foundation, 6 m segments.
+    let mut x = -28.0;
+    for material in [Material::Stone, Material::Wood] {
+        for (battlements, ruined, foundation) in [(false, false, 0.0), (true, false, 0.6), (false, true, 0.0), (true, false, 0.0)] {
+            let mut w = wall(vec![v(x, -24.0), v(x + 5.0, -24.0)], 4.0);
+            w.material = material;
+            w.battlements = battlements;
+            w.ruined = ruined;
+            w.foundation = foundation;
+            w.openings = vec![Opening { along: 1.5, kind: OpeningKind::Window }, Opening { along: 3.5, kind: OpeningKind::Door }];
+            d.add(Structure::Wall(w));
+            x += 7.0;
+        }
+    }
+    // A tall wall with a gate cut by a path.
+    let mut tall = wall(vec![v(-28.0, -30.0), v(-14.0, -30.0)], 7.0);
+    tall.openings = vec![Opening { along: 11.0, kind: OpeningKind::WideDoor }];
+    d.add(Structure::Wall(tall));
+    d.add(Structure::Path(Path { points: vec![v(-21.0, -33.0), v(-21.0, -27.0)], width: 2.0, kind: PathKind::Cobble }));
+
+    // Fences and paths.
+    for (i, kind) in [FenceKind::WoodRail, FenceKind::Picket, FenceKind::Stone, FenceKind::Wattle].into_iter().enumerate() {
+        let x0 = -28.0 + i as f32 * 7.0;
+        d.add(Structure::Fence(Fence { points: vec![v(x0, -16.0), v(x0 + 5.0, -16.0)], kind, colors: colors(0, 0, i as u8) }));
+    }
+    for (i, kind) in [PathKind::Dirt, PathKind::Cobble, PathKind::Flagstone, PathKind::Setts].into_iter().enumerate() {
+        let x0 = 2.0 + i as f32 * 7.0;
+        d.add(Structure::Path(Path { points: vec![v(x0, -16.0), v(x0 + 2.5, -12.0), v(x0 + 5.0, -14.0)], width: 1.8, kind }));
+    }
+
+    // Houses: roof × material, plus half-timber and a tent.
+    let mut x = -28.0;
+    let roofs = [RoofStyle::Gable, RoofStyle::Hip, RoofStyle::Cone, RoofStyle::Flat];
+    for (i, roof) in roofs.into_iter().enumerate() {
+        let material = [Material::Stone, Material::Plaster, Material::Wood, Material::Plaster][i];
+        let mut h = house(Footprint::Rect { center: v(x + 2.5, -4.0), half: v(2.6, 2.0), angle: 0.0 }, 4.0, roof, material, i == 3, colors(i as u8, i as u8, i as u8));
+        h.battlements = roof == RoofStyle::Flat;
+        d.add(Structure::House(h));
+        x += 7.0;
+    }
+    d.add(Structure::House(house(Footprint::Rect { center: v(2.5, -4.0), half: v(3.0, 2.2), angle: 0.0 }, 5.5, RoofStyle::Gable, Material::Plaster, true, colors(1, 1, 0))));
+    d.add(Structure::House(house(Footprint::Rect { center: v(10.0, -4.0), half: v(2.2, 1.8), angle: 0.0 }, 1.0, RoofStyle::Gable, Material::Wood, false, colors(5, 0, 3))));
+    d.add(Structure::House(house(Footprint::Rect { center: v(17.0, -4.0), half: v(2.4, 2.0), angle: 0.0 }, 3.5, RoofStyle::Gable, Material::Stone, false, colors(4, 0, 1))));
+    let mut manual = house(Footprint::Rect { center: v(24.5, -4.0), half: v(2.4, 2.0), angle: 0.0 }, 3.5, RoofStyle::Hip, Material::Plaster, false, colors(2, 2, 2));
+    manual.openings = vec![Opening { along: 1.0, kind: OpeningKind::Window }, Opening { along: 3.0, kind: OpeningKind::Door }, Opening { along: 6.0, kind: OpeningKind::WideDoor }];
+    d.add(Structure::House(manual));
+
+    // Towers and round houses; roofed wall rings.
+    for (i, (r, h, roof)) in [(2.2, 9.0, RoofStyle::Cone), (2.2, 9.0, RoofStyle::Flat), (2.0, 3.5, RoofStyle::Cone), (2.6, 6.0, RoofStyle::Hip)].into_iter().enumerate() {
+        let mut t = house(Footprint::Round { center: v(-25.0 + i as f32 * 7.0, 8.0), radius: r }, h, roof, Material::Stone, false, colors(i as u8 + 1, 0, 0));
+        t.battlements = roof == RoofStyle::Flat;
+        d.add(Structure::House(t));
+    }
+    for (i, roof) in [RoofStyle::Gable, RoofStyle::Hip].into_iter().enumerate() {
+        let x0 = 4.0 + i as f32 * 10.0;
+        let mut ring = wall(vec![v(x0, 5.0), v(x0 + 7.0, 5.0), v(x0 + 7.0, 11.0), v(x0, 11.0), v(x0, 5.0)], 3.0);
+        ring.roofed = true;
+        ring.roof = roof;
+        ring.battlements = false;
+        ring.colors = colors(i as u8 * 3, 0, 1);
+        d.add(Structure::Wall(ring));
+    }
+
+    // Stairs, platform, bridges over the pond.
+    d.add(Structure::Stairs(Stairs { from: Vec3::new(-28.0, 0.5, 18.0), to: Vec3::new(-24.0, 3.5, 18.0), width: 1.2, kind: StairKind::Wood, colors: colors(0, 0, 0) }));
+    d.add(Structure::Stairs(Stairs { from: Vec3::new(-22.0, 0.5, 18.0), to: Vec3::new(-18.0, 3.5, 18.0), width: 1.2, kind: StairKind::Stone, colors: Colors::default() }));
+    d.add(Structure::Stairs(Stairs { from: Vec3::new(-16.0, 0.5, 18.0), to: Vec3::new(-15.0, 3.5, 18.0), width: 0.6, kind: StairKind::Ladder, colors: colors(0, 0, 1) }));
+    d.add(Structure::Platform(Platform { center: v(-10.0, 18.0), half: v(2.0, 1.5), angle: 0.0, height: 2.0, colors: colors(0, 0, 1) }));
+    let bridges = [
+        (BridgeKind::Rope { railing: 0 }, Hanging::None),
+        (BridgeKind::Rope { railing: 1 }, Hanging::Lanterns),
+        (BridgeKind::Rope { railing: 2 }, Hanging::Flags),
+        (BridgeKind::Rope { railing: 3 }, Hanging::None),
+        (BridgeKind::Stone, Hanging::None),
+        (BridgeKind::Wood, Hanging::None),
+    ];
+    for (i, (kind, hanging)) in bridges.into_iter().enumerate() {
+        let x0 = -5.0 + i as f32 * 3.0;
+        d.add(Structure::Bridge(Bridge { a: Vec3::new(x0, 1.5, 14.0), b: Vec3::new(x0, 1.5, 22.0), width: 1.2, kind, hanging, colors: colors(0, 0, i as u8) }));
+    }
+
+    // Trees and clutter rows.
+    for (i, k) in [TreeKind::Oak, TreeKind::Pine, TreeKind::Birch, TreeKind::Fruit].into_iter().enumerate() {
+        d.add(placed(v(18.0 + i as f32 * 3.5, 18.0), 0.0, PropKind::Tree(k)));
+    }
+    let clutter = [
+        ClutterKind::Barrel, ClutterKind::Crate, ClutterKind::Haystack, ClutterKind::Well, ClutterKind::Cart,
+        ClutterKind::Bench, ClutterKind::LanternPost, ClutterKind::FlagPole, ClutterKind::WashingLine,
+        ClutterKind::Woodpile, ClutterKind::Rock, ClutterKind::Bush, ClutterKind::Beehive, ClutterKind::Scarecrow,
+    ];
+    for (i, k) in clutter.into_iter().enumerate() {
+        d.add(placed(v(-28.0 + i as f32 * 4.0, 27.0), 0.0, PropKind::Clutter(k)));
+    }
+    d
+}
+
+#[cfg(test)]
+mod showcase_tests {
+    #[test]
+    fn showcase_parts_are_valid_and_non_empty() {
+        let doc = super::showcase_document(1);
+        let s = crate::scene::build(&doc);
+        for p in &s.parts {
+            assert!(p.mesh.is_valid() && !p.mesh.is_empty(), "part {} {:?}", p.id, doc.get(p.id));
+        }
+    }
+}
