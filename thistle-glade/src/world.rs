@@ -103,7 +103,9 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         let cli = app.world().get_resource::<Cli>().cloned().unwrap_or_default();
-        let doc = if cli.demo || cli.shot.is_some() {
+        let doc = if cli.showcase {
+            glade_core::demo::showcase_document(cli.seed())
+        } else if cli.demo || cli.shot.is_some() {
             glade_core::demo::demo_document(cli.seed())
         } else {
             Document::new(cli.seed())

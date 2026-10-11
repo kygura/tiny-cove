@@ -20,6 +20,10 @@ const TIMEOUT_FRAMES: u32 = 600;
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct Cli {
     pub demo: bool,
+    /// `--showcase`: every primitive variant in a grid (visual QA).
+    pub showcase: bool,
+    /// `--focus X,Z`: camera focus on the ground plane.
+    pub focus: Option<Vec2>,
     pub shot: Option<PathBuf>,
     pub time: Option<f32>,
     pub weather: Option<WeatherKind>,
@@ -37,6 +41,11 @@ impl Cli {
         }
         Self {
             demo: args.iter().any(|a| a == "--demo"),
+            showcase: args.iter().any(|a| a == "--showcase"),
+            focus: value("--focus").and_then(|v| {
+                let (x, z) = v.split_once(',')?;
+                Some(Vec2::new(x.trim().parse().ok()?, z.trim().parse().ok()?))
+            }),
             shot: value("--demo-shot").map(PathBuf::from),
             time: num(value("--time")),
             weather: value("--weather").and_then(|w| WeatherKind::parse(w)),
@@ -89,6 +98,9 @@ fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weathe
     }
     if let Some(zoom) = cli.zoom {
         rig.set_zoom(zoom);
+    }
+    if let Some(f) = cli.focus {
+        rig.focus = Vec3::new(f.x, 0.0, f.y);
     }
 }
 
