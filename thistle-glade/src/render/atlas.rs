@@ -131,12 +131,12 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             let phase = (y + (col * 32.0) as i32).rem_euclid(8);
             let clump = 0.82 + 0.18 * n(8, 1);
             let v = match phase {
-                0 => 1.08,
-                1 | 2 => 0.98,
-                7 => 0.72,
-                _ => 0.88,
+                0 => 1.0,
+                1 | 2 => 0.95,
+                7 => 0.8,
+                _ => 0.9,
             };
-            let v = if r > 0.93 { 1.15 } else { v };
+            let v = if r > 0.95 { 1.06 } else { v };
             [v * clump * 0.97, v * clump, v * clump * 0.92, 0.5]
         }
         Surface::Dirt => {
