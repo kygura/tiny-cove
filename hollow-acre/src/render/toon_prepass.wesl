@@ -24,7 +24,8 @@ struct ToonParams {
     time: f32,
     mode: u32,
     fog_start: f32,
-    _pad: f32,
+    lamp_count: u32,
+    lamps: array<vec4<f32>, 32>,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> params: ToonParams;

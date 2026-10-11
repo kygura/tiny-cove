@@ -15,6 +15,8 @@ const NX: usize = 72;
 const NY: usize = 40;
 const NZ: usize = 72;
 const VOXEL: f32 = 0.5;
+/// Lamp-head voxels (on steel posts).
+const LAMPS: [[usize; 3]; 4] = [[28, 12, 30], [48, 9, 33], [20, 9, 40], [56, 9, 46]];
 const ORIGIN: Vec3 = Vec3::new(-(NX as f32) * VOXEL / 2.0, 0.0, -(NZ as f32) * VOXEL / 2.0);
 
 struct Grid(Vec<u8>);
@@ -94,8 +96,10 @@ fn build_grid() -> Grid {
     // Rusty tank + solar on a roof, a lamp post, ivy.
     g.fill([32, 22, 22], [35, 25, 25], RUST);
     g.fill([37, 22, 21], [41, 23, 29], SOLAR);
-    g.fill([28, 6, 30], [29, 12, 31], STEEL);
-    g.set(28, 12, 30, LAMP);
+    for [x, y, z] in LAMPS {
+        g.fill([x, 5, z], [x + 1, y, z + 1], STEEL);
+        g.set(x, y, z, LAMP);
+    }
     g.fill([30, 6, 30], [33, 10, 31], IVY);
     // Gravel path and asphalt strip.
     g.fill([4, 0, 32], [68, 1, 34], GRAVEL);
@@ -196,6 +200,9 @@ pub(super) fn spawn_test_scene(
     voxel_materials: Res<VoxelMaterials>,
 ) {
     let grid = build_grid();
+    commands.insert_resource(super::LampLights(
+        LAMPS.iter().map(|l| ORIGIN + (Vec3::from(l.map(|c| c as f32)) + 0.5) * VOXEL).collect(),
+    ));
     let (p, n, v, ao, i) = mesh_grid(&grid);
     commands.spawn((
         Name::new("test chunk"),

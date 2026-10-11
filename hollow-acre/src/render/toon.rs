@@ -42,8 +42,15 @@ pub struct ToonParams {
     pub mode: u32,
     /// View depth where distance fog starts.
     pub fog_start: f32,
-    pub _pad: f32,
+    /// Number of valid entries in `lamps`.
+    pub lamp_count: u32,
+    /// Night lamp point lights: xyz world position (w unused). Filled from
+    /// [`LampLights`](super::LampLights) by the render plugin.
+    pub lamps: [Vec4; MAX_LAMPS],
 }
+
+/// Lamp point lights shaded per frame (nearest to the view centre).
+pub const MAX_LAMPS: usize = 32;
 
 impl Default for ToonParams {
     fn default() -> Self {
@@ -68,7 +75,8 @@ impl Default for ToonParams {
             time: 0.0,
             mode: 0,
             fog_start: 0.0,
-            _pad: 0.0,
+            lamp_count: 0,
+            lamps: [Vec4::ZERO; MAX_LAMPS],
         };
         p.apply_atmosphere(&Atmosphere::default(), 0.0);
         p
@@ -216,12 +224,17 @@ pub(super) fn sync_materials(
     atmos: Res<Atmosphere>,
     mut materials: ResMut<Assets<ToonMaterial>>,
     fog_start: Res<super::FogStart>,
+    lamps: Res<super::ActiveLamps>,
 ) {
     let ids: Vec<_> = materials.ids().collect();
     for id in ids {
         let Some(m) = materials.get(id) else { continue };
         let mut p = m.params;
         p.apply_atmosphere(&atmos, fog_start.0);
+        p.lamp_count = lamps.0.len().min(MAX_LAMPS) as u32;
+        for (dst, src) in p.lamps.iter_mut().zip(&lamps.0) {
+            *dst = src.extend(1.0);
+        }
         if p != m.params
             && let Some(mut m) = materials.get_mut(id)
         {

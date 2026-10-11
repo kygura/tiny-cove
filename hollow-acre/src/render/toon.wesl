@@ -37,7 +37,8 @@ struct ToonParams {
     time: f32,
     mode: u32,
     fog_start: f32,
-    _pad: f32,
+    lamp_count: u32,
+    lamps: array<vec4<f32>, 32>,
 }
 
 fn to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -152,6 +153,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
             lit = al * sun * select(1.0, 1.06, n.y > 0.5);
         }
         lit += al * params.ambient;
+        // Night lamps: radius 3 wu, warm #ffd28a, banded like the sun with 2 bands.
+        if params.night > 0.0 {
+            let lamp_col = to_linear(vec3(1.0, 0.8235, 0.5412)) * params.night;
+            for (var i = 0u; i < min(params.lamp_count, 32u); i++) {
+                let to = params.lamps[i].xyz - world;
+                let dist = length(to);
+                if dist < 3.0 {
+                    let k = (1.0 - dist / 3.0) * max(dot(n, to / max(dist, 1e-4)), 0.0);
+                    lit += al * lamp_col * select(select(0.0, 0.5, k > 0.12), 1.0, k > 0.4);
+                }
+            }
+        }
     }
 
     // Fog (distance from the fog start plane in view depth, plus height fog).
@@ -168,5 +181,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
     if strength <= 0.0 {
         color = min(color, vec3(0.98));
     }
-    return vec4(color, 1.0);
+    // Alpha carries fog visibility for the outline pass (which writes alpha 1).
+    return vec4(color, 1.0 - fog);
 }

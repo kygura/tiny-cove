@@ -98,7 +98,7 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let c = textureLoad(screen, p, 0);
     let raw = textureLoad(depth_tex, p, 0).r;
     if raw <= 0.0 {
-        return c; // sky
+        return vec4(c.rgb, 1.0); // sky
     }
     let d = dist_at(p);
     let nsample = textureLoad(normals, p, 0);
@@ -134,10 +134,12 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     }
 
     var col = c.rgb;
+    // c.a = 1 - fog written by the toon shader: outlines fade into fog.
+    let vis = clamp(c.a, 0.0, 1.0);
     if silhouette {
-        col = outline_color(c.rgb);
+        col = mix(c.rgb, outline_color(c.rgb), vis);
     } else if crease && cls != 2 && cls != 1 {
-        col = mix(c.rgb, outline_color(c.rgb), s.crease_strength);
+        col = mix(c.rgb, outline_color(c.rgb), s.crease_strength * vis);
     } else if shore {
         let foam = to_linear(vec3(0xe8, 0xf6, 0xf2) / 255.0);
         col = mix(foam, c.rgb, 0.65 * s.night);
@@ -156,5 +158,5 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
             }
         }
     }
-    return vec4(col, c.a);
+    return vec4(col, 1.0);
 }

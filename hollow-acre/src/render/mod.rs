@@ -19,7 +19,7 @@ pub mod toon;
 
 pub use atmosphere::{AtmosPreset, Atmosphere, AtmosphereDriven};
 pub use outline::OutlineSettings;
-pub use toon::{ToonMaterial, ToonParams, VoxelMaterials, toon_material, voxel_mesh};
+pub use toon::{MAX_LAMPS, ToonMaterial, ToonParams, VoxelMaterials, toon_material, voxel_mesh};
 
 use bevy::{
     camera::{Hdr, RenderTarget, ScalingMode},
@@ -87,6 +87,38 @@ pub struct Sun;
 #[derive(Component)]
 pub struct LowResDisplay;
 
+/// World positions of lamp heads. Fill/replace this (e.g. from the voxel grid's Lamp
+/// voxels); at night the [`MAX_LAMPS`] nearest to the view centre light the toon
+/// materials (radius 3 wu, 2 bands).
+#[derive(Resource, Clone, Default, Debug)]
+pub struct LampLights(pub Vec<Vec3>);
+
+/// The lamps currently uploaded to the materials (subset of [`LampLights`]).
+#[derive(Resource, Clone, Default, PartialEq)]
+pub struct ActiveLamps(pub Vec<Vec3>);
+
+fn pick_lamps(
+    lamps: Res<LampLights>,
+    atmos: Res<Atmosphere>,
+    cam: Query<&GlobalTransform, With<GameCamera>>,
+    mut active: ResMut<ActiveLamps>,
+) {
+    let mut pick = Vec::new();
+    if atmos.night > 0.0
+        && let Ok(gt) = cam.single()
+    {
+        // Distance to the camera's view axis = distance from the view centre on screen.
+        let (origin, fwd) = (gt.translation(), gt.forward().as_vec3());
+        let off_axis = |p: &Vec3| (*p - origin).reject_from_normalized(fwd).length_squared();
+        pick = lamps.0.clone();
+        pick.sort_by(|a, b| off_axis(a).total_cmp(&off_axis(b)));
+        pick.truncate(MAX_LAMPS);
+    }
+    if active.0 != pick {
+        active.0 = pick;
+    }
+}
+
 /// View depth where distance fog starts (kept in sync with zoom).
 #[derive(Resource, Clone, Copy, Default)]
 pub struct FogStart(pub f32);
@@ -107,6 +139,8 @@ impl Plugin for ToonRenderPlugin {
             .init_resource::<Atmosphere>()
             .init_resource::<atmosphere::DebugPreset>()
             .init_resource::<FogStart>()
+            .init_resource::<LampLights>()
+            .init_resource::<ActiveLamps>()
             .add_systems(PreStartup, setup.in_set(RenderSetup))
             .add_systems(
                 Startup,
@@ -118,7 +152,7 @@ impl Plugin for ToonRenderPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (fit_to_window, apply_atmosphere, toon::sync_materials).chain(),
+                (fit_to_window, apply_atmosphere, pick_lamps, toon::sync_materials).chain(),
             );
     }
 }
