@@ -8,11 +8,14 @@
 //! - [`ActiveTool`], [`ToolSettings`], [`DrawState`], [`ToolHover`] (HUD).
 //! - [`PointerOverUi`]: written by the HUD before [`ToolSystems`]; tools ignore the world then.
 //! - [`ToolCapture`]: set every frame. `scroll` = the tool (or the HUD under the cursor) eats
-//!   the mouse wheel this frame, so the camera must not zoom; `rmb` = a gesture is running and a
-//!   right-button tap will cancel it, so the camera should not start orbiting on that press.
+//!   the mouse wheel this frame, so the camera must not zoom; `rmb` = a right-button *tap*
+//!   cancelled a gesture this frame (right drags always orbit the camera).
+//! - [`HistoryRequest`]: the HUD's undo/redo buttons; handled here so a running gesture is
+//!   cancelled first.
 
 pub mod ops;
 
+use crate::camera::SCROLL_PIXELS_PER_LINE;
 use crate::render::{GameCamera, LowRes, cursor_ray};
 use crate::world::{BuiltScene, Glade};
 use bevy::{
@@ -229,6 +232,10 @@ pub struct ToolCapture {
     pub rmb: bool,
 }
 
+/// Undo (`Some(false)`) / redo (`Some(true)`) requested by the HUD this frame.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct HistoryRequest(pub Option<bool>);
+
 /// True while the cursor is over a HUD node (written by the HUD).
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct PointerOverUi(pub bool);
@@ -242,6 +249,8 @@ pub struct ToolHover {
     pub target: Option<&'static str>,
     /// A gesture (stroke, drag, raise) is in progress.
     pub busy: bool,
+    /// Polyline in click-to-add-points mode.
+    pub clicking: bool,
 }
 
 /// House / tower variant settings.
@@ -388,6 +397,7 @@ impl Plugin for ToolsPlugin {
             .init_resource::<DrawState>()
             .init_resource::<ToolCapture>()
             .init_resource::<PointerOverUi>()
+            .init_resource::<HistoryRequest>()
             .init_resource::<ToolHover>()
             .init_resource::<ToolState>()
             .add_systems(Startup, setup_gizmos)
@@ -437,6 +447,8 @@ enum Gesture {
     Stroke { last: Vec2, dabs: Vec<TerrainDab>, flatten_h: f32, still: f32 },
     /// Eraser drag.
     Erase { ids: Vec<StructureId> },
+    /// Tree / clutter pressed: scroll rotates until release plants it.
+    Place,
 }
 
 /// Internal tool state (gesture in progress, cursor results for the gizmos).
@@ -444,9 +456,8 @@ enum Gesture {
 pub struct ToolState {
     gesture: Gesture,
     scroll_acc: f32,
+    last_scroll: f32,
     rmb_press: Option<Vec2>,
-    /// Roof scroll edits shown as a preview and committed after a short pause.
-    pending: Option<(Document, f32)>,
     /// Last prop ghost (position, angle, scale, kind) to avoid rebuilding every frame.
     ghost: Option<(Vec2, f32, f32, PropKind)>,
     ground: Option<Vec3>,
@@ -469,6 +480,7 @@ struct Inputs<'w> {
     scroll: Res<'w, AccumulatedMouseScroll>,
     time: Res<'w, Time>,
     over_ui: Res<'w, PointerOverUi>,
+    history: ResMut<'w, HistoryRequest>,
 }
 
 const GHOST_OK: Color = Color::srgba(1.0, 1.0, 1.0, 0.8);
@@ -500,7 +512,7 @@ fn base_height(scene: Option<&Scene>, p: Vec2) -> f32 {
 
 #[allow(clippy::too_many_arguments)]
 fn run_tools(
-    input: Inputs,
+    mut input: Inputs,
     window: Query<&Window, With<PrimaryWindow>>,
     cam: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     low: Option<Res<LowRes>>,
@@ -515,11 +527,12 @@ fn run_tools(
 ) {
     let Some(mut glade) = glade else { return };
     let Ok(window) = window.single() else { return };
-    let (mouse, keys) = (&input.mouse, &input.keys);
     let now = input.time.elapsed_secs();
     let over_ui = input.over_ui.0;
+    let keys = &input.keys;
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
     let tool = tool.0;
 
     let mut next_capture = ToolCapture { scroll: over_ui, rmb: false };
@@ -527,30 +540,24 @@ fn run_tools(
     st.highlight = None;
     st.ring = None;
 
-    // Wheel → whole steps (line units are notches; pixel units ≈ 40 px a notch).
+    // Wheel → whole steps (same notch size as the camera); partial trackpad scrolls
+    // accumulate and are forgotten after a short pause.
     let raw = match input.scroll.unit {
         MouseScrollUnit::Line => input.scroll.delta.y,
-        MouseScrollUnit::Pixel => input.scroll.delta.y / 40.0,
+        MouseScrollUnit::Pixel => input.scroll.delta.y / SCROLL_PIXELS_PER_LINE,
     };
+    if raw != 0.0 {
+        st.last_scroll = now;
+    } else if now - st.last_scroll > 0.3 {
+        st.scroll_acc = 0.0;
+    }
     st.scroll_acc += raw;
     let steps = st.scroll_acc.trunc();
     st.scroll_acc -= steps;
-    if raw == 0.0 {
-        st.scroll_acc = 0.0;
-    }
-
-    // Pending roof-scroll edit: commit after a pause.
-    if st.pending.as_ref().is_some_and(|(_, t)| now >= *t) {
-        let (doc, _) = st.pending.take().unwrap();
-        glade.commit(doc);
-    }
 
     let cancel = |st: &mut ToolState, glade: &mut Glade| {
         st.gesture = Gesture::None;
         st.ghost = None;
-        if let Some((doc, _)) = st.pending.take() {
-            glade.commit(doc);
-        }
         glade.set_preview(None);
     };
 
@@ -558,10 +565,14 @@ fn run_tools(
         cancel(&mut st, &mut glade);
     }
 
-    // Undo / redo.
+    // Undo / redo (keys or HUD buttons).
+    let mut history = input.history.0.take();
     if ctrl && (keys.just_pressed(KeyCode::KeyZ) || keys.just_pressed(KeyCode::KeyY)) {
+        history = Some(keys.just_pressed(KeyCode::KeyY) || shift);
+    }
+    if let Some(redo) = history {
         cancel(&mut st, &mut glade);
-        if keys.just_pressed(KeyCode::KeyY) || shift {
+        if redo {
             glade.redo();
         } else {
             glade.undo();
@@ -570,6 +581,7 @@ fn run_tools(
     if keys.just_pressed(KeyCode::Escape) {
         cancel(&mut st, &mut glade);
     }
+    let mouse = &input.mouse;
     // Right-button tap cancels; a drag is the camera's orbit.
     if mouse.just_pressed(MouseButton::Right) {
         st.rmb_press = window.cursor_position();
@@ -578,6 +590,7 @@ fn run_tools(
         let tap = st.rmb_press.zip(window.cursor_position()).is_some_and(|(a, b)| a.distance(b) < 6.0);
         if tap && st.busy() {
             cancel(&mut st, &mut glade);
+            next_capture.rmb = true;
         }
         st.rmb_press = None;
     }
@@ -673,7 +686,9 @@ fn run_tools(
                         all.push(cur);
                     }
                     let doc = apply(&all, &settings);
-                    if doc.is_none() {
+                    next_hover.clicking = clicking;
+                    let started = pts.len() >= 2 || cur.distance(pts[0]) >= 0.5;
+                    if doc.is_none() && started {
                         next_hover.invalid = Some(ops::TOO_SHORT);
                         state = DrawState::Invalid;
                     }
@@ -719,11 +734,11 @@ fn run_tools(
                     }
                     let fp = ops::footprint_from_drag(a, b, angle, round, shift);
                     let doc = if tool == Tool::Platform {
-                        ops::apply_platform(base, a, b, angle, &settings)
+                        ops::apply_platform(base, a, b, angle, shift, &settings)
                     } else {
                         fp.and_then(|fp| ops::apply_house(base, fp, settings.house_style(tool), settings.colors))
                     };
-                    if doc.is_none() {
+                    if doc.is_none() && a.distance(b) >= 0.5 {
                         state = DrawState::Invalid;
                         let outside = fp.is_some_and(|fp| !footprint_polygon(&fp).iter().all(|p| ops::inside_glade(*p)));
                         next_hover.invalid = Some(if outside { ops::OUTSIDE } else { ops::TOO_SHORT });
@@ -819,7 +834,8 @@ fn run_tools(
                             ops::apply_bridge(base, a, b, ba, bb, &settings)
                         }
                     });
-                    if doc.is_none() {
+                    let moved = point(hit).is_some_and(|b| b.distance(a) >= 0.5);
+                    if doc.is_none() && moved {
                         state = DrawState::Invalid;
                         next_hover.invalid = Some(ops::TOO_SHORT);
                     }
@@ -891,19 +907,30 @@ fn run_tools(
             } else {
                 PropKind::Clutter(settings.clutter_kind)
             };
+            let held = matches!(st.gesture, Gesture::Place);
+            if held && !lmb_held && !lmb_up {
+                st.gesture = Gesture::None;
+            }
             match ground2 {
                 Some(p) if ops::inside_glade(p) => {
-                    next_capture.scroll = true;
-                    if steps != 0.0 {
-                        if shift {
-                            settings.prop_scale = (settings.prop_scale + steps * 0.05).clamp(0.7, 1.3);
-                        } else {
-                            settings.prop_angle = (settings.prop_angle + steps * PI / 12.0).rem_euclid(PI * 2.0);
+                    // Alt+scroll (or scroll while the button is held) rotates; plain scroll zooms.
+                    if alt || held {
+                        next_capture.scroll = true;
+                        if steps != 0.0 {
+                            if shift {
+                                settings.prop_scale = (settings.prop_scale + steps * 0.05).clamp(0.7, 1.3);
+                            } else {
+                                settings.prop_angle = (settings.prop_angle + steps * PI / 12.0).rem_euclid(PI * 2.0);
+                            }
                         }
                     }
                     let g = (p, settings.prop_angle, settings.prop_scale, kind);
                     let doc = || ops::apply_placed(base, p, g.1, g.2, kind, settings.colors);
                     if lmb_down {
+                        st.gesture = Gesture::Place;
+                    }
+                    if held && lmb_up {
+                        st.gesture = Gesture::None;
                         commit = doc();
                         preview = Some(None);
                         st.ghost = None;
@@ -917,16 +944,22 @@ fn run_tools(
                     next_hover.invalid = Some(ops::OUTSIDE);
                     st.ghost = None;
                     preview = Some(None);
+                    if lmb_up {
+                        st.gesture = Gesture::None;
+                    }
                 }
                 None => {
                     st.ghost = None;
                     preview = Some(None);
+                    if lmb_up {
+                        st.gesture = Gesture::None;
+                    }
                 }
             }
         }
 
         Tool::Roof | Tool::Opening | Tool::Style | Tool::Eraser => {
-            let doc_now = st.pending.as_ref().map_or(base, |(d, _)| d).clone();
+            let doc_now = base;
             let target = hit.and_then(|h| h.id.and_then(|id| doc_now.get(id).map(|s| (h, id, s.clone()))));
             next_hover.target = target.as_ref().map(|(_, _, s)| ops::structure_name(s));
             match tool {
@@ -934,17 +967,23 @@ fn run_tools(
                     if let Some((_, id, s)) = &target {
                         if ops::roofable(s) {
                             st.highlight = Some((*id, GHOST_OK));
-                            next_capture.scroll = true;
-                            if steps != 0.0
-                                && let Some(d) = ops::adjust_roof(&doc_now, *id, steps * 0.1, shift)
+                            // Alt+scroll: pitch (Alt+Shift: style); plain scroll zooms.
+                            next_capture.scroll = alt;
+                            if alt
+                                && steps != 0.0
+                                && let Some(d) = ops::adjust_roof(doc_now, *id, steps * 0.1, shift)
                             {
-                                preview = Some(Some(d.clone()));
-                                st.pending = Some((d, now + 0.6));
+                                commit = Some(d);
                             }
                             if lmb_down
-                                && let Some(d) = ops::apply_roof_click(&doc_now, *id, settings.roof_style, settings.roof_pitch)
+                                && let Some(d) = ops::apply_roof_click(
+                                    doc_now,
+                                    *id,
+                                    settings.roof_style,
+                                    settings.roof_pitch,
+                                    settings.colors.roof,
+                                )
                             {
-                                st.pending = None;
                                 commit = Some(d);
                             }
                         } else {
@@ -959,7 +998,7 @@ fn run_tools(
                         if ops::openable(s) {
                             st.highlight = Some((*id, GHOST_OK));
                             if lmb_down {
-                                commit = ops::apply_opening_click(&doc_now, *id, h.along, shift);
+                                commit = ops::apply_opening_click(doc_now, *id, h.along, shift);
                             }
                         } else {
                             state = DrawState::Invalid;
@@ -972,16 +1011,9 @@ fn run_tools(
                         st.highlight = Some((*id, ACCENT));
                         if lmb_down {
                             if shift {
-                                commit = ops::apply_style(&doc_now, *id, settings.style());
+                                commit = ops::apply_style(doc_now, *id, settings.style());
                             } else if let Some(style) = ops::style_of(s) {
-                                settings.colors = style.colors;
-                                if let Some(m) = style.material {
-                                    settings.house.material = m;
-                                    settings.wall_material = if m == Material::Plaster { Material::Stone } else { m };
-                                }
-                                if let Some(t) = style.half_timber {
-                                    settings.house.half_timber = t;
-                                }
+                                ops::copy_style(&mut settings, style);
                             }
                         }
                     }
@@ -1030,8 +1062,7 @@ fn run_tools(
     if over_ui && !st.busy() {
         state = DrawState::Idle;
     }
-    next_capture.rmb = st.busy();
-    next_hover.busy = st.busy();
+    next_hover.busy = st.busy() && !matches!(st.gesture, Gesture::Place);
     if *capture != next_capture {
         *capture = next_capture;
     }

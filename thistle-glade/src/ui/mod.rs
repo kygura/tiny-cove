@@ -10,7 +10,7 @@
 pub mod strip;
 
 use crate::env::Environment;
-use crate::tools::{ActiveTool, DrawState, PointerOverUi, Tool, ToolHover, ToolSettings, ToolSystems};
+use crate::tools::{ActiveTool, DrawState, HistoryRequest, PointerOverUi, Tool, ToolHover, ToolSettings, ToolSystems};
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::Glade;
 use bevy::{
@@ -592,7 +592,7 @@ fn ui_keys(
     mut weather: ResMut<Weather>,
     mut ptr: ResMut<UiPointer>,
 ) {
-    if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
+    if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]) {
         return;
     }
     if keys.just_pressed(KeyCode::KeyH) {
@@ -639,7 +639,7 @@ fn ui_press(
     mut clock: ResMut<Clock>,
     mut weather: ResMut<Weather>,
     mut hints: ResMut<HintsVisible>,
-    glade: Option<ResMut<Glade>>,
+    mut history: ResMut<HistoryRequest>,
     mut commands: Commands,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
@@ -656,16 +656,8 @@ fn ui_press(
                             tool.0 = n;
                         }
                     }
-                    UiAction::Undo => {
-                        if let Some(mut g) = glade {
-                            g.undo();
-                        }
-                    }
-                    UiAction::Redo => {
-                        if let Some(mut g) = glade {
-                            g.redo();
-                        }
-                    }
+                    UiAction::Undo => history.0 = Some(false),
+                    UiAction::Redo => history.0 = Some(true),
                     UiAction::Pause => clock.paused = !clock.paused,
                     UiAction::Weather(Some(k)) => {
                         weather.kind = k;

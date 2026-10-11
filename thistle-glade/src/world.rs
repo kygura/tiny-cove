@@ -40,9 +40,6 @@ impl Glade {
     pub fn committed(&self) -> &Document {
         self.history.current()
     }
-    pub fn has_preview(&self) -> bool {
-        self.preview.is_some()
-    }
     pub fn set_preview(&mut self, doc: Option<Document>) {
         if self.preview != doc {
             self.preview = doc;
@@ -72,10 +69,6 @@ impl Glade {
     }
     pub fn can_redo(&self) -> bool {
         self.history.can_redo()
-    }
-    /// Replace everything (new glade): fresh history.
-    pub fn reset(&mut self, doc: Document) {
-        *self = Self { revision: self.revision + 1, ..Self::new(doc) };
     }
 }
 

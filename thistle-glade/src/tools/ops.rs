@@ -189,20 +189,28 @@ pub fn next_roof(r: RoofStyle) -> RoofStyle {
     }
 }
 
-/// Roof tool click: a closed wall ring toggles its roof (with the tool's style and pitch); a
-/// house cycles its roof style. Anything else → `None` (needs a wall).
-pub fn apply_roof_click(doc: &Document, id: StructureId, style: RoofStyle, pitch: f32) -> Option<Document> {
+/// Roof tool click: a closed wall ring toggles its roof (switching on applies the tool's style,
+/// pitch and roof colour); a house takes the tool's style, pitch and roof colour. Anything else
+/// (or no change) → `None`.
+pub fn apply_roof_click(doc: &Document, id: StructureId, style: RoofStyle, pitch: f32, roof_color: u8) -> Option<Document> {
     let mut d = doc.clone();
     match d.get_mut(id)? {
         Structure::Wall(w) if is_closed(&w.points) => {
             w.roofed = !w.roofed;
-            w.roof = style;
-            w.roof_pitch = pitch;
+            if w.roofed {
+                w.roof = style;
+                w.roof_pitch = pitch;
+                w.colors.roof = roof_color;
+            }
         }
-        Structure::House(h) => h.roof = next_roof(h.roof),
+        Structure::House(h) => {
+            h.roof = style;
+            h.roof_pitch = pitch;
+            h.colors.roof = roof_color;
+        }
         _ => return None,
     }
-    Some(d)
+    (d != *doc).then_some(d)
 }
 
 /// Can the roof tool act on this structure?
@@ -302,9 +310,9 @@ pub fn apply_stairs(doc: &Document, a: Vec3, b: Vec3, s: &ToolSettings) -> Optio
     Some(d)
 }
 
-/// Platform from a dragged rectangle (axes rotated by `angle`).
-pub fn apply_platform(doc: &Document, a: Vec2, b: Vec2, angle: f32, s: &ToolSettings) -> Option<Document> {
-    let Footprint::Rect { center, half, angle } = footprint_from_drag(a, b, angle, false, false)? else {
+/// Platform from a dragged rectangle (axes rotated by `angle`; `square` forces a square).
+pub fn apply_platform(doc: &Document, a: Vec2, b: Vec2, angle: f32, square: bool, s: &ToolSettings) -> Option<Document> {
+    let Footprint::Rect { center, half, angle } = footprint_from_drag(a, b, angle, false, square)? else {
         return None;
     };
     let mut d = doc.clone();
@@ -389,6 +397,21 @@ pub fn style_of(s: &Structure) -> Option<Style> {
         Structure::Path(_) => return None,
     };
     Some(Style { colors, material, half_timber })
+}
+
+/// Style picker: copies a structure's style into the settings for the next placements
+/// (walls, houses and towers; walls have no plaster).
+pub fn copy_style(settings: &mut ToolSettings, style: Style) {
+    settings.colors = style.colors;
+    if let Some(m) = style.material {
+        settings.house.material = m;
+        settings.tower.material = m;
+        settings.wall_material = if m == Material::Plaster { Material::Stone } else { m };
+    }
+    if let Some(t) = style.half_timber {
+        settings.house.half_timber = t;
+        settings.tower.half_timber = t;
+    }
 }
 
 /// Recolours structure `id` with `style` (material only where the structure has one; walls
@@ -607,26 +630,48 @@ mod tests {
 
     #[test]
     fn roof_tool_needs_closed_ring() {
-        assert!(apply_roof_click(&doc_with_wall(false), 1, RoofStyle::Hip, 0.5).is_none());
-        let d = apply_roof_click(&doc_with_wall(true), 1, RoofStyle::Hip, 0.5).unwrap();
+        assert!(apply_roof_click(&doc_with_wall(false), 1, RoofStyle::Hip, 0.5, 0).is_none());
+        let d = apply_roof_click(&doc_with_wall(true), 1, RoofStyle::Hip, 0.5, 3).unwrap();
         let Some(Structure::Wall(w)) = d.get(1) else { panic!() };
-        assert!(w.roofed && w.roof == RoofStyle::Hip);
-        let d = apply_roof_click(&d, 1, RoofStyle::Hip, 0.5).unwrap();
+        assert!(w.roofed && w.roof == RoofStyle::Hip && w.colors.roof == 3);
+        let d = apply_roof_click(&d, 1, RoofStyle::Hip, 0.5, 3).unwrap();
         assert!(matches!(d.get(1), Some(Structure::Wall(w)) if !w.roofed));
-        let d2 = adjust_roof(&apply_roof_click(&d, 1, RoofStyle::Gable, 0.5).unwrap(), 1, 0.25, false).unwrap();
+        let d2 = adjust_roof(&apply_roof_click(&d, 1, RoofStyle::Gable, 0.5, 0).unwrap(), 1, 0.25, false).unwrap();
         assert!(matches!(d2.get(1), Some(Structure::Wall(w)) if (w.roof_pitch - 0.75).abs() < 1e-5));
     }
 
     #[test]
-    fn roof_click_cycles_house_style() {
+    fn roof_click_applies_strip_roof_to_house() {
         let mut doc = Document::new(1);
         doc.add(Structure::House(house_from(
             Footprint::Round { center: Vec2::ZERO, radius: 2.0 },
             &settings().house,
             Colors::default(),
         )));
-        let d = apply_roof_click(&doc, 1, RoofStyle::Gable, 0.5).unwrap();
-        assert!(matches!(d.get(1), Some(Structure::House(h)) if h.roof == RoofStyle::Hip));
+        let d = apply_roof_click(&doc, 1, RoofStyle::Flat, 0.3, 4).unwrap();
+        let Some(Structure::House(h)) = d.get(1) else { panic!() };
+        assert_eq!((h.roof, h.roof_pitch, h.colors.roof), (RoofStyle::Flat, 0.3, 4));
+        assert!(apply_roof_click(&d, 1, RoofStyle::Flat, 0.3, 4).is_none(), "no change, no edit");
+    }
+
+    #[test]
+    fn platform_shift_forces_square() {
+        let doc = Document::new(1);
+        let d = apply_platform(&doc, v(0., 0.), v(3., 5.), 0.0, true, &settings()).unwrap();
+        let Some(Structure::Platform(p)) = d.get(1) else { panic!() };
+        assert_eq!(p.half, v(2.5, 2.5));
+        let d = apply_platform(&doc, v(0., 0.), v(3., 5.), 0.0, false, &settings()).unwrap();
+        assert!(matches!(d.get(1), Some(Structure::Platform(p)) if p.half == v(1.5, 2.5)));
+    }
+
+    #[test]
+    fn style_picker_copies_into_house_tower_and_wall() {
+        let mut s = settings();
+        let st = Style { colors: Colors { roof: 5, wall: 4, trim: 3 }, material: Some(Material::Plaster), half_timber: Some(false) };
+        copy_style(&mut s, st);
+        assert_eq!(s.colors, st.colors);
+        assert_eq!((s.house.material, s.tower.material, s.wall_material), (Material::Plaster, Material::Plaster, Material::Stone));
+        assert!(!s.house.half_timber && !s.tower.half_timber);
     }
 
     #[test]
