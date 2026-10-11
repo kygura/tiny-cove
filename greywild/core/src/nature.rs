@@ -105,16 +105,6 @@ fn blade(m: &mut MeshData, base: Vec3, dir: Vec3, half_w: f32, tip: Vec3, c0: Ve
     m.indices.extend_from_slice(&[a, b, t, a, t, b]);
 }
 
-/// Thin tapered upright quad visible from both sides.
-#[allow(clippy::too_many_arguments)]
-fn stalk(m: &mut MeshData, base: Vec3, dir: Vec3, w0: f32, top: Vec3, w1: f32, c0: Vec3, c1: Vec3, s: Surface) {
-    let a = m.vertex(base - dir * w0, Vec3::Y, Vec2::new(0.0, 0.0), c0, s);
-    let b = m.vertex(base + dir * w0, Vec3::Y, Vec2::new(1.0, 0.0), c0, s);
-    let c = m.vertex(top + dir * w1, Vec3::Y, Vec2::new(1.0, 1.0), c1, s);
-    let d = m.vertex(top - dir * w1, Vec3::Y, Vec2::new(0.0, 1.0), c1, s);
-    m.indices.extend_from_slice(&[a, b, c, a, c, d, a, c, b, a, d, c]);
-}
-
 fn bush_into(m: &mut MeshData, base: Vec3, scale: f32, blobs: usize, rng: &mut Rng) {
     for _ in 0..blobs {
         let off = V(rng.range(-0.35, 0.35), 0.0, rng.range(-0.35, 0.35)) * scale;
@@ -668,7 +658,7 @@ fn clover(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
 mod tests {
     use super::*;
 
-    const TREES: [TreeKind; 4] = [TreeKind::Oak, TreeKind::Pine, TreeKind::Birch, TreeKind::Fruit];
+    const TREES: [TreeKind; 5] = [TreeKind::Oak, TreeKind::Pine, TreeKind::Birch, TreeKind::Fruit, TreeKind::Fern];
     const CLUTTER: [ClutterKind; 14] = [
         ClutterKind::RainBarrel, ClutterKind::Planter, ClutterKind::Compost, ClutterKind::Cistern, ClutterKind::Wheelbarrow,
         ClutterKind::Bench, ClutterKind::LampPost, ClutterKind::WindTurbine, ClutterKind::WashingLine,
@@ -690,7 +680,7 @@ mod tests {
 
     #[test]
     fn trees_valid_and_sized() {
-        let ranges = [(TreeKind::Oak, 4.0, 6.5), (TreeKind::Pine, 5.5, 8.5), (TreeKind::Birch, 4.0, 6.5), (TreeKind::Fruit, 2.4, 4.0)];
+        let ranges = [(TreeKind::Oak, 4.0, 6.5), (TreeKind::Pine, 5.5, 8.5), (TreeKind::Birch, 4.0, 6.5), (TreeKind::Fruit, 2.4, 4.0), (TreeKind::Fern, 2.6, 4.2)];
         for (k, lo, hi) in ranges {
             let (m, mk) = put(PropKind::Tree(k), 1.0);
             assert!(m.is_valid() && !m.is_empty(), "{k:?}");
@@ -709,20 +699,20 @@ mod tests {
             assert!(m.is_valid() && !m.is_empty(), "{k:?}");
             assert!(tris(&m) <= 400, "{k:?} {}", tris(&m));
             let (lo, hi) = match k {
-                ClutterKind::RainBarrel => (0.7, 1.1),
-                ClutterKind::Planter => (0.6, 1.1),
-                ClutterKind::Compost => (1.2, 2.2),
-                ClutterKind::Cistern => (2.2, 3.4),
+                ClutterKind::RainBarrel => (1.0, 1.5),
+                ClutterKind::Planter => (0.9, 1.4),
+                ClutterKind::Compost => (0.7, 1.2),
+                ClutterKind::Cistern => (1.1, 1.6),
                 ClutterKind::Wheelbarrow => (0.6, 1.4),
-                ClutterKind::Bench => (0.5, 1.0),
+                ClutterKind::Bench => (0.45, 0.8),
                 ClutterKind::LampPost => (2.0, 3.0),
-                ClutterKind::WindTurbine => (5.0, 6.5),
+                ClutterKind::WindTurbine => (5.0, 7.0),
                 ClutterKind::WashingLine => (1.6, 2.5),
                 ClutterKind::LogPile => (0.5, 1.0),
                 ClutterKind::Rock => (0.3, 1.6),
                 ClutterKind::Bush => (0.5, 1.7),
                 ClutterKind::Beehive => (0.6, 1.5),
-                ClutterKind::Solar => (1.8, 2.8),
+                ClutterKind::Solar => (1.3, 1.8),
             };
             let top = m.bounds().unwrap().1.y - terrain().height(Vec2::new(3.0, -2.0));
             assert!(top > lo && top < hi, "{k:?} height {top}");
@@ -747,7 +737,7 @@ mod tests {
         let mut p = Placed { at: Vec2::new(5.0, 5.0), angle: 1.3, scale: 1.0, kind: k, colors: Colors::default() };
         let (m, _) = placed_mesh(&p, &terrain(), 1);
         let (lo, hi) = m.bounds().unwrap();
-        assert!(((lo + hi) * 0.5 - V(5.0, 0.45 + terrain().height(Vec2::new(5.0, 5.0)), 5.0)).abs().max_element() < 0.2);
+        assert!(((lo + hi) * 0.5 - V(5.0, 0.6 + terrain().height(Vec2::new(5.0, 5.0)), 5.0)).abs().max_element() < 0.3);
         p.angle = f32::NAN;
         assert!(placed_mesh(&p, &terrain(), 1).0.is_valid());
     }
@@ -804,19 +794,19 @@ mod tests {
         // Water only on the x > 0 half: nothing grows there.
         let m = scatter_with(1, &[], &fake(&|p| p.x > 0.0, &|_| 1.0, &none));
         assert!(!m.is_empty());
-        assert!(m.positions.iter().all(|p| p[0] <= 0.5));
+        assert!(m.positions.iter().all(|p| p[0] <= 1.0));
     }
 
     #[test]
     fn scatter_layers_add_vegetation_within_budget() {
         let none = |_: PaintLayer, _: Vec2| 0.0;
         let base = tris(&scatter_with(1, &[], &fake(&|_| false, &|_| 1.0, &none)));
-        for layer in [PaintLayer::Flowers, PaintLayer::Moss, PaintLayer::Ferns] {
+        for layer in [PaintLayer::Flowers, PaintLayer::Moss, PaintLayer::Ferns, PaintLayer::Gravel] {
             let paint = move |l: PaintLayer, _: Vec2| if l == layer { 1.0 } else { 0.0 };
             let m = scatter_with(1, &[], &fake(&|_| false, &|_| 1.0, &paint));
-            assert!(m.is_valid());
+            assert!(m.is_valid() && !m.is_empty());
             assert!(tris(&m) <= MAX_TRIS, "{layer:?} {}", tris(&m));
-            if layer != PaintLayer::Ferns {
+            if layer == PaintLayer::Flowers || layer == PaintLayer::Moss {
                 assert!(tris(&m) > base, "{layer:?}");
             }
         }

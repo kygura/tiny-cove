@@ -99,28 +99,6 @@ fn rgb(r: f32, g: f32, b: f32) -> [f32; 4] {
     [r, g, b, 0.5]
 }
 
-/// Running-bond blocks: returns (is_joint, block id hash, top-edge highlight).
-fn blocks(x: i32, y: i32, row_h: i32, min_w: i32, seed: u32) -> (bool, f32, bool) {
-    let row = y / row_h;
-    let ry = y % row_h;
-    // Joint positions along the row: deterministic widths summing to 32.
-    let shift = (hash(row, 0, seed) * TILE as f32) as i32;
-    let xs = (x + shift).rem_euclid(TILE as i32);
-    let mut start = 0;
-    let mut idx = 0;
-    loop {
-        let w = min_w + (hash(row, idx + 1, seed) * min_w as f32 * 0.8) as i32;
-        let end = if start + w + min_w > TILE as i32 { TILE as i32 } else { start + w };
-        if xs < end {
-            let joint = ry == row_h - 1 || xs == end - 1;
-            let id = hash(row, idx, seed + 3);
-            return (joint, id, ry == 0);
-        }
-        start = end;
-        idx += 1;
-    }
-}
-
 fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
     let n = |c: i32, seed: u32| vnoise(x, y, c, seed);
     let r = hash(x, y, s as u32 * 31 + 5);
@@ -154,154 +132,199 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             let v = 0.72 + 0.22 * id + 0.08 * n(4, 3);
             grey(if crack { 0.5 } else { v + if y % 11 == 0 { -0.06 } else { 0.0 } })
         }
-        Surface::Gravel => grey(0.92 + (r - 0.5) * 0.1 + 0.04 * n(16, 4)),
+        Surface::Gravel => {
+            // Pea gravel: small round stones with darker gaps, a few dark/light speckles.
+            let (d1, d2, id) = voronoi(x, y, 8, 4);
+            let v = if d2 - d1 < 0.9 { 0.74 } else { 0.86 + 0.12 * id - 0.04 * (d1 / 2.0).min(1.0) };
+            let v = if r > 0.93 { v * 0.82 } else if r < 0.05 { v * 1.08 } else { v };
+            rgb(v, v * 0.98, v * 0.95)
+        }
         Surface::Concrete => {
-            let (joint, id, top) = blocks(x, y, 8, 9, 31);
-            if joint {
-                grey(0.62)
-            } else {
-                let v = 0.8 + 0.18 * id + 0.06 * (n(4, 5) - 0.5) + if top { 0.07 } else { 0.0 };
-                grey(v)
-            }
-        }
-        Surface::Plinth => {
-            let (joint, id, top) = blocks(x, y, 11, 13, 41);
-            if joint {
-                grey(0.45)
-            } else {
-                grey(0.74 + 0.2 * id + 0.08 * (n(4, 6) - 0.5) + if top { 0.08 } else { 0.0 })
-            }
-        }
-        Surface::Earth => {
-            let mut v = 0.96 + 0.05 * (n(16, 7) - 0.5);
-            if r > 0.95 {
+            // Board-formed concrete: horizontal boards (5–6 px), each with its own tone and
+            // a faint grain, 1 px seam lines, tie-hole dots on a 16 px grid with short drips.
+            const EDGES: [i32; 7] = [0, 6, 11, 16, 22, 27, 32];
+            let b = EDGES.iter().rposition(|e| *e <= y).unwrap_or(0).min(5) as i32;
+            let top = y == EDGES[b as usize];
+            let seam = y == EDGES[b as usize + 1] - 1;
+            let grain = vnoise(x, y * 8 + b * 3, 8, 50 + b as u32);
+            let mut v = 0.86 + 0.07 * hash(b, 0, 31) + 0.05 * (grain - 0.5) + 0.03 * (n(16, 32) - 0.5);
+            if seam {
                 v -= 0.07;
+            } else if top {
+                v += 0.025;
+            }
+            let (hx, hy) = ((x - 4).rem_euclid(16), (y - 8).rem_euclid(16));
+            if hx == 0 && hy == 0 {
+                v = 0.58; // tie hole
+            } else if (hx == 0 || (hx == 1 && r > 0.5)) && (1..5).contains(&hy) {
+                v -= 0.05 * (5 - hy) as f32 / 4.0; // drip stain under the hole
+            }
+            if r > 0.97 {
+                v -= 0.05; // blowholes
             }
             grey(v)
         }
+        Surface::Plinth => {
+            // Bush-hammered: dense stipple, chiselled 2 px margin around 32×16 courses.
+            let ry = y % 16;
+            let margin = ry < 2 || x < 2 || ry == 15 || x == 31;
+            let joint = ry == 15 || x == 31;
+            let stipple = hash(x, y, 41) * 0.5 + hash(x / 2, y / 2, 42) * 0.5;
+            let v = if joint {
+                0.6
+            } else if margin {
+                0.9 + 0.03 * (r - 0.5)
+            } else {
+                0.78 + 0.14 * stipple + 0.04 * (n(8, 43) - 0.5)
+            };
+            grey(v)
+        }
+        Surface::Earth => {
+            // Rammed earth: wavy horizontal strata of warm tones, thin darker lifts, pebbles.
+            let wave = (3.0 * (vnoise(x, 0, 16, 44) - 0.5)) as i32;
+            let yy = (y + wave).rem_euclid(32);
+            const BANDS: [(i32, [f32; 3]); 6] = [
+                (5, [1.0, 0.93, 0.82]),
+                (9, [0.93, 0.83, 0.72]),
+                (16, [0.99, 0.9, 0.77]),
+                (19, [0.86, 0.75, 0.65]),
+                (26, [0.97, 0.88, 0.74]),
+                (32, [0.9, 0.8, 0.69]),
+            ];
+            let i = BANDS.iter().position(|(e, _)| yy < *e).unwrap_or(5);
+            let c = BANDS[i].1;
+            let k = 1.0 + 0.04 * (n(4, 45) - 0.5) - if yy == BANDS[i].0 - 1 && i % 2 == 1 { 0.06 } else { 0.0 };
+            let k = if r > 0.95 { k * 0.85 } else if r < 0.03 { k * 1.06 } else { k };
+            rgb(c[0] * k, c[1] * k, c[2] * k)
+        }
         Surface::Cladding => {
+            // Charred timber (shou sugi ban): vertical 8 px boards, 1 px shadow gap,
+            // alligator-crack texture in blocky cells, a lighter batten edge.
             let px = x % 8;
             let plank = x / 8;
+            let crack = (y + plank * 5).rem_euclid(5) == 0 && hash(plank, y / 5, 9) > 0.35;
             let grain = vnoise(x * 4, y, 4, 8 + plank as u32);
-            let mut v = 0.82 + 0.12 * hash(plank, 0, 9) + 0.08 * (grain - 0.5);
+            let mut v = 0.84 + 0.08 * hash(plank, 0, 9) + 0.07 * (grain - 0.5);
             if px == 7 {
-                v = 0.45;
+                v = 0.5;
             } else if px == 0 {
-                v += 0.06;
-            }
-            if (px == 3) && (y % 16 == 3) {
-                v = 0.4; // nail
+                v += 0.07;
+            } else if crack {
+                v -= 0.12;
             }
             grey(v)
         }
         Surface::Steel => {
-            let grain = vnoise(x, y * 4, 4, 10);
-            let ring = ((y as f32 + 3.0 * vnoise(x, 0, 16, 12)) * 0.7).sin();
-            grey(0.82 + 0.1 * (grain - 0.5) + if ring > 0.85 { -0.12 } else { 0.0 })
+            // Flat steel plate with faint vertical mill streaks.
+            let streak = vnoise(x, y / 8, 2, 10);
+            let v = 0.88 + 0.07 * (streak - 0.5) + if r > 0.96 { -0.06 } else { 0.0 };
+            rgb(v, v, v * 1.02)
         }
         Surface::Sedum => {
-            // Rows of 8 px; each tile 8 px wide with rounded lower edge.
-            let row = y / 8;
-            let ry = y % 8;
-            let xs = (x + if row % 2 == 1 { 4 } else { 0 }).rem_euclid(32);
-            let tx = xs % 8;
-            let id = hash(xs / 8, row, 13);
-            let edge = (tx as f32 - 3.5).abs() / 4.0; // 0 centre .. 1 edge
-            let bottom = 7 - (edge * edge * 2.0) as i32;
-            let mut v = 0.82 + 0.15 * id + 0.12 * (1.0 - edge);
-            if ry >= bottom || tx == 0 {
-                v = 0.5;
-            } else if ry == 0 {
-                v -= 0.1;
+            // Sedum mat: dense green-tinted speckle of rosettes, with rare flower dots.
+            let (d1, _, id) = voronoi(x, y, 8, 13);
+            let mut v = 0.95 - (d1 / 2.4).min(1.0) * 0.3 + 0.08 * id;
+            if r > 0.985 {
+                return rgb(1.0, 0.82, 0.62);
+            } else if r > 0.97 {
+                return rgb(1.0, 1.0, 0.72);
             }
-            grey(v)
+            v += 0.04 * (n(8, 14) - 0.5);
+            rgb(v * 0.95, v, v * 0.88)
         }
         Surface::Seam => {
-            let row = y / 6;
-            let ry = y % 6;
-            let shift = (hash(row, 1, 14) * 32.0) as i32;
-            let xs = (x + shift).rem_euclid(32);
-            let w = 8;
-            let id = hash(xs / w, row, 15);
-            let v = if ry == 5 || xs % w == 0 { 0.48 } else { 0.78 + 0.18 * id - 0.03 * ry as f32 };
-            rgb(v * 0.97, v, v * 1.04)
+            // Standing seam: vertical ribs every 8 px (lit side, shadow side), flat pans.
+            let px = x % 8;
+            let pan = 0.84 + 0.04 * hash(x / 8, 0, 15) + 0.03 * (n(16, 14) - 0.5);
+            let v = match px {
+                0 => 1.0,
+                1 => 0.68,
+                _ => pan,
+            };
+            rgb(v * 0.98, v, v * 1.03)
         }
         Surface::Precast => {
-            let layer = y / 10;
-            let ly = y % 10;
-            let strand = vnoise(x * 3 + layer * 7, y, 3, 16);
-            let mut v = 0.78 + 0.25 * strand;
-            if ly == 9 {
-                v = 0.5;
-            } else if ly == 8 {
-                v *= 0.8;
-            }
-            if r > 0.9 {
-                v *= 1.1;
-            }
-            rgb(v, v * 0.96, v * 0.86)
+            // Coffered precast: 16 px panels, raised 3 px ribs, recessed centre with a
+            // shadowed top/left inner edge and a lit bottom/right one.
+            let (cx, cy) = (x % 16, y % 16);
+            let rib = cx < 3 || cy < 3;
+            let v = if rib {
+                if cx == 0 || cy == 0 { 0.8 } else { 0.94 }
+            } else if cx == 3 || cy == 3 {
+                0.7
+            } else if cx == 15 || cy == 15 {
+                0.92
+            } else {
+                0.84 + 0.04 * (n(4, 16) - 0.5)
+            };
+            grey(v + if r > 0.96 { -0.04 } else { 0.0 })
         }
         Surface::Pavers => {
-            let (d1, d2, id) = voronoi(x, y, 5, 17);
-            if d2 - d1 < 1.6 {
-                grey(0.45)
+            // Small square pavers in a grid (8 px), 1 px joints, per-paver tone.
+            let joint = x % 8 == 7 || y % 8 == 7;
+            if joint {
+                grey(0.6)
             } else {
-                let dome = (1.0 - d1 / 5.0).clamp(0.0, 1.0);
-                grey(0.68 + 0.18 * id + 0.18 * dome)
+                let id = hash(x / 8, y / 8, 17);
+                let edge = x % 8 == 0 || y % 8 == 0;
+                grey(0.82 + 0.12 * id + if edge { 0.04 } else { 0.0 } + 0.03 * (r - 0.5))
             }
         }
         Surface::Slabs => {
-            let (d1, d2, id) = voronoi(x, y, 2, 18);
-            if d2 - d1 < 1.4 {
-                grey(0.5)
+            // Large slabs (16 px, offset rows) with grassy joints.
+            let row = y / 16;
+            let xs = (x + if row % 2 == 1 { 8 } else { 0 }).rem_euclid(32);
+            let (jx, jy) = (xs % 16, y % 16);
+            if jx >= 14 || jy >= 14 {
+                let g = 0.7 + 0.2 * hash(x, y, 18);
+                rgb(g * 0.62, g * 0.9, g * 0.45)
             } else {
-                grey(0.78 + 0.16 * id + 0.06 * (n(4, 19) - 0.5))
+                let id = hash(xs / 16, row, 19);
+                grey(0.84 + 0.1 * id + 0.04 * (n(4, 19) - 0.5) + if jx == 0 || jy == 0 { 0.03 } else { 0.0 })
             }
         }
         Surface::Poured => {
-            let row = y / 6;
-            let xs = (x + if row % 2 == 1 { 4 } else { 0 }).rem_euclid(32);
-            let id = hash(xs / 8, row, 20);
-            if y % 6 == 5 || xs % 8 == 7 {
-                grey(0.42)
+            // Poured concrete: smooth, saw-cut joints every 16 px, faint trowel arcs, pits.
+            if x % 16 == 15 || y == 31 {
+                grey(0.66)
             } else {
-                grey(0.7 + 0.22 * id + if y % 6 == 0 { 0.06 } else { 0.0 })
+                let arc = ((x as f32 * 0.4).sin() + (y as f32 * 0.3).cos() * 0.6) * 0.012;
+                grey(0.88 + arc + 0.05 * (n(8, 20) - 0.5) - if r > 0.97 { 0.08 } else { 0.0 })
             }
         }
         Surface::Window => {
-            // Frame 3 px, mullion cross 2 px; glass untinted (alpha 1).
-            let frame = !(3..29).contains(&x) || !(3..29).contains(&y);
-            let mullion = x == 15 || x == 16 || y == 15 || y == 16;
+            // Deep glazing: 2 px frame, two vertical mullions and a transom; glass untinted
+            // (alpha 1) — dark blue-grey with a diagonal sheen and a dim interior.
+            let frame = !(2..30).contains(&x) || !(2..30).contains(&y);
+            let mullion = x == 15 || x == 16 || y == 10;
             if frame {
-                let v = if x == 0 || y == 0 || x == 31 || y == 31 { 0.55 } else { 0.95 };
-                grey(v)
+                grey(if x == 0 || y == 0 || x == 31 || y == 31 { 0.6 } else { 0.9 })
             } else if mullion {
                 grey(0.82)
             } else {
-                // Dark glass with a diagonal sheen; interior silhouette lower right.
-                let sheen = (x + (31 - y)).rem_euclid(14) < 2;
-                let mut c = [0.16, 0.2, 0.26, 1.0];
+                let sheen = (x + (31 - y)).rem_euclid(17) < 2;
+                let mut c = [0.13, 0.16, 0.21, 1.0];
                 if sheen {
-                    c = [0.42, 0.5, 0.58, 1.0];
-                } else if y >= 20 && (19..26).contains(&x) {
-                    c = [0.1, 0.11, 0.14, 0.95];
+                    c = [0.38, 0.45, 0.52, 1.0];
+                } else if y >= 22 && (19..27).contains(&x) {
+                    c = [0.09, 0.09, 0.11, 0.95];
+                } else if y < 10 {
+                    c = [0.2, 0.24, 0.3, 1.0];
                 }
                 c
             }
         }
         Surface::Door => {
-            let px = x % 8;
-            let strap = (5..8).contains(&y) || (24..27).contains(&y);
+            // Flush door: vertical boards, recessed frame, long horizontal pull bar.
             let border = !(2..30).contains(&x) || y < 2;
-            if strap && (2..30).contains(&x) {
-                let rivet = y % 3 == 1 && x % 6 == 3;
-                grey(if rivet { 0.55 } else { 0.28 })
-            } else if border {
-                grey(0.6)
-            } else if px == 7 {
-                grey(0.45)
+            if border {
+                grey(0.62)
+            } else if (20..23).contains(&x) && (12..20).contains(&y) {
+                grey(if x == 20 { 0.95 } else { 0.4 })
+            } else if x % 7 == 1 {
+                grey(0.72)
             } else {
-                grey(0.8 + 0.12 * hash(x / 8, 3, 21) + 0.06 * (vnoise(x * 4, y, 4, 22) - 0.5))
+                grey(0.84 + 0.06 * hash(x / 7, 3, 21) + 0.05 * (vnoise(x * 4, y, 4, 22) - 0.5))
             }
         }
         Surface::Bark => {
@@ -319,15 +342,17 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             [v * 0.95, v, v * 0.85, 0.5]
         }
         Surface::Fiber => {
-            let a = (x + y).rem_euclid(4) == 0;
-            let b = (x - y).rem_euclid(6) == 0;
-            grey(0.85 + 0.1 * (n(4, 25) - 0.5) - if a { 0.12 } else { 0.0 } - if b { 0.06 } else { 0.0 })
+            // Moss / ivy: soft clumps of small leaves with dark gaps.
+            let (d1, d2, id) = voronoi(x, y, 6, 25);
+            let gap = d2 - d1 < 0.8;
+            let v = if gap { 0.68 } else { 0.98 - (d1 / 3.0).min(1.0) * 0.18 + 0.06 * (id - 0.5) };
+            rgb(v * 0.96, v, v * 0.9)
         }
         Surface::Petal => grey(0.95 - if r > 0.9 { 0.1 } else { 0.0 } + 0.04 * (n(8, 26) - 0.5)),
         Surface::Metal => {
             let rivet = x % 16 == 4 && y % 16 == 4;
             let edge = x % 16 == 0 || y % 16 == 0;
-            grey(if rivet { 1.0 } else if edge { 0.5 } else { 0.75 + 0.1 * n(8, 27) })
+            grey(if rivet { 1.0 } else if edge { 0.55 } else { 0.78 + 0.08 * n(8, 27) })
         }
         Surface::Glow => {
             let v = 1.0 - 0.08 * n(8, 28);
