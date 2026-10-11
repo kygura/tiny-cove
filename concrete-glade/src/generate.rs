@@ -335,12 +335,13 @@ fn crater(g: &mut VoxelGrid, seed: u64, c: Vec2, r: f32) {
 
 fn dead_tree(g: &mut VoxelGrid, seed: u64, mut x: i32, mut z: i32) {
     let h = 4 + (hash(seed, 0, 0, 1) % 7) as i32;
-    let mut y = g.top(x, z) + 1;
-    if y < 1 {
+    let y0 = g.top(x, z) + 1;
+    if y0 < 1 {
         return;
     }
     const DIRS: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)];
     for k in 0..h {
+        let y = y0 + k;
         g.set(at(x, y, z), Voxel::DeadWood);
         // Crooked lean: occasionally step sideways (kept face-connected).
         if k > 1 && k < h - 1 && rnd(seed, k, 1, 0) < 0.25 {
@@ -362,7 +363,6 @@ fn dead_tree(g: &mut VoxelGrid, seed: u64, mut x: i32, mut z: i32) {
                 g.set(at(bx, by, bz), Voxel::DeadWood);
             }
         }
-        y += 1;
     }
 }
 
@@ -788,7 +788,8 @@ mod tests {
             for y in GROUND_Y..GROUND_Y + 14 {
                 assert!(vox(&g, x + 0.1, 0.1, y).is_solid(), "gap at x={x} y={y}");
             }
-            assert!(vox(&g, x + 0.1, 0.1, GROUND_Y + 16).is_solid() || vox(&g, x + 0.1, 0.6, GROUND_Y + 16).is_solid());
+            let p = world_to_voxel(Vec3::new(x + 0.1, 0.0, 0.1));
+            assert!((GROUND_Y + 15..GROUND_Y + 20).contains(&g.top(p.x, p.z)), "walkway at x={x}");
         }
         for (x, z) in [(0.0, 10.0), (0.0, -10.0), (20.0, 0.0), (-25.0, 5.0)] {
             for y in 0..SIZE_Y {

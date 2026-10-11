@@ -50,3 +50,11 @@ pub enum EditCommand {
     Redo,
     NewWorld,
 }
+
+/// Live preview state the tools maintain: a structure being drawn and structures
+/// hidden by an in-progress demolish. Scene sync folds it into [`Grid`].
+#[derive(Resource, Default, Clone, Debug, PartialEq)]
+pub struct Ghost {
+    pub pending: Option<crate::structure::Structure>,
+    pub hidden: Vec<crate::structure::StructureId>,
+}
