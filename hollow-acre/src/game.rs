@@ -20,10 +20,14 @@ pub struct DisplayedGrid {
     pub version: u64,
 }
 
-/// The pending structure being dragged, appended to the committed doc for display.
+/// The pending edit being dragged, applied to the committed doc for display:
+/// `add` is appended, structures at indices `remove` are left out (Raze).
 /// Writer: `tools`. Read by `scene`.
-#[derive(Resource, Default)]
-pub struct Ghost(pub Option<acre_core::Structure>);
+#[derive(Resource, Default, Clone, PartialEq)]
+pub struct Ghost {
+    pub add: Option<acre_core::Structure>,
+    pub remove: Vec<usize>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Tool {
