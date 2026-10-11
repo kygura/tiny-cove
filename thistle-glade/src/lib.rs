@@ -2,6 +2,8 @@
 
 pub mod env;
 pub mod render;
+pub mod weather;
+pub mod world;
 
 use bevy::prelude::*;
 
@@ -10,6 +12,6 @@ pub struct GladePlugin;
 
 impl Plugin for GladePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<env::Environment>().add_plugins(render::RenderPlugin);
+        app.init_resource::<env::Environment>().add_plugins((render::RenderPlugin, world::WorldPlugin, weather::WeatherPlugin));
     }
 }
