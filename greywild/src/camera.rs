@@ -6,7 +6,7 @@ use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
 };
-use glade_core::GLADE_HALF;
+use greywild_core::GLADE_HALF;
 
 const MIN_ZOOM: f32 = 0.3;
 const MAX_ZOOM: f32 = 1.6;

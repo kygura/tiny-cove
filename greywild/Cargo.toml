@@ -2,14 +2,14 @@
 members = ["core"]
 
 [package]
-name = "thistle_glade"
+name = "greywild"
 version = "0.1.0"
 edition = "2024"
-default-run = "thistle_glade"
+default-run = "greywild"
 
 [dependencies]
 bevy = "0.20"
-glade_core = { path = "core" }
+greywild_core = { path = "core" }
 
 [profile.dev]
 opt-level = 1

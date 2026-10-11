@@ -289,12 +289,12 @@ mod tests {
             points: vec![Vec2::new(-6.0, 0.0), Vec2::new(6.0, 0.0)],
             height: 4.0,
             thickness: 1.0,
-            material: Material::Stone,
-            battlements: true,
+            material: Material::Concrete,
+            planters: true,
             ruined: false,
             foundation: 0.0,
             roofed: false,
-            roof: RoofStyle::Gable,
+            roof: RoofStyle::Pitched,
             roof_pitch: 0.6,
             openings: vec![],
             colors: Colors::default(),
@@ -302,7 +302,7 @@ mod tests {
         doc.add(Structure::Path(Path {
             points: vec![Vec2::new(0.0, -5.0), Vec2::new(0.0, 5.0)],
             width: 1.5,
-            kind: PathKind::Cobble,
+            kind: PathKind::Pavers,
         }));
         let s = build(&doc);
         assert_eq!(s.parts.len(), 2);

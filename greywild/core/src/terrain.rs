@@ -379,8 +379,8 @@ impl Terrain {
                     } else if wet > 0.5 {
                         (Surface::Dirt, palette::dirt() * 0.6)
                     } else if wet > 0.02 {
-                        (Surface::Sand, palette::sand() * (0.95 + 0.1 * jit))
-                    } else if self.paint(PaintLayer::Dirt, cp) > 0.5 {
+                        (Surface::Gravel, palette::sand() * (0.95 + 0.1 * jit))
+                    } else if self.paint(PaintLayer::Gravel, cp) > 0.5 {
                         (Surface::Dirt, palette::dirt() * (0.93 + 0.14 * jit))
                     } else {
                         let k = vnoise(self.seed ^ 9, c.x * 0.12, c.z * 0.12);
@@ -552,11 +552,11 @@ mod tests {
     fn paint_and_clear() {
         let d = [
             dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Flowers, strength: 2.0 }),
-            dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Dirt, strength: 0.6 }),
+            dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Gravel, strength: 0.6 }),
         ];
         let t = Terrain::build(1, &d, &[]);
         assert_eq!(t.paint(PaintLayer::Flowers, Vec2::ZERO), 1.0);
-        assert!(t.paint(PaintLayer::Dirt, Vec2::ZERO) > 0.5);
+        assert!(t.paint(PaintLayer::Gravel, Vec2::ZERO) > 0.5);
         assert_eq!(t.paint(PaintLayer::Flowers, Vec2::new(10.0, 0.0)), 0.0);
         assert!(t.ground_mesh().surfaces.contains(&(Surface::Dirt as u8)));
         let mut d2 = d.to_vec();
@@ -565,7 +565,7 @@ mod tests {
         d2.push(dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Clear, strength: 1.0 }));
         let c = Terrain::build(1, &d2, &[]);
         assert_eq!(c.paint(PaintLayer::Flowers, Vec2::ZERO), 0.0);
-        assert_eq!(c.paint(PaintLayer::Dirt, Vec2::ZERO), 0.0);
+        assert_eq!(c.paint(PaintLayer::Gravel, Vec2::ZERO), 0.0);
     }
 
     #[test]
@@ -598,7 +598,7 @@ mod tests {
     fn many_dabs() {
         let d: Vec<_> = (0..1000)
             .map(|k| {
-                let op = if k % 3 == 0 { TerrainOp::Sculpt { amount: 0.1 } } else { TerrainOp::Paint { layer: PaintLayer::Grain, strength: 0.2 } };
+                let op = if k % 3 == 0 { TerrainOp::Sculpt { amount: 0.1 } } else { TerrainOp::Paint { layer: PaintLayer::Moss, strength: 0.2 } };
                 dab((k % 40) as f32 - 20.0, (k / 40) as f32 - 12.0, 3.0, op)
             })
             .collect();

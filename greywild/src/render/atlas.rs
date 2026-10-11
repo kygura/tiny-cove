@@ -10,7 +10,7 @@ use bevy::{
     image::{Image, ImageSampler},
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use glade_core::Surface;
+use greywild_core::Surface;
 
 pub const TILE: u32 = 32;
 pub const COLS: u32 = 8;
@@ -20,18 +20,18 @@ const ALL: [Surface; Surface::COUNT] = [
     Surface::Grass,
     Surface::Dirt,
     Surface::Rock,
-    Surface::Sand,
-    Surface::Stone,
-    Surface::Foundation,
-    Surface::Plaster,
-    Surface::Planks,
-    Surface::Timber,
-    Surface::RoofTile,
-    Surface::Slate,
-    Surface::Thatch,
-    Surface::Cobble,
-    Surface::Flagstone,
-    Surface::Setts,
+    Surface::Gravel,
+    Surface::Concrete,
+    Surface::Plinth,
+    Surface::Earth,
+    Surface::Cladding,
+    Surface::Steel,
+    Surface::Sedum,
+    Surface::Seam,
+    Surface::Precast,
+    Surface::Pavers,
+    Surface::Slabs,
+    Surface::Poured,
     Surface::Window,
     Surface::Door,
     Surface::Bark,
@@ -154,8 +154,8 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             let v = 0.72 + 0.22 * id + 0.08 * n(4, 3);
             grey(if crack { 0.5 } else { v + if y % 11 == 0 { -0.06 } else { 0.0 } })
         }
-        Surface::Sand => grey(0.92 + (r - 0.5) * 0.1 + 0.04 * n(16, 4)),
-        Surface::Stone => {
+        Surface::Gravel => grey(0.92 + (r - 0.5) * 0.1 + 0.04 * n(16, 4)),
+        Surface::Concrete => {
             let (joint, id, top) = blocks(x, y, 8, 9, 31);
             if joint {
                 grey(0.62)
@@ -164,7 +164,7 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
                 grey(v)
             }
         }
-        Surface::Foundation => {
+        Surface::Plinth => {
             let (joint, id, top) = blocks(x, y, 11, 13, 41);
             if joint {
                 grey(0.45)
@@ -172,14 +172,14 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
                 grey(0.74 + 0.2 * id + 0.08 * (n(4, 6) - 0.5) + if top { 0.08 } else { 0.0 })
             }
         }
-        Surface::Plaster => {
+        Surface::Earth => {
             let mut v = 0.96 + 0.05 * (n(16, 7) - 0.5);
             if r > 0.95 {
                 v -= 0.07;
             }
             grey(v)
         }
-        Surface::Planks => {
+        Surface::Cladding => {
             let px = x % 8;
             let plank = x / 8;
             let grain = vnoise(x * 4, y, 4, 8 + plank as u32);
@@ -194,12 +194,12 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             }
             grey(v)
         }
-        Surface::Timber => {
+        Surface::Steel => {
             let grain = vnoise(x, y * 4, 4, 10);
             let ring = ((y as f32 + 3.0 * vnoise(x, 0, 16, 12)) * 0.7).sin();
             grey(0.82 + 0.1 * (grain - 0.5) + if ring > 0.85 { -0.12 } else { 0.0 })
         }
-        Surface::RoofTile => {
+        Surface::Sedum => {
             // Rows of 8 px; each tile 8 px wide with rounded lower edge.
             let row = y / 8;
             let ry = y % 8;
@@ -216,7 +216,7 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             }
             grey(v)
         }
-        Surface::Slate => {
+        Surface::Seam => {
             let row = y / 6;
             let ry = y % 6;
             let shift = (hash(row, 1, 14) * 32.0) as i32;
@@ -226,7 +226,7 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             let v = if ry == 5 || xs % w == 0 { 0.48 } else { 0.78 + 0.18 * id - 0.03 * ry as f32 };
             rgb(v * 0.97, v, v * 1.04)
         }
-        Surface::Thatch => {
+        Surface::Precast => {
             let layer = y / 10;
             let ly = y % 10;
             let strand = vnoise(x * 3 + layer * 7, y, 3, 16);
@@ -241,7 +241,7 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             }
             rgb(v, v * 0.96, v * 0.86)
         }
-        Surface::Cobble => {
+        Surface::Pavers => {
             let (d1, d2, id) = voronoi(x, y, 5, 17);
             if d2 - d1 < 1.6 {
                 grey(0.45)
@@ -250,7 +250,7 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
                 grey(0.68 + 0.18 * id + 0.18 * dome)
             }
         }
-        Surface::Flagstone => {
+        Surface::Slabs => {
             let (d1, d2, id) = voronoi(x, y, 2, 18);
             if d2 - d1 < 1.4 {
                 grey(0.5)
@@ -258,7 +258,7 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
                 grey(0.78 + 0.16 * id + 0.06 * (n(4, 19) - 0.5))
             }
         }
-        Surface::Setts => {
+        Surface::Poured => {
             let row = y / 6;
             let xs = (x + if row % 2 == 1 { 4 } else { 0 }).rem_euclid(32);
             let id = hash(xs / 8, row, 20);
@@ -392,6 +392,6 @@ mod tests {
     fn glow_and_glass_are_emissive() {
         assert_eq!(texel(Surface::Glow, 3, 3)[3], 1.0);
         assert!(texel(Surface::Window, 8, 8)[3] > 0.9);
-        assert!(texel(Surface::Stone, 8, 8)[3] < 0.9);
+        assert!(texel(Surface::Concrete, 8, 8)[3] < 0.9);
     }
 }

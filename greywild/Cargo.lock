@@ -2874,13 +2874,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glade_core"
-version = "0.1.0"
-dependencies = [
- "glam",
-]
-
-[[package]]
 name = "glam"
 version = "0.33.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2969,6 +2962,21 @@ dependencies = [
  "presser",
  "thiserror 2.0.21",
  "windows",
+]
+
+[[package]]
+name = "greywild"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "greywild_core",
+]
+
+[[package]]
+name = "greywild_core"
+version = "0.1.0"
+dependencies = [
+ "glam",
 ]
 
 [[package]]
@@ -5146,14 +5154,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.7",
-]
-
-[[package]]
-name = "thistle_glade"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "glade_core",
 ]
 
 [[package]]

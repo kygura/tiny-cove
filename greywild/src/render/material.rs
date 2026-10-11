@@ -18,8 +18,8 @@ use bevy::{
     shader::ShaderRef,
 };
 
-const SHADER: &str = "embedded://thistle_glade/render/glade.wesl";
-const PREPASS_SHADER: &str = "embedded://thistle_glade/render/glade_prepass.wesl";
+const SHADER: &str = "embedded://greywild/render/glade.wesl";
+const PREPASS_SHADER: &str = "embedded://greywild/render/glade_prepass.wesl";
 
 /// The one storage buffer holding [`Globals`], shared by every material.
 pub const GLOBALS: Handle<ShaderBuffer> = uuid_handle!("3d0c6a7e-91f2-4b8a-a5d3-7e19c40b2f61");
@@ -103,7 +103,7 @@ fn specialize_solid(
     Ok(())
 }
 
-/// Opaque PS1 cel material for every [`glade_core::MeshData`] (via
+/// Opaque PS1 cel material for every [`greywild_core::MeshData`] (via
 /// [`super::to_bevy_mesh`]). One shared instance lives in `GladeAssets::opaque`.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct GladeMaterial {

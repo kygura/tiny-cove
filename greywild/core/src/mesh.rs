@@ -14,41 +14,46 @@ use glam::{Vec2, Vec3};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Surface {
     Grass = 0,
+    /// Bare soil.
     Dirt,
     Rock,
-    Sand,
-    /// Rough fieldstone blocks (walls).
-    Stone,
-    /// Darker big-block foundation stone.
-    Foundation,
-    /// Smooth lime plaster.
-    Plaster,
-    /// Vertical planks.
-    Planks,
-    /// Timber beam (half-timbering, posts, rails).
-    Timber,
-    /// Clay roof tiles (rows).
-    RoofTile,
-    /// Slate shingles.
-    Slate,
-    /// Straw thatch.
-    Thatch,
-    Cobble,
-    Flagstone,
-    Setts,
-    /// Window glass with mullions. Emissive at night.
+    /// Loose gravel / sand.
+    Gravel,
+    /// Board-formed concrete: horizontal plank imprint, tie holes (walls, blocks).
+    Concrete,
+    /// Darker bush-hammered concrete plinth.
+    Plinth,
+    /// Rammed earth: warm horizontal strata.
+    Earth,
+    /// Charred vertical timber cladding.
+    Cladding,
+    /// Steel members (beams, posts, rails, fins). Tinted by the accent colour.
+    Steel,
+    /// Green roof: sedum / moss mat.
+    Sedum,
+    /// Standing-seam metal roof.
+    Seam,
+    /// Smooth precast panels with coffers (shell roofs, bridges).
+    Precast,
+    /// Small concrete pavers.
+    Pavers,
+    /// Large concrete slabs with grass joints.
+    Slabs,
+    /// Poured concrete with expansion joints.
+    Poured,
+    /// Deep glazing with thin mullions. Emissive at night.
     Window,
-    /// Plank door with iron straps.
+    /// Flush steel / timber door.
     Door,
     Bark,
     Leaves,
-    /// Rope / cloth / hay — fibrous.
+    /// Moss, ivy, rope, cloth — soft fibrous green-ish.
     Fiber,
     /// Flower petals / small plants: flat colour with a little speckle.
     Petal,
-    /// Metal (lantern frames, hinges).
+    /// Dark metal (lamp housings, hinges, panels).
     Metal,
-    /// Lantern glass / flame. Always emissive.
+    /// Lamp glass / sodium light. Always emissive.
     Glow,
     /// Water surface (only used in the water mesh).
     Water,
@@ -359,15 +364,15 @@ mod tests {
     #[test]
     fn helpers_emit_valid_meshes() {
         let mut m = MeshData::default();
-        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Stone, 1.0);
-        m.beam(Vec3::ZERO, Vec3::new(3.0, 1.0, 0.0), 0.2, 0.2, Vec3::ONE, Surface::Timber, 1.0);
-        m.cylinder(Vec3::ZERO, 1.0, 0.0, 2.0, 8, false, true, Vec3::ONE, Surface::Slate, 1.0);
-        m.cylinder(Vec3::ZERO, 1.0, 1.0, 2.0, 8, true, true, Vec3::ONE, Surface::Stone, 1.0);
+        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Concrete, 1.0);
+        m.beam(Vec3::ZERO, Vec3::new(3.0, 1.0, 0.0), 0.2, 0.2, Vec3::ONE, Surface::Steel, 1.0);
+        m.cylinder(Vec3::ZERO, 1.0, 0.0, 2.0, 8, false, true, Vec3::ONE, Surface::Seam, 1.0);
+        m.cylinder(Vec3::ZERO, 1.0, 1.0, 2.0, 8, true, true, Vec3::ONE, Surface::Concrete, 1.0);
         assert!(m.is_valid());
         assert!(!m.is_empty());
         // Box top normal faces up.
         let mut b = MeshData::default();
-        b.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Stone, 1.0);
+        b.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Concrete, 1.0);
         assert!(b.normals.iter().any(|n| n[1] > 0.99));
         assert!(b.normals.iter().any(|n| n[1] < -0.99));
         // Every face of a box points away from its centre (outward winding).

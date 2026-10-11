@@ -1,4 +1,4 @@
-//! THISTLE GLADE: a cosy medieval glade builder with a PS1 cel-shaded look.
+//! GREYWILD: a cosy medieval glade builder with a PS1 cel-shaded look.
 
 pub mod camera;
 pub mod env;

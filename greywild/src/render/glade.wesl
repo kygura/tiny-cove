@@ -1,4 +1,4 @@
-// THISTLE GLADE main pass: PS1 rasteriser (snapped vertices, affine UVs, nearest atlas)
+// GREYWILD main pass: PS1 rasteriser (snapped vertices, affine UVs, nearest atlas)
 // with Tiny Glade-ish cel lighting (3 hard bands from N.L x sun shadow map, cool shadow
 // tint, hemispheric ambient, rim), weather (wet glints, snow cover, lightning) and fog.
 // 15-bit quantise + Bayer dither happen in the post pass (post.wesl) so outlines and
@@ -38,7 +38,7 @@ struct WaterParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var atlas: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var<uniform> water: WaterParams;
 
-// Surface ids (glade_core::Surface).
+// Surface ids (greywild_core::Surface).
 const S_GRASS: u32 = 0u;
 const S_SAND: u32 = 3u;
 const S_FOUNDATION: u32 = 5u;

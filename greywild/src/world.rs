@@ -4,8 +4,8 @@
 //! - [`Glade`] resource: undo history + an optional live preview document. Tools call
 //!   `set_preview` while dragging and `commit` on release; the world rebuilds the scene from
 //!   `doc()` whenever `revision` changes.
-//! - [`BuiltScene`] resource: the latest built `glade_core::Scene` (terrain, markers…), for
-//!   picking (`glade_core::scene::pick`) and for life/weather to read markers and terrain.
+//! - [`BuiltScene`] resource: the latest built `greywild_core::Scene` (terrain, markers…), for
+//!   picking (`greywild_core::scene::pick`) and for life/weather to read markers and terrain.
 //! - Entities: every spawned scene entity carries [`SceneEntity`]; structure parts also carry
 //!   [`PartOf`] with their structure id (for hover highlight / eraser).
 //!
@@ -17,7 +17,7 @@ use crate::env::Environment;
 use crate::render::{GladeAssets, RenderSetup, lantern_light, to_bevy_mesh};
 use crate::shot::Cli;
 use bevy::{light::NotShadowCaster, prelude::*};
-use glade_core::{Document, History, MarkerKind, MeshData, Scene, StructureId};
+use greywild_core::{Document, History, MarkerKind, MeshData, Scene, StructureId};
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Resource)]
@@ -104,7 +104,7 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         let cli = app.world().get_resource::<Cli>().cloned().unwrap_or_default();
         let doc = if cli.demo || cli.shot.is_some() {
-            glade_core::demo::demo_document(cli.seed())
+            greywild_core::demo::demo_document(cli.seed())
         } else {
             Document::new(cli.seed())
         };
@@ -157,7 +157,7 @@ fn sync_scene(
         return;
     }
     let t0 = std::time::Instant::now();
-    let scene = Arc::new(glade_core::build(glade.doc()));
+    let scene = Arc::new(greywild_core::build(glade.doc()));
     let t_build = t0.elapsed();
     let old = built.0.take();
     let old = old.as_deref();

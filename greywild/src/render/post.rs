@@ -26,7 +26,7 @@ use bevy::{
     },
 };
 
-const SHADER: &str = "embedded://thistle_glade/render/post.wesl";
+const SHADER: &str = "embedded://greywild/render/post.wesl";
 
 /// Per-camera post settings (uniform). Field order mirrors `post.wesl`.
 #[derive(Component, Clone, Copy, Debug, PartialEq, ExtractComponent, ShaderType)]

@@ -1,4 +1,4 @@
-//! The document: an ordered list of terrain strokes and structures, plus undo history.
+//! GREYWILD document: an ordered list of terrain strokes and structures, plus undo history.
 //!
 //! Everything here is plain data. `crate::scene::build` turns a [`Document`] into meshes.
 //! World units are metres, `y` is up, the glade spans `x, z ∈ [-GLADE_HALF, GLADE_HALF]`.
@@ -31,14 +31,14 @@ pub enum TerrainOp {
 /// Paintable ground layers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PaintLayer {
-    /// Meadow flowers (mixed colours).
+    /// Wildflowers (mixed colours).
     Flowers,
-    /// Round bushes.
-    Bushes,
-    /// Golden grain / wheat.
-    Grain,
-    /// Bare dirt.
-    Dirt,
+    /// Ferns.
+    Ferns,
+    /// Low moss carpet.
+    Moss,
+    /// Gravel ground.
+    Gravel,
     /// Remove all painted layers.
     Clear,
 }
@@ -59,27 +59,28 @@ pub struct TerrainDab {
 /// Main building material of walls and houses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Material {
-    /// Rough fieldstone blocks.
+    /// Board-formed concrete.
     #[default]
-    Stone,
-    /// Lime-washed plaster over stone (houses). Walls treat it as stone.
-    Plaster,
-    /// Vertical wooden planks.
-    Wood,
+    Concrete,
+    /// Rammed earth in warm strata.
+    RammedEarth,
+    /// Charred vertical timber cladding over a concrete core.
+    Timber,
 }
 
 /// Roof shapes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum RoofStyle {
-    /// Two slopes, gable ends (rectangles). Round footprints fall back to `Cone`.
+    /// Sharp slab gable: two thick concrete planes, deep overhang, open gable ends.
+    /// Round footprints fall back to `Shell`.
     #[default]
-    Gable,
-    /// Four slopes meeting in a ridge.
-    Hip,
-    /// Steep cone (round footprints) or pyramid (rectangles).
-    Cone,
-    /// Flat roof with a low parapet; battlements if the structure asks for them.
-    Flat,
+    Pitched,
+    /// Saw-tooth north-light roof: repeated monopitch bays with glazed verticals.
+    Sawtooth,
+    /// Shell: shallow dome / cone (round footprints) or folded pyramid (rectangles).
+    Shell,
+    /// Flat green roof with a thick parapet; planter boxes if the structure asks for them.
+    Green,
 }
 
 /// Palette indices. The renderer owns the actual colours (see `palette` module).
@@ -114,11 +115,11 @@ pub struct Opening {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OpeningKind {
-    /// Small shuttered window, ~0.8 m wide, sill at 1.0 m.
+    /// Deep slot window, ~0.8 m wide, sill at 1.0 m.
     Window,
-    /// Wooden door, ~1.1 m wide, 2.0 m tall (arched top on stone).
+    /// Recessed door, ~1.1 m wide, 2.0 m tall.
     Door,
-    /// Wide doorway / arch, ~2.4 m wide.
+    /// Wide portal, ~2.4 m wide.
     WideDoor,
 }
 
@@ -147,9 +148,9 @@ pub struct Wall {
     /// Thickness in metres (0.4 .. 2.0).
     pub thickness: f32,
     pub material: Material,
-    /// Merlons along the top.
-    pub battlements: bool,
-    /// Jagged, broken top (ruins; the snip tool).
+    /// Crenellated planter boxes with spilling greenery along the top.
+    pub planters: bool,
+    /// Broken top with exposed rebar (ruins; the snip tool).
     pub ruined: bool,
     /// Height of a darker stone plinth/foundation (0 = none).
     pub foundation: f32,
@@ -159,9 +160,11 @@ pub struct Wall {
     pub roof_pitch: f32,
     pub openings: Vec<Opening>,
     pub colors: Colors,
+    /// 0..=1: moss, ivy and water staining (the brutalist "peeling plaster" slider).
+    pub overgrowth: f32,
 }
 
-/// House (rect) or tower (round). Walls rise from the ground (flattened under the footprint).
+/// Block (rect) or silo tower (round). Walls rise from the ground (flattened under the footprint).
 #[derive(Clone, Debug, PartialEq)]
 pub struct House {
     pub footprint: Footprint,
@@ -171,28 +174,30 @@ pub struct House {
     /// Roof rise as a fraction of the footprint's smaller half extent / radius (0 = flat).
     pub roof_pitch: f32,
     pub material: Material,
-    /// Exposed timber framing on upper storeys (plaster/wood houses).
-    pub half_timber: bool,
+    /// Brise-soleil: a grid of deep vertical concrete fins on the façades.
+    pub fins: bool,
     /// Stone plinth height (0 = none).
     pub foundation: f32,
-    /// Flat roofs only: crenellations.
-    pub battlements: bool,
+    /// Green roofs only: crenellated planter boxes on the parapet.
+    pub planters: bool,
     /// Player-placed openings. If empty, windows and one door are generated automatically.
     pub openings: Vec<Opening>,
     pub colors: Colors,
+    /// 0..=1: moss, ivy and water staining.
+    pub overgrowth: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FenceKind {
-    /// Wooden posts with two rails.
+    /// Steel tube posts with two rails.
     #[default]
-    WoodRail,
-    /// Pointed wooden pickets.
-    Picket,
-    /// Low dry-stone wall (~0.8 m).
-    Stone,
-    /// Woven wattle hurdles.
-    Wattle,
+    Railing,
+    /// Low concrete balustrade with balusters (~1 m).
+    Balustrade,
+    /// Wire-cage gabion of rocks (~0.9 m).
+    Gabion,
+    /// Concrete planter trough with a clipped hedge.
+    Hedge,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -204,15 +209,17 @@ pub struct Fence {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PathKind {
-    /// Trodden dirt.
+    /// Loose gravel with a concrete kerb.
     #[default]
-    Dirt,
-    /// Rounded cobbles.
-    Cobble,
-    /// Large irregular flagstones.
-    Flagstone,
-    /// Neat rectangular setts in a herringbone-ish pattern.
-    Setts,
+    Gravel,
+    /// Small concrete pavers.
+    Pavers,
+    /// Large concrete slabs with grass joints.
+    Slabs,
+    /// Poured concrete with expansion joints.
+    Poured,
+    /// Separate slabs set into the grass.
+    Stepping,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -225,12 +232,12 @@ pub struct Path {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum StairKind {
-    /// Wooden steps with railings (railing colour = `Colors::trim`).
+    /// Open steel stair with railings (railing colour = `Colors::trim`).
     #[default]
-    Wood,
-    /// Solid stone steps.
-    Stone,
-    /// Wooden ladder.
+    Steel,
+    /// Solid cast concrete steps.
+    Concrete,
+    /// Steel ladder.
     Ladder,
 }
 
@@ -244,7 +251,7 @@ pub struct Stairs {
     pub colors: Colors,
 }
 
-/// Wooden platform on posts.
+/// Concrete deck on pilotis.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Platform {
     pub center: Vec2,
@@ -257,20 +264,21 @@ pub struct Platform {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BridgeKind {
-    /// Sagging rope bridge with planks; `railing` 0..4 picks one of four railing designs.
-    Rope { railing: u8 },
-    /// Arched stone bridge.
-    Stone,
-    /// Flat wooden bridge on trestles.
-    Wood,
+    /// Light cable bridge with a sagging steel-mesh deck; `railing` 0..4 picks one of four
+    /// railing designs.
+    Cable { railing: u8 },
+    /// Concrete arch bridge.
+    Arch,
+    /// Steel box-girder bridge on concrete piers.
+    Girder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Hanging {
     #[default]
     None,
-    Lanterns,
-    Flags,
+    Lamps,
+    Vines,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -292,24 +300,26 @@ pub enum TreeKind {
     Birch,
     /// Small fruit tree with blossom.
     Fruit,
+    /// Tree fern: rough trunk with a crown of fronds.
+    Fern,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ClutterKind {
-    Barrel,
-    Crate,
-    Haystack,
-    Well,
-    Cart,
+    RainBarrel,
+    Planter,
+    Compost,
+    Cistern,
+    Wheelbarrow,
     Bench,
-    LanternPost,
-    FlagPole,
+    LampPost,
+    WindTurbine,
     WashingLine,
-    Woodpile,
+    LogPile,
     Rock,
     Bush,
     Beehive,
-    Scarecrow,
+    Solar,
 }
 
 /// Single placed object (tree or clutter).

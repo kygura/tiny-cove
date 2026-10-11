@@ -1,4 +1,4 @@
-//! THISTLE GLADE core: document model, terrain and procedural geometry. No Bevy.
+//! GREYWILD core: document model, terrain and procedural geometry. No Bevy.
 
 pub mod buildings;
 pub mod demo;

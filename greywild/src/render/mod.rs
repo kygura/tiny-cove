@@ -48,7 +48,7 @@ use bevy::{
     },
     window::PrimaryWindow,
 };
-use glade_core::MeshData;
+use greywild_core::MeshData;
 use std::path::{Path, PathBuf};
 
 /// Internal render height in pixels.
@@ -299,7 +299,7 @@ fn update_post_settings(
     }
 }
 
-/// Converts glade_core mesh buffers to a Bevy mesh with POSITION, NORMAL, UV_0, COLOR
+/// Converts greywild_core mesh buffers to a Bevy mesh with POSITION, NORMAL, UV_0, COLOR
 /// and UV_1 = (surface id, 0). Short attribute slices are padded instead of panicking.
 pub fn to_bevy_mesh(m: &MeshData) -> Mesh {
     let n = m.positions.len();
@@ -391,7 +391,7 @@ fn screenshot_on_f12(mut commands: Commands, keys: Res<ButtonInput<KeyCode>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glade_core::Surface;
+    use greywild_core::Surface;
 
     #[test]
     fn cursor_scales_to_low_res() {
@@ -409,13 +409,13 @@ mod tests {
     #[test]
     fn mesh_conversion_keeps_surfaces() {
         let mut m = MeshData::default();
-        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Slate, 1.0);
+        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Seam, 1.0);
         let b = to_bevy_mesh(&m);
         assert_eq!(b.count_vertices(), 24);
         let Some(bevy::mesh::VertexAttributeValues::Float32x2(s)) = b.attribute(Mesh::ATTRIBUTE_UV_1) else {
             panic!("uv1 missing")
         };
-        assert_eq!(s[0][0], Surface::Slate as u8 as f32);
+        assert_eq!(s[0][0], Surface::Seam as u8 as f32);
     }
 
     #[test]
