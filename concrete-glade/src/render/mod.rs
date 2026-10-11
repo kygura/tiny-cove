@@ -77,8 +77,15 @@ impl Plugin for Ps1Plugin {
 
 fn low_res_for(window: Option<&Window>) -> UVec2 {
     let aspect = window.map_or(16.0 / 9.0, |w| w.width() / w.height().max(1.0));
-    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 16.0 / 9.0 };
-    UVec2::new(((LOW_RES_HEIGHT as f32 * aspect).round() as u32).max(1), LOW_RES_HEIGHT)
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        16.0 / 9.0
+    };
+    UVec2::new(
+        ((LOW_RES_HEIGHT as f32 * aspect).round() as u32).max(1),
+        LOW_RES_HEIGHT,
+    )
 }
 
 fn setup(
@@ -94,7 +101,10 @@ fn setup(
 
     let atlas = images.add(atlas::atlas_image());
     let material = materials.add(VoxelMaterial {
-        params: VoxelParams { snap_res: size.as_vec2() * SNAP_SCALE, ..default() },
+        params: VoxelParams {
+            snap_res: size.as_vec2() * SNAP_SCALE,
+            ..default()
+        },
         atlas,
     });
 
@@ -105,7 +115,11 @@ fn setup(
     commands.spawn((
         GameCamera,
         Camera3d::default(),
-        Camera { order: -1, clear_color: ClearColorConfig::Custom(FOG_COLOR), ..default() },
+        Camera {
+            order: -1,
+            clear_color: ClearColorConfig::Custom(FOG_COLOR),
+            ..default()
+        },
         RenderTarget::Image(target.clone().into()),
         Msaa::Off,
         Tonemapping::None,
@@ -115,7 +129,11 @@ fn setup(
     commands.spawn((
         WindowCamera,
         Camera2d,
-        Camera { order: 0, clear_color: ClearColorConfig::Custom(Color::BLACK), ..default() },
+        Camera {
+            order: 0,
+            clear_color: ClearColorConfig::Custom(Color::BLACK),
+            ..default()
+        },
         Msaa::Off,
         Tonemapping::None,
         DebandDither::Disabled,
@@ -149,7 +167,11 @@ fn fit_to_window(
     }
     low.size = size;
     if let Some(mut image) = images.get_mut(&target.0) {
-        image.resize(Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 });
+        image.resize(Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        });
     }
     if let Some(mut m) = materials.get_mut(&material.0) {
         m.params.snap_res = size.as_vec2() * SNAP_SCALE;
@@ -160,12 +182,15 @@ fn fit_to_window(
 /// COLOR (Float32x4) and UV_0. An empty `ChunkMesh` gives a valid mesh with no
 /// vertices; callers should skip spawning (or despawn) such chunks instead.
 pub fn chunk_mesh_to_bevy(m: &ChunkMesh) -> Mesh {
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, m.colors.clone())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone())
-        .with_inserted_indices(Indices::U32(m.indices.clone()))
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, m.colors.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone())
+    .with_inserted_indices(Indices::U32(m.indices.clone()))
 }
 
 /// Maps a window cursor position (logical px, top-left origin) to low-res target pixels.

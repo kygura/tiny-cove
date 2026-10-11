@@ -1,9 +1,9 @@
 //! The PS1 voxel material. Shader: `assets/shaders/voxel.wesl` (embedded).
 
 use bevy::{
+    asset::uuid_handle,
     mesh::MeshVertexBufferLayoutRef,
     pbr::{MaterialPipeline, MaterialPipelineKey},
-    asset::uuid_handle,
     prelude::*,
     render::render_resource::{
         AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,

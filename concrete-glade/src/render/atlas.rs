@@ -22,7 +22,8 @@ pub fn tile_uv_rect(v: Voxel) -> ([f32; 2], [f32; 2]) {
 }
 
 fn hash(x: u32, y: u32, seed: u32) -> f32 {
-    let mut h = x.wrapping_mul(0x27d4_eb2d) ^ y.wrapping_mul(0x1656_67b1) ^ seed.wrapping_mul(0x9e37_79b9);
+    let mut h =
+        x.wrapping_mul(0x27d4_eb2d) ^ y.wrapping_mul(0x1656_67b1) ^ seed.wrapping_mul(0x9e37_79b9);
     h ^= h >> 15;
     h = h.wrapping_mul(0x85eb_ca6b);
     h ^= h >> 13;
@@ -32,7 +33,11 @@ fn hash(x: u32, y: u32, seed: u32) -> f32 {
 }
 
 fn hex(c: u32) -> [f32; 3] {
-    [(c >> 16) as f32, ((c >> 8) & 0xff) as f32, (c & 0xff) as f32]
+    [
+        (c >> 16) as f32,
+        ((c >> 8) & 0xff) as f32,
+        (c & 0xff) as f32,
+    ]
 }
 
 fn shade(c: [f32; 3], k: f32) -> [f32; 3] {
@@ -40,7 +45,11 @@ fn shade(c: [f32; 3], k: f32) -> [f32; 3] {
 }
 
 fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
 }
 
 /// Blocky 2x2 value noise in roughly -1..1.
@@ -56,8 +65,12 @@ fn window(x: u32, y: u32, frame: [f32; 3], glass: [f32; 3], lit: bool) -> [f32; 
     if lit {
         // Warmer at the bottom, a dim figure-shaped blot in one pane.
         let g = shade(glass, 0.92 + y as f32 * 0.008);
-        if (10..13).contains(&x) && y >= 11 { shade(glass, 0.7) } else { g }
-    } else if (x + 15 - y) % 9 == 0 {
+        if (10..13).contains(&x) && y >= 11 {
+            shade(glass, 0.7)
+        } else {
+            g
+        }
+    } else if (x + 15 - y).is_multiple_of(9) {
         mix(glass, hex(0x3a4048), 0.6)
     } else {
         shade(glass, 1.0 + noise(x, y, 7) * 0.08)
@@ -70,18 +83,29 @@ fn texel(v: Voxel, x: u32, y: u32) -> [f32; 3] {
         Voxel::Ash => shade(hex(0x7a766e), 1.0 + noise(x, y, 1) * 0.07),
         Voxel::Scorch => {
             let n = noise(x, y, 2);
-            shade(hex(0x3d3833), 1.0 + n * 0.12 - if hash(x, y, 3) > 0.9 { 0.15 } else { 0.0 })
+            shade(
+                hex(0x3d3833),
+                1.0 + n * 0.12 - if hash(x, y, 3) > 0.9 { 0.15 } else { 0.0 },
+            )
         }
         Voxel::Asphalt => {
             // Wandering crack down the tile plus a short branch.
             let cx = 5 + (0..=y).map(|i| hash(0, i, 4) > 0.6).filter(|&b| b).count() as u32 / 2;
             let crack = x == cx.min(15) || (y == 10 && (cx..cx + 5).contains(&x));
-            if crack { hex(0x4b4946) } else { shade(hex(0x2c2b2a), 1.0 + noise(x, y, 5) * 0.06) }
+            if crack {
+                hex(0x4b4946)
+            } else {
+                shade(hex(0x2c2b2a), 1.0 + noise(x, y, 5) * 0.06)
+            }
         }
         Voxel::Rubble => {
             let gap = x % 5 == 4 && hash(x / 5, y / 4, 6) > 0.4 || y % 4 == 3;
             let k = 0.85 + hash(x / 5, y / 4, 7) * 0.3;
-            if gap { hex(0x3d3833) } else { shade(hex(0x5e5a54), k + noise(x, y, 8) * 0.04) }
+            if gap {
+                hex(0x3d3833)
+            } else {
+                shade(hex(0x5e5a54), k + noise(x, y, 8) * 0.04)
+            }
         }
         Voxel::Concrete => concrete(x, y, hex(0x9a958b), hex(0x87827a), 9),
         Voxel::ConcreteDark => concrete(x, y, hex(0x6a665f), hex(0x58544e), 10),
@@ -90,15 +114,32 @@ fn texel(v: Voxel, x: u32, y: u32) -> [f32; 3] {
         Voxel::Rust => {
             let h = hash(x, y, 11);
             let base = shade(hex(0x7b4a2e), 1.0 + noise(x, y, 12) * 0.08);
-            if h > 0.92 { hex(0x9a6038) } else if h < 0.1 { hex(0x55311f) } else { base }
+            if h > 0.92 {
+                hex(0x9a6038)
+            } else if h < 0.1 {
+                hex(0x55311f)
+            } else {
+                base
+            }
         }
         Voxel::DeadWood => {
-            let grain = (x + (hash(0, y / 3, 13) * 2.0) as u32) % 4 == 0;
-            shade(hex(0x3b3029), if grain { 0.78 } else { 1.0 + noise(x, y, 14) * 0.05 })
+            let grain = (x + (hash(0, y / 3, 13) * 2.0) as u32).is_multiple_of(4);
+            shade(
+                hex(0x3b3029),
+                if grain {
+                    0.78
+                } else {
+                    1.0 + noise(x, y, 14) * 0.05
+                },
+            )
         }
         Voxel::Lamp => {
             let d = (x as f32 - 7.5).abs().max((y as f32 - 7.5).abs());
-            if d > 6.0 { hex(0x4a2a20) } else { mix(hex(0xf0a070), hex(0xd8452f), (d / 6.0).powf(0.7)) }
+            if d > 6.0 {
+                hex(0x4a2a20)
+            } else {
+                mix(hex(0xf0a070), hex(0xd8452f), (d / 6.0).powf(0.7))
+            }
         }
     }
 }
@@ -162,7 +203,11 @@ pub fn atlas_pixels() -> Vec<u8> {
 /// The atlas as a nearest-sampled sRGB image without mipmaps.
 pub fn atlas_image() -> Image {
     let mut image = Image::new(
-        Extent3d { width: ATLAS_SIZE, height: ATLAS_SIZE, depth_or_array_layers: 1 },
+        Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         atlas_pixels(),
         TextureFormat::Rgba8UnormSrgb,
