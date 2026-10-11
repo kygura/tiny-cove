@@ -712,13 +712,11 @@ fn rain_update(
         // Wrap if outside the box around the focus (camera panned) or hit the ground.
         let mut hit = false;
         let mut gy = bottom;
-        if p.y < focus.y + 7.0 {
-            if let Some(y) = surface_y(&grid.grid, p.x, p.z) {
-                gy = gy.max(y);
-                if p.y <= y {
-                    hit = true;
-                }
-            }
+        if p.y < focus.y + 7.0
+            && let Some(y) = surface_y(&grid.grid, p.x, p.z)
+        {
+            gy = gy.max(y);
+            hit = p.y <= y;
         }
         let outside = (p.x - focus.x).abs() > radius || (p.z - focus.z).abs() > radius;
         if hit || p.y < gy || outside || p.y < bottom {

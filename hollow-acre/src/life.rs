@@ -209,8 +209,8 @@ struct LifeAssets {
     steel: Handle<ToonMaterial>,
     slate: Handle<ToonMaterial>,
     eye: Handle<ToonMaterial>,
-    firefly: Handle<ToonMaterial>,
-    mote: Handle<ToonMaterial>,
+    firefly: Handle<StandardMaterial>,
+    mote: Handle<StandardMaterial>,
     steam: Handle<StandardMaterial>,
     cube: Handle<Mesh>,
     body: Handle<Mesh>,
@@ -272,13 +272,24 @@ fn setup_assets(
     let c = |r: u8, g: u8, b: u8| Color::srgb_u8(r, g, b);
     let teal = c(0x5c, 0xf0, 0xe0);
     let lime = c(0xe6, 0xff, 0x8a);
+    let glow = |col: Color, k: f32| {
+        let l = col.to_linear();
+        StandardMaterial {
+            base_color: Color::linear_rgba(l.red * k, l.green * k, l.blue * k, 1.0),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }
+    };
     commands.insert_resource(LifeAssets {
         wool: toon.add(toon_material(c(0xec, 0xe6, 0xda), Color::BLACK, 0.0, 0.0)),
         steel: toon.add(toon_material(c(0x7d, 0x8a, 0x96), Color::BLACK, 0.0, 0.0)),
         slate: toon.add(toon_material(c(0x5a, 0x56, 0x70), Color::BLACK, 0.0, 0.0)),
         eye: toon.add(toon_material(teal, teal, 0.6, 2.0)),
-        firefly: toon.add(toon_material(lime, lime, 1.5, 1.5)),
-        mote: toon.add(toon_material(teal, teal, 1.0, 1.0)),
+        // Blended unlit: no prepass, so the outline pass leaves the specks alone; HDR
+        // values >1 still feed the bloom.
+        firefly: std.add(glow(lime, 1.5)),
+        mote: std.add(glow(teal, 1.0)),
         steam: std.add(StandardMaterial {
             base_color: Color::srgba_u8(0xf4, 0xf1, 0xec, 190),
             unlit: true,
@@ -355,7 +366,7 @@ fn rescan(
         let n = (8 + src.crops.len() / 3).min(FIREFLY_CAP);
         for _ in 0..n {
             let c = src.crops[(rng.next_u64() as usize) % src.crops.len()];
-            let home = c + Vec3::new(rng.range(-1.5, 1.5), rng.range(0.5, 1.8), rng.range(-1.5, 1.5));
+            let home = c + Vec3::new(rng.range(-3.0, 3.0), rng.range(0.8, 2.6), rng.range(-3.0, 3.0));
             commands.spawn((
                 Prop,
                 Firefly {
