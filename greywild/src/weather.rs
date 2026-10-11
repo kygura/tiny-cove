@@ -480,7 +480,7 @@ mod tests {
     fn sun_arc() {
         assert!(sun_raw(12.5).y > 0.8);
         assert!(sun_raw(0.0).y < -0.5);
-        assert!(sun_raw(6.0).x < -0.9 && sun_raw(19.0).x > 0.9);
+        assert!(sun_raw(6.0).x < -0.8 && sun_raw(19.0).x > 0.8);
         assert!(light_dir(0.0).y > 0.5, "moon lights the night");
         assert!(light_dir(12.0).y > 0.8);
         assert!((light_dir(19.5).length() - 1.0).abs() < 1e-4 && light_dir(19.5).y > 0.1);

@@ -282,6 +282,42 @@ mod tests {
         assert!(s.markers.iter().any(|m| m.kind == crate::MarkerKind::Pond));
     }
 
+    #[test]
+    fn demo_shows_every_kind() {
+        let doc = demo_document(7);
+        let props: Vec<PropKind> = doc.structures.iter().filter_map(|(_, s)| if let Structure::Placed(p) = s { Some(p.kind) } else { None }).collect();
+        for k in [TreeKind::Oak, TreeKind::Pine, TreeKind::Birch, TreeKind::Fruit, TreeKind::Fern] {
+            assert!(props.contains(&PropKind::Tree(k)), "{k:?}");
+        }
+        use ClutterKind::*;
+        for k in [RainBarrel, Planter, Compost, Cistern, Wheelbarrow, Bench, LampPost, WindTurbine, WashingLine, LogPile, Rock, Bush, Beehive, Solar] {
+            assert!(props.contains(&PropKind::Clutter(k)), "{k:?}");
+        }
+        let has = |f: &dyn Fn(&Structure) -> bool| doc.structures.iter().any(|(_, s)| f(s));
+        for k in [PathKind::Gravel, PathKind::Pavers, PathKind::Slabs, PathKind::Poured, PathKind::Stepping] {
+            assert!(has(&|s| matches!(s, Structure::Path(p) if p.kind == k)), "{k:?}");
+        }
+        for k in [FenceKind::Railing, FenceKind::Balustrade, FenceKind::Gabion, FenceKind::Hedge] {
+            assert!(has(&|s| matches!(s, Structure::Fence(f) if f.kind == k)), "{k:?}");
+        }
+        for k in [StairKind::Steel, StairKind::Concrete, StairKind::Ladder] {
+            assert!(has(&|s| matches!(s, Structure::Stairs(t) if t.kind == k)), "{k:?}");
+        }
+        for r in [RoofStyle::Pitched, RoofStyle::Sawtooth, RoofStyle::Shell, RoofStyle::Green] {
+            assert!(has(&|s| matches!(s, Structure::House(h) if h.roof == r)), "{r:?}");
+        }
+        assert!(has(&|s| matches!(s, Structure::Bridge(b) if b.kind == BridgeKind::Arch)));
+        assert!(has(&|s| matches!(s, Structure::Bridge(b) if b.kind == BridgeKind::Girder)));
+        assert!(has(&|s| matches!(s, Structure::Bridge(b) if b.hanging == Hanging::Lamps)));
+        assert!(has(&|s| matches!(s, Structure::Bridge(b) if b.hanging == Hanging::Vines)));
+        assert!(has(&|s| matches!(s, Structure::Wall(w) if w.ruined)));
+        assert!(has(&|s| matches!(s, Structure::Wall(w) if w.planters)));
+        assert!(has(&|s| matches!(s, Structure::Wall(w) if w.roofed)));
+        assert!(has(&|s| matches!(s, Structure::Platform(_))));
+        // Same seed, same document.
+        assert_eq!(demo_document(7), doc);
+    }
+
     /// `cargo test -p greywild_core --release -- --ignored --nocapture demo_timing`
     #[test]
     #[ignore]

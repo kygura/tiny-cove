@@ -104,7 +104,7 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         } else if crease && cls == 3 {
             col = mix(col, outline_color(col), s.depth.w * vis);
         } else if shore {
-            let foam = mix(vec3(0.85, 0.93, 0.92), col, 0.6 * s.flags.z);
+            let foam = mix(vec3(0.85, 0.93, 0.92), col, 0.85 * s.flags.z);
             col = mix(col, foam, 0.85 * vis);
         }
     }
