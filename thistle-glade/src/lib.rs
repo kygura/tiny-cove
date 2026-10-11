@@ -2,6 +2,8 @@
 
 pub mod env;
 pub mod render;
+pub mod tools;
+pub mod ui;
 pub mod weather;
 pub mod world;
 
@@ -12,6 +14,12 @@ pub struct GladePlugin;
 
 impl Plugin for GladePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<env::Environment>().add_plugins((render::RenderPlugin, world::WorldPlugin, weather::WeatherPlugin));
+        app.init_resource::<env::Environment>().add_plugins((
+            render::RenderPlugin,
+            world::WorldPlugin,
+            weather::WeatherPlugin,
+            tools::ToolsPlugin,
+            ui::HudPlugin,
+        ));
     }
 }
