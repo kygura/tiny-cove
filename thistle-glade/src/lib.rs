@@ -2,6 +2,7 @@
 
 pub mod camera;
 pub mod env;
+pub mod life;
 pub mod render;
 pub mod shot;
 pub mod tools;
@@ -26,6 +27,7 @@ impl Plugin for GladePlugin {
                 shot::ShotPlugin,
                 tools::ToolsPlugin,
                 ui::HudPlugin,
+                life::LifePlugin,
             ))
             .add_systems(Update, forward_tool_capture.after(tools::ToolSystems));
     }
