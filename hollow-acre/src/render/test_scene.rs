@@ -128,7 +128,9 @@ fn build_grid() -> Grid {
 }
 
 /// Naive culled mesher with classic 3-neighbour vertex AO (test data only).
-fn mesh_grid(g: &Grid) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u8>, Vec<f32>, Vec<u32>) {
+type MeshData = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u8>, Vec<f32>, Vec<u32>);
+
+fn mesh_grid(g: &Grid) -> MeshData {
     const DIRS: [[i32; 3]; 6] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
     let (mut pos, mut nrm, mut vox, mut ao, mut idx) = (vec![], vec![], vec![], vec![], vec![]);
     for y in 0..NY as i32 {

@@ -189,12 +189,14 @@ pub fn voxel_mesh(
         uv1.push([packed as f32, water]);
     }
     let max = n as u32;
-    let idx: Vec<u32> = if indices.iter().all(|&i| i < max) && indices.len() % 3 == 0 {
+    let idx: Vec<u32> = if indices.iter().all(|&i| i < max) && indices.len().is_multiple_of(3) {
         indices.to_vec()
     } else {
         warn!("voxel_mesh: dropping triangles with out-of-range indices");
         indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter(|t| t.iter().all(|&i| i < max))
             .flatten()
             .copied()
@@ -220,10 +222,10 @@ pub(super) fn sync_materials(
         let Some(m) = materials.get(id) else { continue };
         let mut p = m.params;
         p.apply_atmosphere(&atmos, fog_start.0);
-        if p != m.params {
-            if let Some(mut m) = materials.get_mut(id) {
-                m.params = p;
-            }
+        if p != m.params
+            && let Some(mut m) = materials.get_mut(id)
+        {
+            m.params = p;
         }
     }
 }

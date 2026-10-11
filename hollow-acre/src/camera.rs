@@ -126,8 +126,7 @@ fn rig_input(
     (motion, scroll): (Res<AccumulatedMouseMotion>, Res<AccumulatedMouseScroll>),
     time: Res<Time>,
     low: Option<Res<LowRes>>,
-    hover: Option<Res<HoverMap>>,
-    nodes: Query<(), With<Node>>,
+    (hover, nodes): (Option<Res<HoverMap>>, Query<(), With<Node>>),
 ) {
     let over_ui = pointer_over_ui(hover.as_deref(), &nodes);
     let r = &mut *rig;
