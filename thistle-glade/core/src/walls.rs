@@ -482,7 +482,10 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         }
         hi = hi.max(a.ge.max(b.ge) + 0.45);
         let kind = if let Some(g) = gaps.iter().position(|g| sm > g.a && sm < g.b) {
-            if gaps[g].lintel {
+            if gaps[g].lintel && w.ruined && hi < gaps[g].apex + 0.35 {
+                // Broken away above the arch: nothing left to hang inside it.
+                PK::Open
+            } else if gaps[g].lintel {
                 hi = hi.max(gaps[g].apex + 0.35);
                 PK::Lintel(g)
             } else {
@@ -496,7 +499,29 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         };
         pcs.push(Pc { kind, hi });
     }
-    let lip = !w.battlements && !w.ruined;
+    if w.ruined {
+        // A gap whose arch top broke away anywhere loses its whole lintel.
+        let broken: Vec<usize> = (0..np)
+            .filter(|&k| pcs[k].kind == PK::Open)
+            .filter_map(|k| gaps.iter().position(|g| g.lintel && (st[k].s + st[k + 1].s) * 0.5 > g.a && (st[k].s + st[k + 1].s) * 0.5 < g.b))
+            .collect();
+        for pc in pcs.iter_mut() {
+            if matches!(pc.kind, PK::Lintel(g) if broken.contains(&g)) {
+                pc.kind = PK::Open;
+            }
+        }
+        // No slender piers: short solid pieces take the top of their neighbour.
+        for k in 0..np {
+            let len = st[k + 1].s - st[k].s;
+            let solid = |i: Option<usize>| i.filter(|&i| i < np && pcs[i].kind == PK::Solid);
+            if pcs[k].kind == PK::Solid && len < 0.5 {
+                if let Some(nb) = solid(k.checked_sub(1)).or(solid(Some(k + 1))) {
+                    pcs[k].hi = pcs[nb].hi;
+                }
+            }
+        }
+    }
+    let lip = !w.battlements && !w.ruined && !flat;
     let lip_h = 0.1;
     let lip_x = 0.07;
     let has_pl = |pi: usize| fh > 0.0 && matches!(pcs[pi].kind, PK::Solid | PK::Window(_));
@@ -717,7 +742,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
     };
     let top_extra = if lip { lip_h } else { 0.0 };
     let tcol = bcol * 0.95;
-    if w.battlements {
+    if w.battlements && !flat {
         let nm = ((total / 1.2).round() as usize).max(1);
         let sp = total / nm as f32;
         let mw = (th * 0.4).clamp(0.12, 0.32);
@@ -1001,6 +1026,23 @@ mod tests {
     }
     fn tris(m: &MeshData) -> usize {
         m.indices.len() / 3
+    }
+
+    #[test]
+    fn ruined_door_has_no_slivers_above_the_arch() {
+        let t = flat_terrain();
+        for seed in 0..40 {
+            let mut w = wall(vec![Vec2::new(-5.0, 0.0), Vec2::new(0.0, 0.0)]);
+            w.height = 4.0;
+            w.ruined = true;
+            w.openings = vec![Opening { along: 3.5, kind: OpeningKind::Door }];
+            let (m, _) = wall_mesh(&w, &[], &t, seed);
+            for (p, sf) in m.positions.iter().zip(&m.surfaces) {
+                let inside = p[0] > -5.0 + 2.95 && p[0] < -5.0 + 4.05;
+                let ledge = p[1] > 2.05 && p[1] < 2.34;
+                assert!(!(inside && ledge && *sf != Surface::Door as u8), "seed {seed}: sliver above arch at {p:?}");
+            }
+        }
     }
 
     #[test]

@@ -1654,6 +1654,23 @@ mod tests {
     }
 
     #[test]
+    fn tower_door_leaf_stays_in_the_wall() {
+        let t = ground();
+        for (r, h, roof) in [(2.2, 9.0, RoofStyle::Flat), (2.2, 9.0, RoofStyle::Cone), (2.6, 6.0, RoofStyle::Hip), (2.0, 3.5, RoofStyle::Cone)] {
+            let c = Vec2::new(-18.0, 8.0);
+            let hs = house(Footprint::Round { center: c, radius: r }, h, roof, 0.8, Material::Stone, false);
+            let (m, _) = house_mesh(&hs, &[], &t, 4);
+            let doors: Vec<_> = (0..m.positions.len()).filter(|&i| m.surfaces[i] == Surface::Door as u8).collect();
+            assert!(!doors.is_empty());
+            for i in doors {
+                let p = m.positions[i];
+                let d = Vec2::new(p[0], p[2]).distance(c);
+                assert!(d <= r + 0.25 && d >= r * 0.8 - 0.4, "door vertex {p:?} at radius {d} (r {r})");
+            }
+        }
+    }
+
+    #[test]
     fn towers() {
         let t = ground();
         let fp = Footprint::Round { center: Vec2::new(0.0, 0.0), radius: 2.5 };

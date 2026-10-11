@@ -181,6 +181,8 @@ fn build_part(s: &Structure, cuts: &[Cut], terrain: &Terrain, seed: u64) -> (Mes
                     ring.reverse();
                 }
                 let base = ring.iter().map(|p| terrain.height(*p)).fold(f32::MIN, f32::max) + w.height;
+                // The ring is the wall's centre line: put the eaves on the outer face.
+                let ring = offset_out(&ring, w.thickness.clamp(0.2, 2.5) * 0.5 + 0.07);
                 let (roof, rmk) = roof_mesh(&ring, base, w.roof, w.roof_pitch, w.colors, seed);
                 mesh.append(&roof);
                 mk.extend(rmk);
@@ -216,6 +218,20 @@ fn ribbon(pts: &[Vec2], width: f32) -> Vec<Vec2> {
     right.reverse();
     left.extend(right);
     left
+}
+
+/// Counter-clockwise polygon moved outward by `d` metres on every edge (mitred corners).
+fn offset_out(poly: &[Vec2], d: f32) -> Vec<Vec2> {
+    let n = poly.len();
+    (0..n)
+        .map(|i| {
+            let (a, p, c) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
+            let out = |v: Vec2| Vec2::new(v.y, -v.x).normalize_or_zero();
+            let (n0, n1) = (out(p - a), out(c - p));
+            let m = (n0 + n1).normalize_or_zero();
+            p + m * (d / m.dot(n1).max(0.5))
+        })
+        .collect()
 }
 
 /// Polygon pushed outward from its centroid by `d` metres (approximate offset).
@@ -324,6 +340,37 @@ fn ray_mesh(o: Vec3, d: Vec3, m: &MeshData) -> Option<(f32, Vec3)> {
 mod tests {
     use super::*;
     use crate::model::*;
+
+    #[test]
+    fn roofed_ring_roof_sits_outside_the_wall() {
+        use crate::mesh::Surface;
+        let ring = vec![Vec2::new(-3.5, -3.0), Vec2::new(3.5, -3.0), Vec2::new(3.5, 3.0), Vec2::new(-3.5, 3.0), Vec2::new(-3.5, -3.0)];
+        for roof in [RoofStyle::Gable, RoofStyle::Hip] {
+            let w = Wall {
+                points: ring.clone(),
+                height: 3.0,
+                thickness: 0.6,
+                material: Material::Stone,
+                battlements: true,
+                ruined: false,
+                foundation: 0.0,
+                roofed: true,
+                roof,
+                roof_pitch: 0.6,
+                openings: vec![],
+                colors: Colors::default(),
+            };
+            let terrain = Terrain::build(1, &[], &[]);
+            let (m, _) = build_part(&Structure::Wall(w), &[], &terrain, 1);
+            let wall_like = [Surface::Stone, Surface::Foundation].map(|s| s as u8);
+            let roofv: Vec<[f32; 3]> =
+                m.positions.iter().zip(&m.surfaces).filter(|(_, s)| !wall_like.contains(s)).map(|(p, _)| *p).collect();
+            let low = roofv.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+            for p in roofv.iter().filter(|p| p[1] < low + 0.01) {
+                assert!((p[0].abs() - 3.8).max(p[2].abs() - 3.3) > -1e-3, "{roof:?}: eave vertex {p:?} inside the wall");
+            }
+        }
+    }
 
     #[test]
     fn path_through_wall_makes_one_cut() {

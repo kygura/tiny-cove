@@ -625,11 +625,12 @@ fn stone_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, terrain: &Terrai
         let (p0, p1) = (top(j), top(j + 1));
         let mut r = rng(seed, 51, Vec2::new(p0.x, p0.z));
         let col = tint(palette::stone(), &mut r, 0.15);
-        m.beam(p0 - Vec3::Y * TH, p1 - Vec3::Y * TH, f.w, TH, col, Surface::Stone, 1.0);
+        // Lighter paved deck, just below the parapet tops.
+        m.beam(p0 - Vec3::Y * TH, p1 - Vec3::Y * TH, f.w, TH, col * 1.25, Surface::Flagstone, 1.0);
         for sg in [-1.0_f32, 1.0] {
             let o = f.side * (sg * f.w * 0.5);
             let pc = f.side * (sg * (f.w * 0.5 - 0.12));
-            m.beam(p0 + pc, p1 + pc, 0.24, 0.5, col * 1.05, Surface::Stone, 1.0);
+            m.beam(p0 + pc, p1 + pc, 0.24, 0.45, col * 0.95, Surface::Stone, 1.0);
             let (t0, t1) = (p0.y - TH, p1.y - TH);
             let (b0, b1) = (bottom(j, sg).min(t0 - 0.01), bottom(j + 1, sg).min(t1 - 0.01));
             if t0 - b0 > 0.02 || t1 - b1 > 0.02 {
@@ -659,7 +660,7 @@ fn stone_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, terrain: &Terrai
             }
         }
     }
-    end_posts(m, mk, f, f.w * 0.5 - 0.12, 0.0, 0.9, 0.2, Surface::Stone, palette::stone() * 1.1, terrain);
+    end_posts(m, mk, f, f.w * 0.5 - 0.12, 0.0, 0.7, 0.2, Surface::Stone, palette::stone() * 1.1, terrain);
 }
 
 fn wood_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, terrain: &Terrain, seed: u64) {
@@ -868,6 +869,27 @@ mod tests {
                 assert_eq!((m.clone(), mk.clone()), bridge_mesh(&bridge(kind, hanging), &t(), 2));
             }
         }
+    }
+
+    #[test]
+    fn stone_bridge_deck_is_a_light_top_just_below_the_parapets() {
+        let (m, _) = bridge_mesh(&bridge(BridgeKind::Stone, Hanging::None), &t(), 2);
+        let pos = |i: u32| Vec3::from_array(m.positions[i as usize]);
+        let deck = Surface::Flagstone as u8;
+        let ytop = (0..m.positions.len()).filter(|&i| m.surfaces[i] == deck).map(|i| m.positions[i][1]).fold(f32::MIN, f32::max);
+        let stone_top = (0..m.positions.len()).filter(|&i| m.surfaces[i] == Surface::Stone as u8).map(|i| m.positions[i][1]).fold(f32::MIN, f32::max);
+        assert!(ytop > f32::MIN, "no flagstone deck");
+        assert!((0.3..=0.8).contains(&(stone_top - ytop)), "parapet/posts rise {} above deck", stone_top - ytop);
+        let mut up = 0;
+        for tri in m.indices.chunks(3).filter(|t| m.surfaces[t[0] as usize] == deck) {
+            let (a, b, c) = (pos(tri[0]), pos(tri[1]), pos(tri[2]));
+            let n = (b - a).cross(c - a).normalize_or_zero();
+            if n.y.abs() > 0.9 && (a.y + b.y + c.y) / 3.0 > ytop - 0.02 {
+                assert!(n.y > 0.0, "deck top faces down");
+                up += 1;
+            }
+        }
+        assert!(up >= 2);
     }
 
     #[test]
