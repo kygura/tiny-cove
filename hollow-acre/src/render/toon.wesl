@@ -159,7 +159,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
         view.view_from_world[2].z, view.view_from_world[3].z), in.world_position);
     let d = max(view_depth - params.fog_start, 0.0);
     let h = max(6.0 - world.y, 0.0);
-    let fog = 1.0 - exp(-(params.fog_density * d + params.height_fog * h * 3.0));
+    let fog = 1.0 - exp(-(params.fog_density * d + params.height_fog * h));
 
     let strength = mix(e_day, e_night, params.night);
     let glow = emissive * strength;

@@ -17,7 +17,8 @@ struct OutlineSettings {
     sparkle: f32,
     // 0..1 rain amount (rings on water).
     rain: f32,
-    _pad: f32,
+    // 0..1 night factor (dims foam).
+    night: f32,
 }
 
 @group(0) @binding(0) var screen: texture_2d<f32>;
@@ -138,7 +139,8 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     } else if crease && cls != 2 && cls != 1 {
         col = mix(c.rgb, outline_color(c.rgb), s.crease_strength);
     } else if shore {
-        col = to_linear(vec3(0xe8, 0xf6, 0xf2) / 255.0);
+        let foam = to_linear(vec3(0xe8, 0xf6, 0xf2) / 255.0);
+        col = mix(foam, c.rgb, 0.65 * s.night);
     } else if cls == 1 {
         // Sparkle: ~1 per 400 water px per second, 0.15 s each.
         let slot = floor(s.time / 0.15);

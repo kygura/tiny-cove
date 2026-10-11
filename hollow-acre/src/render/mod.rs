@@ -14,6 +14,7 @@
 pub mod atmosphere;
 pub mod outline;
 pub mod palette;
+pub mod test_scene;
 pub mod toon;
 
 pub use atmosphere::{AtmosPreset, Atmosphere, AtmosphereDriven};
@@ -21,7 +22,7 @@ pub use outline::OutlineSettings;
 pub use toon::{ToonMaterial, ToonParams, VoxelMaterials, toon_material, voxel_mesh};
 
 use bevy::{
-    camera::{RenderTarget, ScalingMode},
+    camera::{Hdr, RenderTarget, ScalingMode},
     core_pipeline::prepass::{DepthPrepass, NormalPrepass},
     image::ImageSampler,
     light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod},
@@ -30,7 +31,7 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::{Extent3d, TextureFormat},
-        view::{DebandDither, Hdr, Tonemapping},
+        view::{DebandDither, Tonemapping},
     },
     window::PrimaryWindow,
 };
@@ -107,6 +108,10 @@ impl Plugin for ToonRenderPlugin {
             .init_resource::<atmosphere::DebugPreset>()
             .init_resource::<FogStart>()
             .add_systems(PreStartup, setup.in_set(RenderSetup))
+            .add_systems(
+                Startup,
+                test_scene::spawn_test_scene.run_if(resource_exists::<test_scene::TestScene>),
+            )
             .add_systems(
                 Update,
                 (atmosphere::cycle_preset_on_f5, atmosphere::tick_default_atmosphere),
@@ -290,10 +295,11 @@ fn apply_atmosphere(
             },
             _ => 36.0,
         };
-        fog_start.0 = CAMERA_DISTANCE - view_height * 0.6;
+        fog_start.0 = CAMERA_DISTANCE - view_height * 0.3;
         outline.time = atmos.time_secs;
         outline.sparkle = if atmos.sun_illuminance > 0.5 && atmos.night < 0.5 { 1.0 } else { 0.0 };
         outline.rain = atmos.wetness.clamp(0.0, 1.0);
+        outline.night = atmos.night.clamp(0.0, 1.0);
     }
 }
 

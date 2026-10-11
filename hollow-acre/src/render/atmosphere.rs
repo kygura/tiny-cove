@@ -94,7 +94,7 @@ impl AtmosPreset {
 impl Atmosphere {
     pub fn preset(p: AtmosPreset) -> Self {
         let day = Self {
-            sun_dir: sun_direction(50.0, 120.0),
+            sun_dir: sun_direction(42.0, -35.0),
             sun_color: hex(0xfff4dc),
             sun_illuminance: 1.0,
             ambient_color: hex(0xa9bfd6),

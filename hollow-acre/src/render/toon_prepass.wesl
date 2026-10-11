@@ -41,18 +41,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     strength = mix(in.uv.x, in.uv.y, params.night);
 @if(VERTEX_UVS_B)
     water = water || in.uv_b.y > 0.5;
-    var class = 1.0;
+    var surface = 1.0;
     if strength > 0.0 {
-        class = 2.0 / 3.0;
+        surface = 2.0 / 3.0;
     }
     if water {
-        class = 1.0 / 3.0;
+        surface = 1.0 / 3.0;
     }
     var n = normalize(in.world_normal);
     if !is_front {
         n = -n;
     }
-    out.normal = vec4(n * 0.5 + vec3(0.5), class);
+    out.normal = vec4(n * 0.5 + vec3(0.5), surface);
 }
 
 @if(UNCLIPPED_DEPTH_ORTHO_EMULATION)

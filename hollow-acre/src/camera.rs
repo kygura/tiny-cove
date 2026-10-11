@@ -223,9 +223,12 @@ fn apply_rig(
             *tf = new;
         }
         if let Projection::Orthographic(o) = &mut *proj {
-            let mode = ScalingMode::FixedVertical { viewport_height: pose.view_height };
-            if o.scaling_mode != mode {
-                o.scaling_mode = mode;
+            let current = match o.scaling_mode {
+                ScalingMode::FixedVertical { viewport_height } => Some(viewport_height),
+                _ => None,
+            };
+            if current != Some(pose.view_height) {
+                o.scaling_mode = ScalingMode::FixedVertical { viewport_height: pose.view_height };
             }
         }
     }

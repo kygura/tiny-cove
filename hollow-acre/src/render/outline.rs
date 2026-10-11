@@ -11,6 +11,7 @@ use bevy::{
     },
     post_process::bloom::bloom,
     prelude::*,
+    shader::Shader,
     render::{
         extract_component::{
             ComponentUniforms, DynamicUniformIndex, ExtractComponent, ExtractComponentPlugin,
@@ -21,8 +22,8 @@ use bevy::{
             *,
         },
         renderer::{RenderContext, ViewQuery},
-        view::ViewTarget,
-        RenderApp, RenderStartup,
+        view::{ExtractedView, ViewTarget},
+        GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
     },
 };
 
@@ -43,7 +44,8 @@ pub struct OutlineSettings {
     pub time: f32,
     pub sparkle: f32,
     pub rain: f32,
-    pub _pad: f32,
+    /// 0..1 night factor.
+    pub night: f32,
 }
 
 impl Default for OutlineSettings {
@@ -56,7 +58,7 @@ impl Default for OutlineSettings {
             time: 0.0,
             sparkle: 1.0,
             rain: 0.0,
-            _pad: 0.0,
+            night: 0.0,
         }
     }
 }
@@ -74,7 +76,9 @@ impl Plugin for OutlinePlugin {
             return;
         };
         render_app
+            .init_gpu_resource::<SpecializedRenderPipelines<OutlinePipeline>>()
             .add_systems(RenderStartup, init_pipeline)
+            .add_systems(Render, prepare_pipelines.in_set(RenderSystems::Prepare))
             .add_systems(
                 Core3d,
                 outline_pass.before(bloom).in_set(Core3dSystems::PostProcess),
@@ -85,14 +89,35 @@ impl Plugin for OutlinePlugin {
 #[derive(Resource)]
 struct OutlinePipeline {
     layout: BindGroupLayoutDescriptor,
-    pipeline_id: CachedRenderPipelineId,
+    shader: Handle<Shader>,
+    fullscreen: FullscreenShader,
 }
+
+impl SpecializedRenderPipeline for OutlinePipeline {
+    type Key = TextureFormat;
+
+    fn specialize(&self, format: TextureFormat) -> RenderPipelineDescriptor {
+        RenderPipelineDescriptor {
+            label: Some("outline_pipeline".into()),
+            layout: vec![self.layout.clone()],
+            vertex: self.fullscreen.to_vertex_state(),
+            fragment: Some(FragmentState {
+                shader: self.shader.clone(),
+                targets: vec![Some(ColorTargetState { format, blend: None, write_mask: ColorWrites::ALL })],
+                ..default()
+            }),
+            ..default()
+        }
+    }
+}
+
+#[derive(Component)]
+struct OutlinePipelineId(CachedRenderPipelineId);
 
 fn init_pipeline(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     fullscreen_shader: Res<FullscreenShader>,
-    pipeline_cache: Res<PipelineCache>,
 ) {
     let layout = BindGroupLayoutDescriptor::new(
         "outline_layout",
@@ -106,23 +131,24 @@ fn init_pipeline(
             ),
         ),
     );
-    let shader = asset_server.load(SHADER);
-    let pipeline_id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
-        label: Some("outline_pipeline".into()),
-        layout: vec![layout.clone()],
-        vertex: fullscreen_shader.to_vertex_state(),
-        fragment: Some(FragmentState {
-            shader,
-            targets: vec![Some(ColorTargetState {
-                format: ViewTarget::TEXTURE_FORMAT_HDR,
-                blend: None,
-                write_mask: ColorWrites::ALL,
-            })],
-            ..default()
-        }),
-        ..default()
+    commands.insert_resource(OutlinePipeline {
+        layout,
+        shader: asset_server.load(SHADER),
+        fullscreen: fullscreen_shader.clone(),
     });
-    commands.insert_resource(OutlinePipeline { layout, pipeline_id });
+}
+
+fn prepare_pipelines(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<OutlinePipeline>>,
+    pipeline: Res<OutlinePipeline>,
+    views: Query<(Entity, &ExtractedView), With<OutlineSettings>>,
+) {
+    for (entity, view) in &views {
+        let id = pipelines.specialize(&pipeline_cache, &pipeline, view.target_format);
+        commands.entity(entity).insert(OutlinePipelineId(id));
+    }
 }
 
 fn outline_pass(
@@ -130,6 +156,7 @@ fn outline_pass(
         &ViewTarget,
         &ViewPrepassTextures,
         &DynamicUniformIndex<OutlineSettings>,
+        &OutlinePipelineId,
     )>,
     pipeline: Option<Res<OutlinePipeline>>,
     pipeline_cache: Res<PipelineCache>,
@@ -137,11 +164,8 @@ fn outline_pass(
     mut ctx: RenderContext,
 ) {
     let Some(pipeline) = pipeline else { return };
-    let (view_target, prepass, index) = view.into_inner();
-    if !view_target.is_hdr() {
-        return;
-    }
-    let Some(render_pipeline) = pipeline_cache.get_render_pipeline(pipeline.pipeline_id) else {
+    let (view_target, prepass, index, id) = view.into_inner();
+    let Some(render_pipeline) = pipeline_cache.get_render_pipeline(id.0) else {
         return;
     };
     let (Some(depth), Some(normal)) = (prepass.depth_only_view(), prepass.normal_view()) else {
