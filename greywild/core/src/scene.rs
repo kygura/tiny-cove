@@ -298,6 +298,7 @@ mod tests {
             roof_pitch: 0.6,
             openings: vec![],
             colors: Colors::default(),
+            overgrowth: 0.5,
         }));
         doc.add(Structure::Path(Path {
             points: vec![Vec2::new(0.0, -5.0), Vec2::new(0.0, 5.0)],

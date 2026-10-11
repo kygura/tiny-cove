@@ -987,6 +987,7 @@ mod tests {
             roof_pitch: 0.5,
             openings: vec![],
             colors: Colors::default(),
+            overgrowth: 0.5,
         }
     }
     fn flat_terrain() -> Terrain {

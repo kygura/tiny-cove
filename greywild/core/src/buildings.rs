@@ -1592,6 +1592,7 @@ mod tests {
             planters: true,
             openings: vec![],
             colors: Colors { roof: 0, wall: 1, trim: 2 },
+            overgrowth: 0.5,
         }
     }
 
