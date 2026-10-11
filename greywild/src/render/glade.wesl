@@ -40,11 +40,18 @@ struct WaterParams {
 
 // Surface ids (greywild_core::Surface).
 const S_GRASS: u32 = 0u;
-const S_SAND: u32 = 3u;
-const S_FOUNDATION: u32 = 5u;
-const S_COBBLE: u32 = 12u;
-const S_SETTS: u32 = 14u;
+const S_GRAVEL: u32 = 3u;
+const S_CONCRETE: u32 = 4u;
+const S_PLINTH: u32 = 5u;
+const S_EARTH: u32 = 6u;
+const S_STEEL: u32 = 8u;
+const S_SEDUM: u32 = 9u;
+const S_PRECAST: u32 = 11u;
+const S_PAVERS: u32 = 12u;
+const S_POURED: u32 = 14u;
 const S_WINDOW: u32 = 15u;
+const S_LEAVES: u32 = 18u;
+const S_FIBER: u32 = 19u;
 const S_GLOW: u32 = 22u;
 const S_WATER: u32 = 23u;
 const TILE: u32 = 32u;
@@ -72,7 +79,7 @@ struct VertexOut {
 // Decals (paths on terrain, windows/doors on walls) win against coplanar terrain despite vertex snapping:
 // pull them 0.12 m towards the camera (orthographic: ndc z is linear in depth).
 fn decal_bias(clip: vec4<f32>, surface: u32) -> vec4<f32> {
-    if surface == 1u || (surface >= S_COBBLE && surface <= 16u) {
+    if surface == 1u || (surface >= S_PAVERS && surface <= 16u) {
         return vec4(clip.xy, clip.z + 0.12 * view.clip_from_view[2].z * clip.w, clip.w);
     }
     return clip;
@@ -177,7 +184,12 @@ fn point_lights(world: vec4<f32>, n: vec3<f32>, frag: vec4<f32>) -> vec3<f32> {
 }
 
 fn is_ground(s: u32) -> bool {
-    return s <= S_FOUNDATION || (s >= S_COBBLE && s <= S_SETTS);
+    return s <= S_PLINTH || (s >= S_PAVERS && s <= S_POURED);
+}
+
+// Cast mineral surfaces that weather: moss on tops, rain streaks on faces.
+fn is_cast(s: u32) -> bool {
+    return s == S_CONCRETE || s == S_PLINTH || s == S_EARTH || s == S_PRECAST;
 }
 
 @fragment
