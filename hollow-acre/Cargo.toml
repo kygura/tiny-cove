@@ -9,6 +9,7 @@ default-run = "hollow_acre"
 
 [dependencies]
 bevy = "0.20"
+acre_core = { path = "core" }
 
 [profile.dev]
 opt-level = 1

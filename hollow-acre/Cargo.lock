@@ -3075,6 +3075,7 @@ dependencies = [
 name = "hollow_acre"
 version = "0.1.0"
 dependencies = [
+ "acre_core",
  "bevy",
 ]
 
