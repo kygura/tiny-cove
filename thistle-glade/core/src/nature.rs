@@ -434,6 +434,20 @@ pub fn scatter_mesh(terrain: &Terrain, seed: u64, blockers: &[Vec<Vec2>]) -> Mes
 }
 
 fn scatter_with(seed: u64, blockers: &[Vec<Vec2>], probe: &Probe) -> MeshData {
+    let mut keep = 1.0f32;
+    loop {
+        let m = scatter_pass(seed, blockers, probe, keep);
+        let n = m.indices.len() / 3;
+        if n <= MAX_TRIS {
+            return m;
+        }
+        // Over budget: thin every cell uniformly (slightly under-shoot; bush spacing is nonlinear).
+        keep *= (MAX_TRIS as f32 / n as f32 * 0.97).min(0.95);
+    }
+}
+
+/// One scatter pass; each cell survives with probability `keep` (hash-based, deterministic).
+fn scatter_pass(seed: u64, blockers: &[Vec<Vec2>], probe: &Probe, keep: f32) -> MeshData {
     let mut m = MeshData::default();
     let seed = seed ^ 0x5CA7_7E12;
     let boxes: Vec<(Vec2, Vec2, &[Vec2])> = blockers
@@ -450,11 +464,11 @@ fn scatter_with(seed: u64, blockers: &[Vec<Vec2>], probe: &Probe) -> MeshData {
 
     for cz in 0..n {
         for cx in 0..n {
-            if m.indices.len() / 3 >= MAX_TRIS {
-                return m;
-            }
             let bx = -GLADE_HALF + (cx as f32 + 0.5) * CELL;
             let bz = -GLADE_HALF + (cz as f32 + 0.5) * CELL;
+            if keep < 1.0 && crate::mesh::hash_f(seed ^ 0x7B1D, bx, bz) >= keep {
+                continue;
+            }
             let mut rng = Rng::at(seed, bx, bz);
             let p = Vec2::new(bx + (rng.f() - 0.5) * CELL, bz + (rng.f() - 0.5) * CELL);
             if p.x.abs() > GLADE_HALF || p.y.abs() > GLADE_HALF {
@@ -712,6 +726,22 @@ mod tests {
         }
         let dirt = |l: PaintLayer, _: Vec2| if l == PaintLayer::Dirt { 1.0 } else { 0.0 };
         assert!(tris(&scatter_with(1, &[], &fake(&|_| false, &|_| 1.0, &dirt))) < base / 4);
+    }
+
+    #[test]
+    fn scatter_thins_uniformly_when_over_budget() {
+        let paint = |l: PaintLayer, _: Vec2| if l == PaintLayer::Flowers || l == PaintLayer::Grain { 1.0 } else { 0.0 };
+        let probe = fake(&|_| false, &|_| 1.0, &paint);
+        let full = tris(&scatter_pass(1, &[], &probe, 1.0));
+        assert!(full > MAX_TRIS, "test needs an over-budget glade, got {full}");
+        let m = scatter_with(1, &[], &probe);
+        assert!(m.is_valid() && tris(&m) <= MAX_TRIS && tris(&m) > MAX_TRIS / 2, "{}", tris(&m));
+        assert_eq!(m, scatter_with(1, &[], &probe));
+        let mut q = [0usize; 4];
+        for p in &m.positions {
+            q[(p[0] > 0.0) as usize * 2 + (p[2] > 0.0) as usize] += 1;
+        }
+        assert!(q.iter().all(|&c| c > m.positions.len() / 8), "{q:?}");
     }
 
     #[test]
