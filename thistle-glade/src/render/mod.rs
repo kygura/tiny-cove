@@ -360,7 +360,7 @@ pub fn cursor_ray(
 }
 
 /// Saves `image` (PNG by extension), creating parent directories.
-fn save_image(image: Image, path: &Path) -> Result<(), String> {
+pub fn save_image(image: Image, path: &Path) -> Result<(), String> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }

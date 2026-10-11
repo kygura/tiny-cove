@@ -94,7 +94,7 @@ pub struct PartOf(pub StructureId);
 /// Maximum simultaneously lit lanterns.
 pub const MAX_LANTERNS: usize = 12;
 const LANTERN_LUMENS: f32 = 1500.0;
-const LANTERN_RANGE: f32 = 10.0;
+const LANTERN_RANGE: f32 = 5.5;
 /// Camera focus movement (m) that triggers re-picking the nearest lanterns.
 const REPICK_DISTANCE: f32 = 3.0;
 

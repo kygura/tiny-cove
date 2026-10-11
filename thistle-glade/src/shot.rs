@@ -5,7 +5,8 @@
 //! screenshot and exits. `--demo` just starts interactively with the demo glade.
 
 use crate::camera::CameraRig;
-use crate::render::request_screenshot;
+use crate::render::save_image;
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::BuiltScene;
 use bevy::prelude::*;
@@ -63,7 +64,7 @@ impl Plugin for ShotPlugin {
     fn build(&self, app: &mut App) {
         let Some(cli) = app.world().get_resource::<Cli>().cloned() else { return };
         let Some(path) = cli.shot.clone() else { return };
-        app.insert_resource(ShotState { path, frames: 0, requested: false })
+        app.insert_resource(ShotState { path, frames: 0, requested: false, retries: 0 })
             .add_systems(Startup, apply_cli)
             .add_systems(Last, capture);
     }
@@ -74,6 +75,7 @@ struct ShotState {
     path: PathBuf,
     frames: u32,
     requested: bool,
+    retries: u32,
 }
 
 fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weather>, mut rig: ResMut<CameraRig>) {
@@ -100,12 +102,37 @@ fn capture(mut commands: Commands, mut st: ResMut<ShotState>, built: Res<BuiltSc
         exit.write(AppExit::error());
     } else if st.frames >= SETTLE_FRAMES && !st.requested {
         st.requested = true;
-        request_screenshot(&mut commands, st.path.clone()).observe(
-            |_: On<bevy::render::view::screenshot::ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
-                exit.write(AppExit::Success);
+        // Headless software rendering occasionally hands back an all-black first frame:
+        // check the capture and retry a few times before saving.
+        commands.spawn(Screenshot::primary_window()).observe(
+            |shot: On<ScreenshotCaptured>, mut st: ResMut<ShotState>, mut exit: MessageWriter<AppExit>| {
+                if is_black(&shot.image) && st.retries < MAX_RETRIES {
+                    st.retries += 1;
+                    st.requested = false;
+                    st.frames = SETTLE_FRAMES - 10;
+                    warn!("demo shot: black frame, retrying ({}/{MAX_RETRIES})", st.retries);
+                    return;
+                }
+                match save_image(shot.image.clone(), &st.path) {
+                    Ok(()) => {
+                        info!("screenshot saved to {}", st.path.display());
+                        exit.write(AppExit::Success);
+                    }
+                    Err(err) => {
+                        error!("screenshot failed: {err}");
+                        exit.write(AppExit::error());
+                    }
+                }
             },
         );
     }
+}
+
+const MAX_RETRIES: u32 = 5;
+
+/// True if every pixel is (near) black.
+fn is_black(image: &Image) -> bool {
+    image.data.as_ref().is_none_or(|d| d.chunks(4).all(|p| p.iter().take(3).all(|&c| c < 3)))
 }
 
 #[cfg(test)]
