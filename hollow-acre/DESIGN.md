@@ -99,9 +99,9 @@ At night, fog colour = mix(weather fog, night sky, 0.7). Transitions: 20 s ease.
 
 ## Render look
 
-- Internal resolution: 480 × 270 (height 270, width follows aspect, rounded to even).
-  Upscale by the largest integer factor that fits the window, nearest-neighbour,
-  letterboxed in the night-sky colour `#1d2347`.
+- Internal resolution: about 270 px tall. Integer scale s = round(window height / 270),
+  internal size = ceil(window / s), nearest-neighbour upscale filling the whole window
+  (at most s−1 px cropped at the right/bottom edge; no letterbox). 1280×720 → 427×240 at ×3.
 - Pixel snapping: camera position snapped to the low-res texel grid in view space.
 - Cel lighting: `NdotL × shadow` → 3 bands.
   - `< 0.15` → shadow (shadow tint above)
