@@ -214,7 +214,16 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         albedo = tex.rgb * in.color.rgb;
     }
 
-    // Snow on up-facing surfaces, hard noisy edge.
+    // Nature reclaiming: blotchy moss on up-facing cast surfaces (hard-edged patches).
+    let cast = is_cast(s);
+    if cast && n.y > 0.6 {
+        let m = value_noise(world.xz * 0.7) * 0.65 + hash2(floor(world.xz * 4.0)) * 0.35;
+        if m > 0.66 {
+            albedo = mix(albedo, vec3(0.16, 0.3, 0.05) * (0.8 + tex.r * 0.4), 0.7);
+        }
+    }
+
+    // Snow on up-facing surfaces, hard noisy edge; a thin dusting on ledges.
     var snowed = false;
     if snow > 0.0 && s != S_WINDOW && s != S_GLOW && s != S_WATER {
         let cell = floor(world.xz * 3.0);
@@ -222,43 +231,61 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         let cover = (n.y - 0.5) * 2.0 * snow * 1.4 - noise;
         if n.y > 0.5 && cover > 0.15 {
             snowed = true;
-            albedo = vec3(0.88, 0.91, 0.96) * mix(1.0, tex.r, 0.15);
+            albedo = vec3(0.86, 0.9, 0.97) * mix(1.0, tex.r, 0.15);
+        } else if n.y > 0.25 && snow > 0.5 {
+            albedo = mix(albedo, vec3(0.8, 0.84, 0.92), 0.4 * snow);
         }
     }
 
-    // Wet darkening (ground/stone stronger).
+    // Wet darkening (ground and cast concrete strongest), plus run-off streaks on walls.
     let ground = is_ground(s);
     if wet > 0.0 && !snowed && !glass {
-        albedo *= 1.0 - wet * select(0.18, 0.35, ground);
+        albedo *= 1.0 - wet * select(0.2, 0.38, ground || cast);
+        if (cast || s == S_STEEL) && abs(n.y) < 0.4 {
+            let along = dot(world.xz, normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0)));
+            let streak = hash2(vec2(floor(along * 5.0), 3.0));
+            let run = value_noise(vec2(floor(along * 5.0), world.y * 0.6));
+            if streak > 0.55 && run > 0.35 {
+                albedo *= 1.0 - 0.28 * wet;
+            }
+        }
     }
 
     let shadow = sun_shadow(world, n, in.clip.xy);
     let ndl = dot(n, sun_dir);
     let light = max(ndl, 0.0) * shadow;
     let amb = hemi_ambient(n);
+    let foliage = s == S_LEAVES || s == S_FIBER || s == S_GRASS || s == S_SEDUM;
     var col: vec3<f32>;
     if s == S_GLOW {
         col = albedo * 1.2;
     } else {
         // 3 hard bands: lit / mid / shadow (shadow = albedo x ambient x cool tint).
-        let shade = albedo * amb * g.tint_fog_density.xyz * 1.35;
-        let mid = albedo * (amb * 0.62 + sun * 0.17);
-        let lit = albedo * (amb * 0.4 + sun * 0.36);
-        if light < 0.06 {
+        let shade = albedo * amb * g.tint_fog_density.xyz * 1.3;
+        let mid = albedo * (amb * 0.6 + sun * 0.2);
+        let lit = albedo * (amb * 0.38 + sun * 0.4);
+        if light < 0.08 {
             col = shade;
-        } else if light < 0.22 {
+        } else if light < 0.3 {
             col = mid;
         } else {
             col = lit;
         }
-        // Rim light, subtle: grazing faces pick up sky colour.
-        let rim = pow(1.0 - max(dot(n, to_camera()), 0.0), 4.0);
-        col += albedo * g.sky_amb_snow.xyz * rim * 0.35;
+        // Foliage keeps saturation in shade (sub-surface glow) so greens pop against grey.
+        if foliage && light < 0.08 {
+            col = mix(col, albedo * (amb * 0.75 + sun * 0.06), 0.35);
+        }
+        // Rim: grazing faces facing away from the camera pick up warm sun / cool sky.
+        let rim_k = 1.0 - max(dot(n, to_camera()), 0.0);
+        if rim_k > 0.62 {
+            let back = clamp(-dot(n.xz, sun_dir.xz) * 0.5 + 0.5, 0.0, 1.0);
+            col += albedo * mix(g.sky_amb_snow.xyz * 0.25, sun * 0.18, back * shadow);
+        }
         // Lanterns.
         col += albedo * point_lights(world, n, in.clip);
         // Wet ground: noisy puddles reflect a little sky, with a hard specular glint
         // band (relative to a flat surface, since the iso view never sees a mirror angle).
-        if wet > 0.05 && ground && s != S_GRASS && s != S_SAND && n.y > 0.7 && !snowed {
+        if wet > 0.05 && ground && s != S_GRASS && s != S_GRAVEL && n.y > 0.7 && !snowed {
             let puddle = value_noise(world.xz * 0.9) * 0.7 + value_noise(world.xz * 2.3 + 7.0) * 0.3;
             if puddle > 1.0 - wet * 0.42 {
                 col = mix(col * 0.7, g.sky_hor_snap.xyz * amb * 1.2, 0.35);
@@ -268,23 +295,27 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
                 if sp > h.y + 0.12 && shadow > 0.5 {
                     col += sun * 0.4 * wet;
                 }
+                // Sodium lamps / lit windows mirrored in puddles at night.
+                col += vec3(0.5, 0.25, 0.06) * night * step(0.75, hash2(floor(world.xz * 2.0)));
             }
         }
     }
 
-    // Emissive: windows glow warm at night (and a bit in storms); glow always.
+    // Emissive: windows glow sodium amber at night (and a bit in storms); glow always.
     var emissive = vec3(0.0);
     if s == S_WINDOW && glass {
-        let strength = clamp(night + wet * 0.25, 0.0, 1.0);
+        let strength = clamp(night * 1.1 + wet * 0.2 - 0.05, 0.0, 1.0);
         let lum = dot(tex.rgb, vec3(0.3, 0.5, 0.2));
-        emissive = vec3(1.0, 0.66, 0.3) * (0.8 + lum * 1.5) * strength * tex.a;
+        // Some windows stay dark: hash the window cell.
+        let lit_room = hash2(floor(world.xz * 0.45) + floor(world.y * 0.3)) > 0.22;
+        emissive = vec3(1.0, 0.55, 0.16) * (0.9 + lum * 1.6) * strength * tex.a * select(0.08, 1.0, lit_room);
         col = mix(col, vec3(0.0), strength * 0.6);
     } else if s == S_GLOW {
-        emissive = albedo * (0.4 + 0.6 * night);
+        emissive = albedo * (0.35 + 0.9 * night);
     }
 
-    // Lightning: cold white boost.
-    col += albedo * vec3(0.75, 0.82, 1.0) * flash * 1.2;
+    // Lightning: cold white boost, strongest on up-facing surfaces.
+    col += albedo * vec3(0.75, 0.82, 1.0) * flash * (0.9 + 0.8 * max(n.y, 0.0));
 
     let fog = fog_amount(view_depth(world));
     let out = mix(col, g.fog_color_start.xyz, fog) + emissive * (1.0 - 0.6 * fog);

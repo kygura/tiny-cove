@@ -65,7 +65,7 @@ impl Plugin for ShotPlugin {
         let Some(path) = cli.shot.clone() else { return };
         app.insert_resource(ShotState { path, frames: 0, requested: false })
             .add_systems(Startup, apply_cli)
-            .add_systems(Last, capture);
+            .add_systems(Last, (hide_hud, capture));
     }
 }
 
@@ -87,6 +87,15 @@ fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weathe
     }
     if let Some(zoom) = cli.zoom {
         rig.set_zoom(zoom);
+    }
+}
+
+/// Demo shots show the glade only: hide every root UI node (the HUD).
+fn hide_hud(mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>)>) {
+    for mut v in &mut roots {
+        if *v != Visibility::Hidden {
+            *v = Visibility::Hidden;
+        }
     }
 }
 

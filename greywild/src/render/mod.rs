@@ -331,7 +331,7 @@ pub fn to_bevy_mesh(m: &MeshData) -> Mesh {
 /// `Environment::night` (0 by day) to fade lanterns.
 pub fn lantern_light(intensity_lm: f32, range: f32) -> PointLight {
     PointLight {
-        color: Color::srgb(1.0, 0.78, 0.45),
+        color: Color::srgb(1.0, 0.66, 0.3),
         intensity: intensity_lm,
         range,
         radius: 0.1,

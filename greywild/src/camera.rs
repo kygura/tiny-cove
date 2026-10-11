@@ -1,7 +1,9 @@
 //! Orbiting isometric camera rig: orbit (RMB drag, Q/E 45° steps), zoom (scroll), pan
-//! (WASD / arrows / MMB drag), tilt (R/F), Home to reset. Distance stays [`CAMERA_DISTANCE`].
+//! (WASD / arrows / MMB drag), tilt (PageUp/PageDown), Home to reset. Pointer input that starts
+//! over the HUD (`tools::PointerOverUi`) is ignored. Distance stays [`CAMERA_DISTANCE`].
 
 use crate::render::{DEFAULT_PITCH, DEFAULT_YAW, GameCamera, RenderTest, camera_transform};
+use crate::tools::PointerOverUi;
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
@@ -101,12 +103,23 @@ fn drive_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     window: Option<Single<&Window, With<bevy::window::PrimaryWindow>>>,
+    over_ui: Option<Res<PointerOverUi>>,
+    mut ui_drag: Local<[bool; 2]>,
     mut input: ResMut<CameraInput>,
     mut rig: ResMut<CameraRig>,
     mut cam: Query<(&mut Transform, &mut Projection), With<GameCamera>>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let captured = std::mem::take(&mut *input);
+    let over_ui = over_ui.is_some_and(|o| o.0);
+    // A drag that starts over the HUD never orbits / pans the world.
+    for (i, b) in [MouseButton::Right, MouseButton::Middle].into_iter().enumerate() {
+        if mouse.just_pressed(b) {
+            ui_drag[i] = over_ui;
+        }
+    }
+    let orbit = mouse.pressed(MouseButton::Right) && !ui_drag[0] && !captured.rmb_captured;
+    let pan = mouse.pressed(MouseButton::Middle) && !ui_drag[1];
 
     if keys.just_pressed(KeyCode::Home) {
         *rig = CameraRig { target_yaw: DEFAULT_YAW, target_pitch: DEFAULT_PITCH, ..default() };
@@ -117,12 +130,12 @@ fn drive_camera(
     if keys.just_pressed(KeyCode::KeyE) {
         rig.target_yaw = step_yaw(rig.target_yaw, 1.0);
     }
-    if mouse.pressed(MouseButton::Right) && !captured.rmb_captured {
+    if orbit {
         rig.target_yaw -= motion.delta.x * ORBIT_DEG_PER_PX;
     }
-    let tilt = keys.pressed(KeyCode::KeyF) as i8 - keys.pressed(KeyCode::KeyR) as i8;
+    let tilt = keys.pressed(KeyCode::PageUp) as i8 - keys.pressed(KeyCode::PageDown) as i8;
     rig.target_pitch = (rig.target_pitch + tilt as f32 * 40.0 * dt).clamp(MIN_PITCH, MAX_PITCH);
-    if !captured.scroll_captured && scroll.delta.y != 0.0 {
+    if !captured.scroll_captured && !over_ui && scroll.delta.y != 0.0 {
         let lines = if scroll.unit == MouseScrollUnit::Line { scroll.delta.y } else { scroll.delta.y / 30.0 };
         rig.target_zoom = (rig.target_zoom * 0.88_f32.powf(lines)).clamp(MIN_ZOOM, MAX_ZOOM);
     }
@@ -138,7 +151,7 @@ fn drive_camera(
     let k = axis(&[KeyCode::KeyD, KeyCode::ArrowRight], &[KeyCode::KeyA, KeyCode::ArrowLeft]);
     let f = axis(&[KeyCode::KeyW, KeyCode::ArrowUp], &[KeyCode::KeyS, KeyCode::ArrowDown]);
     let mut delta = (right * k + up * f) * PAN_SPEED * rig.zoom * dt;
-    if mouse.pressed(MouseButton::Middle) {
+    if pan {
         let h = window.map_or(720.0, |w| w.height()).max(1.0);
         let per_px = crate::render::VIEW_HEIGHT * rig.zoom / h;
         let sin_p = rig.pitch_deg.to_radians().sin().max(0.2);

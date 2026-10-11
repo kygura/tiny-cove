@@ -1,17 +1,22 @@
-//! Houses, towers and roofs.
+//! Blocks, silo towers and roofs (eco-brutalist).
 //!
-//! A house is built from horizontal *bands* of wall (foundation plinth, stone ground storey,
-//! jettied half-timbered upper storey, tapering tower drums…). Each band is a shell of flat
-//! quads following a (possibly offset) footprint polygon, with rectangular *holes* cut for
-//! windows and doors; every hole gets reveal faces and a recessed window / door panel.
-//! Details (quoins, timbers, shutters, window boxes, arches, lanterns, ivy, chimney, props)
-//! are small boxes on top. Roofs are generic over any simple CCW polygon (`roof_mesh`).
+//! A block is a monolith built from horizontal *bands* of wall (bush-hammered plinth, one band
+//! per storey, upper storeys cantilevered on tall blocks) separated by proud concrete floor
+//! slabs. Each band is a shell of flat quads following a (possibly offset) footprint polygon,
+//! with rectangular *holes* cut for windows and doors; every hole gets deep reveals and a
+//! recessed glass / door panel. Details (brise-soleil fins, silo ribs, entry canopies,
+//! balconies, rain chains, planters, ivy, moss, water streaks, vent stacks) are small boxes on
+//! top. Roofs are generic over any simple CCW polygon (`roof_mesh`).
+//!
+//! Roof covering: Pitched and Sawtooth slabs are sedum when the roof colour index is 0 or 1
+//! (the palette's greens) and standing-seam metal otherwise; Shell is always precast
+//! concrete; Green is always a sedum mat behind a parapet.
 //!
 //! All randomness hashes `(seed, world position)` so previews equal committed results.
 
-use crate::geom::{contains, footprint_polygon, outward, signed_area};
+use crate::geom::{closed, closest_on_polyline, contains, footprint_polygon, outward, signed_area};
 use crate::mesh::{Marker, MarkerKind, MeshData, Rng, Surface};
-use crate::model::{Colors, Footprint, House, Material, OpeningKind, RoofStyle};
+use crate::model::{Colors, Footprint, House, Material, OpeningKind, RoofStyle, ROOF_COLORS};
 use crate::palette;
 use crate::terrain::Terrain;
 use crate::walls::Cut;
@@ -19,39 +24,39 @@ use glam::{Vec2, Vec3};
 use std::f32::consts::PI;
 
 /// Height of one storey (floor to floor).
-const STOREY: f32 = 2.6;
-/// Roof overhang beyond the wall line.
-const OVERHANG: f32 = 0.35;
-/// Outward step of a jettied upper storey.
-const JETTY: f32 = 0.2;
+const STOREY: f32 = 3.0;
+/// Roof slab overhang beyond the wall line.
+const OVERHANG: f32 = 0.8;
 /// Walls reach this far below the lowest ground corner.
 const SINK: f32 = 0.3;
-/// Tower drum height between string courses.
-const TOWER_SEG: f32 = 3.0;
-/// Inward step of each tower drum.
-const TAPER: f32 = 0.07;
+/// Projection of a plain floor-slab band beyond the wall below / above it.
+const SLAB: f32 = 0.12;
+/// Depth of brise-soleil fins (and of the slab bands that frame them).
+const FIN: f32 = 0.6;
+/// Floor-slab band extent below / above the storey line.
+const SLAB_LO: f32 = 0.12;
+const SLAB_HI: f32 = 0.13;
 
-/// House / tower mesh (walls, openings, roof, chimney, details) plus markers
-/// (chimney smoke, lit windows, door spots, roof perches).
-/// `cuts` are passages through the house walls (paths) and become doors / arches.
+/// Block / silo mesh (walls, openings, roof, vent stack, details) plus markers
+/// (vent steam, lit windows, door spots, entry lights, roof perches).
+/// `cuts` are passages through the block walls (paths) and become doors / portals.
 pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> (MeshData, Vec<Marker>) {
     let fp = sane_footprint(house.footprint);
     let poly = footprint_polygon(&fp);
     let h = fin(house.wall_height, 3.0).clamp(0.6, 24.0);
     let pitch = fin(house.roof_pitch, 0.6).clamp(0.0, 4.0);
+    let og = fin(house.overgrowth, 0.0).clamp(0.0, 1.0);
     let y0 = {
         let m = poly.iter().map(|p| terrain.height(*p)).filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
         if m.is_finite() { m } else { 0.0 }
     };
     let center = poly.iter().copied().sum::<Vec2>() / poly.len() as f32;
-    let (round, inradius) = match fp {
-        Footprint::Round { radius, .. } => (true, radius),
-        Footprint::Rect { half, .. } => (false, half.x.min(half.y)),
-    };
+    let round = matches!(fp, Footprint::Round { .. });
     let tower = round && h >= 6.0;
     let colors = house.colors;
     let trim = palette::trim(colors);
     let (msurf, mcol) = material_look(house.material, colors);
+    let slab = palette::wall(colors).lerp(palette::stone(), 0.6);
     let mut style = house.roof;
     if pitch < 0.05 {
         style = RoofStyle::Green;
@@ -63,94 +68,87 @@ pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> 
     let mut rng = Rng::at(seed ^ 0x4805_E000, center.x, center.y);
 
     if h < 1.5 {
-        shelter(&mut b, &poly, y0, h, style, pitch, inradius, round, colors, terrain, seed, center);
+        pavilion(&mut b, &poly, y0, h, style, pitch, colors, terrain, seed, center);
         return (b.m, b.mk);
     }
 
     let foundation = fin(house.foundation, 0.0).clamp(0.0, (h * 0.5).min(2.0));
     let has_plinth = foundation > 0.02;
-    let timbered = house.fins && house.material != Material::Concrete && h >= 3.5 && !tower;
     let n = poly.len();
     let lens: Vec<f32> = (0..n).map(|i| poly[i].distance(poly[(i + 1) % n])).collect();
+    let cant = if !round && h >= 6.0 { rng.range(0.3, 0.6) } else { 0.0 };
     let holes = plan_openings(house, cuts, &lens, h, round, tower, &mut rng);
+    let fins_on = house.fins && !round;
 
-    // ---- wall bands -------------------------------------------------------------------
-    let stone = palette::stone();
+    // ---- wall bands: plinth, one band per storey, slab bands between them --------------
     let mut bands: Vec<Band> = Vec::new();
     let body_lo = if has_plinth { foundation } else { -SINK };
     if has_plinth {
         bands.push(Band::new(-SINK, foundation, 0.06, Surface::Plinth, palette::foundation()));
     }
-    let mut top_off = 0.0;
-    let mut courses: Vec<(f32, f32, f32)> = Vec::new(); // tower string courses: y, off below, off above
-    if timbered {
-        bands.push(Band::new(body_lo, STOREY, 0.0, Surface::Concrete, stone));
-        bands.push(Band::new(STOREY, h, JETTY, msurf, mcol));
-        top_off = JETTY;
-    } else if tower {
-        // Slight taper, never more than ~15 % of the radius in total.
-        let taper = TAPER.min(inradius * 0.15 / (h / TOWER_SEG).ceil().max(1.0));
-        let mut lo = body_lo;
-        let mut k = 0;
-        loop {
-            let hi = ((k + 1) as f32 * TOWER_SEG).min(h);
-            let off = -taper * k as f32;
-            if hi > lo + 0.01 {
-                bands.push(Band::new(lo, hi, off, msurf, mcol));
-                top_off = off;
-            }
-            if hi >= h - 1e-3 {
-                break;
-            }
-            courses.push((hi, off, off - taper));
-            lo = hi;
-            k += 1;
+    let mut courses: Vec<(f32, f32, f32)> = Vec::new(); // slab line y, offset below, offset above
+    let mut lo = body_lo;
+    let mut k = 0;
+    loop {
+        let mut hi = ((k + 1) as f32 * STOREY).min(h);
+        if h - hi < 1.2 || k >= 7 {
+            hi = h;
         }
-    } else {
-        bands.push(Band::new(body_lo, h, 0.0, msurf, mcol));
+        let off = if k >= 1 { cant } else { 0.0 };
+        if hi > lo + 0.01 {
+            bands.push(Band::new(lo, hi, off, msurf, mcol));
+        }
+        if hi >= h - 1e-3 {
+            break;
+        }
+        courses.push((hi, off, cant));
+        lo = hi;
+        k += 1;
     }
+    let top_off = bands.last().map_or(0.0, |bd| bd.off);
     for band in &bands {
         wall_band(&mut b, &poly, y0, band, &holes, trim);
     }
     if has_plinth {
-        let above = bands.iter().find(|bd| bd.lo >= foundation - 1e-3 && bd.off < 0.06).map_or(0.0, |bd| bd.off);
-        annulus(&mut b, &poly, y0, foundation, 0.06, above, true, &holes, palette::foundation(), Surface::Plinth);
+        annulus(&mut b, &poly, y0, foundation, 0.06, 0.0, true, &holes, palette::foundation(), Surface::Plinth);
     }
-    if timbered {
-        annulus(&mut b, &poly, y0, STOREY, 0.0, JETTY, false, &holes, trim, Surface::Cladding);
-        timber_frame(&mut b, &poly, y0, h, &holes, trim, seed);
-    }
+    let ledge_out = if fins_on { FIN } else { SLAB };
     for &(y, below, above) in &courses {
-        let out = below + 0.1;
-        let ledge = Band::new(y - 0.12, y + 0.1, out, Surface::Concrete, stone * 0.9);
+        let out = below.max(above) + ledge_out;
+        let ledge = Band::new(y - SLAB_LO, y + SLAB_HI, out, Surface::Concrete, slab);
         wall_band(&mut b, &poly, y0, &ledge, &holes, trim);
-        annulus(&mut b, &poly, y0, y - 0.12, out, below, false, &holes, stone * 0.9, Surface::Concrete);
-        annulus(&mut b, &poly, y0, y + 0.1, out, above, true, &holes, stone * 0.9, Surface::Concrete);
+        annulus(&mut b, &poly, y0, y - SLAB_LO, out, below, false, &holes, slab * 0.8, Surface::Concrete);
+        annulus(&mut b, &poly, y0, y + SLAB_HI, out, above, true, &holes, slab, Surface::Concrete);
     }
 
-    // ---- corner quoins (rect houses, stone / plaster corners) --------------------------
-    if !round && (timbered || house.material != Material::Timber) {
-        let lo = if has_plinth { foundation } else { 0.0 };
-        let hi = if timbered { STOREY } else { h };
-        let qcol = if bands.iter().any(|bd| bd.lo <= lo + 1e-3 && bd.surf == Surface::Earth) { stone } else { stone * 0.86 };
-        quoins(&mut b, &poly, y0, lo, hi, qcol, seed);
+    // ---- brise-soleil fins (blocks) / ribs (silos) -------------------------------------
+    if round {
+        let depth = if house.fins { 0.45 } else if tower { 0.22 } else { 0.0 };
+        if depth > 0.0 {
+            ribs(&mut b, &poly, &lens, y0, body_lo, h, depth, &holes, slab);
+        }
+    } else if fins_on {
+        let (fc, fs) = if house.material == Material::Timber { (trim, Surface::Steel) } else { (slab, Surface::Concrete) };
+        for band in bands.iter().filter(|bd| bd.surf == msurf) {
+            fins(&mut b, &poly, y0, band, &holes, fc, fs);
+        }
     }
 
     // ---- openings: windows, doors ------------------------------------------------------
-    let quoin_margin = if round { 0.05 } else { 0.55 };
     for hole in &holes {
         let vm = (hole.v0 + hole.v1) * 0.5;
         let band = bands.iter().find(|bd| vm >= bd.lo && vm < bd.hi).or(bands.last()).copied().unwrap_or(Band::new(0.0, h, 0.0, msurf, mcol));
         let wf = Wf::at_off(&poly, band.off, hole.edge, y0);
-        match hole.kind {
-            Hk::Window | Hk::Slit => window_details(&mut b, &wf, hole, &band, quoin_margin, trim, seed, !tower),
-            Hk::Door | Hk::Wide => door_details(&mut b, &wf, hole, &band, h, trim, terrain, seed),
+        if hole.kind.is_door() {
+            door_details(&mut b, &wf, hole, h, slab, terrain);
+        } else {
+            window_details(&mut b, &wf, hole, &band, slab, og, seed, !tower && !fins_on);
         }
     }
 
-    // ---- ivy on stone walls ------------------------------------------------------------
-    for band in bands.iter().filter(|bd| bd.surf == Surface::Concrete && bd.lo <= 0.5) {
-        ivy(&mut b, &poly, y0, band, &holes, round, seed);
+    // ---- overgrowth: ivy, moss on ledges, water streaks --------------------------------
+    if og > 0.01 {
+        weathering(&mut b, &poly, y0, &bands, &courses, ledge_out, &holes, og, seed);
     }
 
     // ---- roof --------------------------------------------------------------------------
@@ -159,50 +157,42 @@ pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> 
     let opts = RoofOpts {
         overhang: if style == RoofStyle::Green { 0.0 } else { OVERHANG },
         gable: Some((msurf, mcol)),
-        timber: timbered.then_some(trim),
         planters: house.planters || tower,
-        corbels: tower,
         parapet: true,
-        finial: round,
-        dormers: !round,
+        solar: style == RoofStyle::Green && !round && !house.planters && rng.f() < 0.6,
         trim,
         seed,
     };
-    let roof_pitch = if tower && style == RoofStyle::Shell { pitch.max(1.4) } else { pitch };
+    let roof_pitch = if tower && style == RoofStyle::Shell { pitch.max(0.5) } else { pitch };
     let geom = roof_impl(&mut b, &roof_poly, eave, style, roof_pitch, colors, &opts);
 
-    // ---- chimney (rect houses) ---------------------------------------------------------
+    // ---- ventilation stack (rect blocks) -----------------------------------------------
     if let (false, Some(rf)) = (round, rect_frame(&roof_poly)) {
-        chimney(&mut b, &rf, &geom, eave, seed);
+        vent_stack(&mut b, &rf, &geom, eave, slab, trim, seed);
     }
 
-    // ---- props beside the house --------------------------------------------------------
-    let door_edge = holes.iter().find(|ho| ho.kind.is_door()).map_or(usize::MAX, |ho| ho.edge);
-    yard_decor(&mut b, &poly, y0, h, door_edge, round, tower, &bands, terrain, seed, &holes);
+    // ---- balconies, rain chains, planters ----------------------------------------------
+    decor(&mut b, &poly, &lens, y0, h, cant, fins_on, &holes, slab, trim, og, terrain, seed);
 
     (b.m, b.mk)
 }
 
 /// Roof over an arbitrary simple polygon `poly` (counter-clockwise, as `geom::footprint_polygon`)
-/// with eaves at height `base_y`. Used for houses and for roofed wall rings.
-/// `pitch` as in [`House::roof_pitch`]. Non-rectangular polygons: hip/cone style roofs rise to
-/// the centroid; gable falls back to hip.
+/// with eaves at height `base_y`. Used for blocks and for roofed wall rings.
+/// `pitch` as in [`House::roof_pitch`].
 ///
-/// The roof plane passes through `base_y` at the polygon outline and overhangs it by ~0.35 m.
-/// Rectangles get true gable / hip / pyramid roofs (gable ends in stone); other star-shaped
-/// polygons get a pyramid to the centroid; concave rings whose centroid cannot see every edge
-/// fall back to a flat roof with a parapet.
+/// Rectangles get a sharp slab gable (Pitched) or north-light bays (Sawtooth); Shell gives a
+/// folded-plate pyramid on polygons with up to six sides and a shallow dome on rounder ones;
+/// other star-shaped polygons fall back to Shell for Pitched / Sawtooth; concave rings whose
+/// centroid cannot see every edge, zero pitch and Green give a flat sedum roof with a parapet.
 pub fn roof_mesh(poly: &[Vec2], base_y: f32, style: RoofStyle, pitch: f32, colors: Colors, seed: u64) -> (MeshData, Vec<Marker>) {
     let mut b = B::default();
     let opts = RoofOpts {
         overhang: OVERHANG,
         gable: Some((Surface::Concrete, palette::stone())),
-        timber: None,
         planters: false,
-        corbels: false,
         parapet: true,
-        finial: false,
-        dormers: false,
+        solar: false,
         trim: palette::trim(colors),
         seed,
     };
@@ -684,8 +674,8 @@ fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool,
     let mut holes: Vec<Hole> = Vec::new();
     let n = lens.len();
     let per: f32 = lens.iter().sum();
-    // Ground-storey window size.
-    let win_h = 1.0f32.min(h - 0.6);
+    // Ground-storey slot window size.
+    let win_h = 1.4f32.min(h - 0.6);
     let win_sill = 1.0f32.min(h - 0.3 - win_h).max(0.3);
 
     for op in &house.openings {
@@ -745,40 +735,51 @@ fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool,
     }
 
     if tower {
-        // Arrow slits spiralling up the drums.
+        // Slit windows spiralling up the silo, two per storey.
         let mut k = 1;
-        while (k as f32) * TOWER_SEG + 2.1 <= h - 0.2 {
+        while (k as f32) * STOREY + 2.4 <= h - 0.2 {
             for j in 0..2 {
                 let e = (k * 3 + j * n / 2 + n / 4) % n;
-                holes.extend(place_hole(&holes, lens, e, lens[e] * 0.5, Hk::Slit, k as f32 * TOWER_SEG + 0.9, 1.1, 0.22, true));
+                holes.extend(place_hole(&holes, lens, e, lens[e] * 0.5, Hk::Slit, k as f32 * STOREY + 0.8, 1.5, 0.3, true));
             }
             k += 1;
         }
         return holes;
     }
 
-    // Windows every ~2.2 m per storey.
+    // Per storey: either one ribbon window per façade or a row of deep slots.
+    let ribbon = !round && rng.f() < 0.45;
     let mut k = 0;
     loop {
-        let (sill, wh) = if k == 0 { (win_sill, win_h) } else { (k as f32 * STOREY + 0.8, 1.0) };
+        let (sill, wh) = if k == 0 {
+            (win_sill, if ribbon { win_h.min(1.0) } else { win_h })
+        } else {
+            (k as f32 * STOREY + 0.9, if ribbon { 1.0 } else { 1.5 })
+        };
         if wh < 0.4 || sill + wh > h - 0.25 {
             break;
         }
         for e in 0..n {
             if round {
                 if (e + k) % 3 == 0 {
-                    holes.extend(place_hole(&holes, lens, e, lens[e] * 0.5, Hk::Window, sill, wh, 0.8, true));
+                    holes.extend(place_hole(&holes, lens, e, lens[e] * 0.5, Hk::Window, sill, wh, 0.6, true));
                 }
                 continue;
             }
             let usable = lens[e] - 1.4;
-            let mut count = (usable / 2.2).floor() as i32;
-            if count == 0 && usable >= 0.9 {
+            if ribbon && usable >= 1.2 {
+                if let Some(hole) = place_hole(&holes, lens, e, lens[e] * 0.5, Hk::Window, sill, wh, usable, false) {
+                    holes.push(hole);
+                    continue;
+                }
+            }
+            let mut count = (usable / 1.6).floor() as i32;
+            if count == 0 && usable >= 0.7 {
                 count = 1;
             }
             for j in 0..count.max(0) {
                 let u = 0.7 + usable * (j as f32 + 0.5) / count as f32;
-                holes.extend(place_hole(&holes, lens, e, u, Hk::Window, sill, wh, 0.8, false));
+                holes.extend(place_hole(&holes, lens, e, u, Hk::Window, sill, wh, 0.6, false));
             }
         }
         k += 1;
@@ -789,101 +790,59 @@ fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool,
     holes
 }
 
+/// Mullions, drip sill, water streak and sometimes a planter under a recessed window.
 #[allow(clippy::too_many_arguments)]
-fn window_details(b: &mut B, wf: &Wf, h: &Hole, band: &Band, margin: f32, trim: Vec3, seed: u64, allow_box: bool) {
+fn window_details(b: &mut B, wf: &Wf, h: &Hole, band: &Band, slab: Vec3, og: f32, seed: u64, allow_box: bool) {
     let (u0, u1, v0, v1) = (h.u0, h.u1, h.v0, h.v1);
     let w = u1 - u0;
     let mid = (u0 + u1) * 0.5;
     let vm = (v0 + v1) * 0.5;
+    let d = h.kind.depth();
     let centre = wf.at(mid, vm, 0.0);
     let mut rng = Rng::at(seed ^ 0x5157_0000, centre.x, centre.z + centre.y * 0.37);
-    b.marker(MarkerKind::WindowLight, wf.at(mid, vm, -h.kind.depth() + 0.02), wf.n);
-    let stone_wall = matches!(band.surf, Surface::Concrete | Surface::Plinth);
-    if h.kind == Hk::Slit {
-        b.lbox(wf, mid, v1 + 0.07, 0.02, Vec3::new(w * 0.5 + 0.1, 0.07, 0.05), palette::stone() * 0.9, Surface::Concrete);
-        b.lbox(wf, mid, v0 - 0.05, 0.02, Vec3::new(w * 0.5 + 0.08, 0.05, 0.05), palette::stone() * 0.9, Surface::Concrete);
-        return;
-    }
-    let (lc, ls) = if stone_wall { (palette::stone() * 0.92, Surface::Concrete) } else { (trim, Surface::Steel) };
-    b.lbox(wf, mid, v1 + 0.07, 0.02, Vec3::new(w * 0.5 + 0.1, 0.07, 0.05), lc, ls);
-    b.lbox(wf, mid, v0 - 0.05, 0.05, Vec3::new(w * 0.5 + 0.09, 0.05, 0.08), lc, ls);
-    // Open shutters, flat against the wall.
-    let sw = w * 0.5;
-    if u0 - sw - 0.05 >= wf.u_start() + margin && u1 + sw + 0.05 <= wf.u_end() - margin {
-        let tilt = rng.range(-0.02, 0.02);
-        for (u, sd) in [(u0 - sw * 0.5 - 0.03, -1.0f32), (u1 + sw * 0.5 + 0.03, 1.0)] {
-            b.lbox(wf, u, vm + tilt * sd, 0.035, Vec3::new(sw * 0.5, (v1 - v0) * 0.5, 0.025), trim, Surface::Cladding);
+    b.marker(MarkerKind::WindowLight, wf.at(mid, vm, -d + 0.02), wf.n);
+    // Ribbon windows: dark steel mullions just in front of the glass.
+    if w > 1.5 {
+        let k = ((w / 1.3).round() as usize).clamp(2, 24);
+        for j in 1..k {
+            let u = u0 + w * j as f32 / k as f32;
+            b.lbox(wf, u, vm, -d + 0.05, Vec3::new(0.035, (v1 - v0) * 0.5, 0.035), palette::metal(), Surface::Metal);
         }
     }
-    // Window box with flowers.
-    if allow_box && rng.f() < 0.4 {
-        b.lbox(wf, mid, v0 - 0.21, 0.2, Vec3::new(w * 0.5 + 0.04, 0.1, 0.12), trim * 0.85, Surface::Cladding);
-        b.lbox(wf, mid, v0 - 0.07, 0.2, Vec3::new(w * 0.5, 0.05, 0.1), palette::leaves(), Surface::Leaves);
-        let ci = (rng.f() * 6.0) as u32;
-        let nfl = 4;
-        for j in 0..nfl {
-            let u = u0 + w * (j as f32 + 0.5) / nfl as f32 + rng.range(-0.05, 0.05);
-            let c = palette::flower(ci + (j % 2) as u32 * 2);
-            b.lbox(wf, u, v0 + rng.range(0.0, 0.07), 0.2 + rng.range(-0.05, 0.05), Vec3::splat(0.06), c, Surface::Petal);
+    // Projecting drip sill.
+    b.lbox(wf, mid, v0 - 0.06, 0.05, Vec3::new(w * 0.5 + 0.08, 0.06, 0.09), slab * 0.92, Surface::Concrete);
+    // Dark water streak running down from the sill.
+    if og > 0.02 && rng.f() < 0.25 + 0.6 * og {
+        let top = v0 - 0.12;
+        let bot = (top - rng.range(0.4, 0.5 + 1.8 * og)).max(band.lo + 0.05);
+        if top - bot > 0.15 {
+            let sw = (w * 0.5 * rng.range(0.4, 0.9)).min(0.5);
+            let su = mid + rng.range(-0.1, 0.1);
+            b.wquad(wf, su - sw, su + sw, bot, top, 0.02, false, band.color * 0.55, band.surf);
         }
+    }
+    // Concrete planter box with trailing greenery.
+    if allow_box && h.kind == Hk::Window && rng.f() < 0.2 + 0.3 * og {
+        let leaves = palette::leaves();
+        b.lbox(wf, mid, v0 - 0.32, 0.25, Vec3::new(w * 0.5 + 0.05, 0.16, 0.2), slab * 0.9, Surface::Concrete);
+        b.lbox(wf, mid, v0 - 0.13, 0.25, Vec3::new(w * 0.5, 0.04, 0.17), leaves, Surface::Leaves);
+        let drop = rng.range(0.2, 0.4 + 0.6 * og);
+        b.wquad(wf, mid - w * 0.4, mid + w * 0.4, v0 - 0.48 - drop, v0 - 0.2, 0.46, false, leaves * 0.8, Surface::Fiber);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn door_details(b: &mut B, wf: &Wf, h: &Hole, band: &Band, wall_h: f32, trim: Vec3, terrain: &Terrain, seed: u64) {
+/// Cantilevered canopy slab with a downlight over the recessed entry, threshold slab.
+fn door_details(b: &mut B, wf: &Wf, h: &Hole, wall_h: f32, slab: Vec3, terrain: &Terrain) {
     let (u0, u1, v1) = (h.u0, h.u1, h.v1);
     let w = u1 - u0;
     let mid = (u0 + u1) * 0.5;
-    let stone_wall = matches!(band.surf, Surface::Concrete | Surface::Plinth);
-    let at_door = wf.at(mid, 0.0, 0.0);
-    let mut rng = Rng::at(seed ^ 0xD00_0000, at_door.x, at_door.z);
-    if stone_wall {
-        // Arched stone frame; spandrels fill the corners above the arch.
-        let rx = w * 0.5;
-        let ry = (rx * 0.7).min((h.v1 - h.v0) * 0.35);
-        let spring = v1 - ry;
-        let th = 0.2;
-        let out = 0.07;
-        let segs = 6;
-        let pt = |t: f32, r: f32| (mid + t.cos() * (rx + r), spring + t.sin() * (ry + r));
-        for k in 0..segs {
-            let t0 = PI * (1.0 - k as f32 / segs as f32);
-            let t1 = PI * (1.0 - (k + 1) as f32 / segs as f32);
-            let (i0, i1, o0, o1) = (pt(t0, 0.0), pt(t1, 0.0), pt(t0, th), pt(t1, th));
-            let col = palette::stone() * rng.range(0.8, 0.95);
-            let a = |p: (f32, f32), o: f32| wf.at(p.0, p.1, o);
-            let uv = [Vec2::ZERO, Vec2::new(0.3, 0.0), Vec2::new(0.3, 0.2), Vec2::new(0.0, 0.2)];
-            b.face([a(i0, out), a(i1, out), a(o1, out), a(o0, out)], uv, wf.n, col, Surface::Concrete);
-            let tm = (t0 + t1) * 0.5;
-            let radial = wf.d * tm.cos() + Vec3::Y * tm.sin();
-            b.face([a(o0, 0.0), a(o1, 0.0), a(o1, out), a(o0, out)], uv, radial, col, Surface::Concrete);
-            b.face([a(i0, 0.0), a(i1, 0.0), a(i1, out), a(i0, out)], uv, -radial, col, Surface::Concrete);
-            let corner = if k < segs / 2 { (u0, v1) } else { (u1, v1) };
-            b.tri(a(corner, 0.003), a(i0, 0.003), a(i1, 0.003), wf.n, band.color, band.surf);
-        }
-    } else {
-        for u in [u0 - 0.07, u1 + 0.07] {
-            b.lbox(wf, u, (h.v0 + v1) * 0.5 + 0.04, 0.02, Vec3::new(0.07, (v1 - h.v0) * 0.5 + 0.04, 0.05), trim, Surface::Steel);
-        }
-        b.lbox(wf, mid, v1 + 0.1, 0.03, Vec3::new(w * 0.5 + 0.2, 0.08, 0.06), trim, Surface::Steel);
+    let cy = v1 + 0.3;
+    if cy + 0.12 <= wall_h {
+        b.lbox(wf, mid, cy, 0.65, Vec3::new(w * 0.5 + 0.6, 0.12, 0.7), slab, Surface::Concrete);
+        b.lbox(wf, mid, cy - 0.14, 0.8, Vec3::new(0.12, 0.02, 0.12), palette::glow(), Surface::Glow);
+        b.marker(MarkerKind::Lantern, wf.at(mid, cy - 0.25, 0.8), Vec3::Y);
     }
-    // Step stone.
-    b.lbox(wf, mid, 0.0, 0.24, Vec3::new(w * 0.5 + 0.12, 0.09, 0.22), palette::foundation(), Surface::Plinth);
-    // Lantern on a bracket beside the door.
-    let mut side = if rng.f() < 0.5 { -1.0 } else { 1.0 };
-    let lu = |s: f32| mid + s * (w * 0.5 + 0.4);
-    if !(0.25..=wf.len - 0.25).contains(&lu(side)) {
-        side = -side;
-    }
-    let fits = |u: f32| (0.25..=wf.len - 0.25).contains(&u);
-    // Narrow walls (round houses): hang the lantern above the door instead.
-    let (u, yl) = if fits(lu(side)) { (lu(side), (v1 + 0.2).min(wall_h - 0.35)) } else { (mid, (v1 + 0.5).min(wall_h - 0.3)) };
-    if fits(u) && yl > 0.8 {
-        b.lbox(wf, u, yl + 0.12, 0.15, Vec3::new(0.025, 0.025, 0.15), palette::metal(), Surface::Metal);
-        b.lbox(wf, u, yl + 0.05, 0.3, Vec3::new(0.09, 0.025, 0.09), palette::metal(), Surface::Metal);
-        b.lbox(wf, u, yl - 0.09, 0.3, Vec3::new(0.065, 0.11, 0.065), palette::glow(), Surface::Glow);
-        b.marker(MarkerKind::Lantern, wf.at(u, yl - 0.09, 0.3), Vec3::Y);
-    }
+    b.lbox(wf, mid, 0.0, 0.3, Vec3::new(w * 0.5 + 0.3, 0.09, 0.3), palette::foundation(), Surface::Plinth);
     let spot = wf.at(mid, 0.0, 0.8);
     let gy = fin(terrain.height(Vec2::new(spot.x, spot.z)), spot.y);
     b.marker(MarkerKind::Door, Vec3::new(spot.x, gy, spot.z), wf.n);
@@ -893,109 +852,117 @@ fn door_details(b: &mut B, wf: &Wf, h: &Hole, band: &Band, wall_h: f32, trim: Ve
 // Wall dressing
 // =============================================================================================
 
-/// Alternating long/short stone blocks at every corner.
-fn quoins(b: &mut B, poly: &[Vec2], y0: f32, lo: f32, hi: f32, col: Vec3, seed: u64) {
-    let ch = 0.38;
-    let count = ((hi - lo) / ch).floor().max(0.0) as usize;
-    let n = poly.len();
-    for j in 0..n {
-        let wo = Wf::new(poly, poly, j, y0);
-        let wi = Wf::new(poly, poly, (j + n - 1) % n, y0);
-        if wo.len < 1.2 || wi.len < 1.2 {
-            continue;
-        }
-        for k in 0..count.min(64) {
-            let y = lo + (k as f32 + 0.5) * ch;
-            let (lo_len, li_len) = if (k + j) % 2 == 0 { (0.55, 0.3) } else { (0.3, 0.55) };
-            let mut rng = Rng::at(seed ^ 0x0071_0000, poly[j].x + y, poly[j].y);
-            let c = col * rng.range(0.85, 1.02);
-            b.lbox(&wo, (lo_len - 0.05) * 0.5, y, 0.0, Vec3::new((lo_len + 0.05) * 0.5, ch * 0.46, 0.05), c, Surface::Concrete);
-            b.lbox(&wi, wi.len - (li_len - 0.05) * 0.5, y, 0.0, Vec3::new((li_len + 0.05) * 0.5, ch * 0.46, 0.05), c, Surface::Concrete);
-        }
+/// Brise-soleil: deep vertical fins across every façade of one storey band, clear of doors.
+fn fins(b: &mut B, base: &[Vec2], y0: f32, band: &Band, holes: &[Hole], col: Vec3, s: Surface) {
+    let lo = band.lo.max(-SINK);
+    if band.hi - lo < 0.3 {
+        return;
     }
-}
-
-/// Exposed timber framing of the jettied upper storey: plates, posts, braces.
-fn timber_frame(b: &mut B, base: &[Vec2], y0: f32, h: f32, holes: &[Hole], trim: Vec3, seed: u64) {
-    let offp = offset_poly(base, JETTY);
-    let (lo, hi) = (STOREY, h);
-    let mid_y = (lo + hi) * 0.5;
-    let half_h = (hi - lo) * 0.5;
+    let offp = offset_poly(base, band.off);
     for i in 0..base.len() {
         let wf = Wf::new(base, &offp, i, y0);
-        if wf.len < 0.3 {
+        let (us, ue) = (wf.u_start() + 0.12, wf.u_end() - 0.12);
+        if ue - us < 0.5 {
             continue;
         }
-        let (us, ue) = (wf.u_start(), wf.u_end());
-        for y in [lo + 0.09, hi - 0.09] {
-            b.lbox(&wf, (us + ue) * 0.5, y, 0.0, Vec3::new((ue - us) * 0.5 + 0.03, 0.09, 0.07), trim, Surface::Steel);
-        }
-        let spans: Vec<(f32, f32)> =
-            holes.iter().filter(|o| o.edge == i && o.v1 > lo && o.v0 < hi).map(|o| (o.u0 - 0.07, o.u1 + 0.07)).collect();
-        let mut posts = vec![us + 0.07, ue - 0.07];
-        for (a, c) in &spans {
-            posts.push(*a);
-            posts.push(*c);
-        }
-        posts.sort_by(f32::total_cmp);
-        posts.dedup_by(|a, b| (*a - *b).abs() < 0.16);
-        let in_span = |u: f32| spans.iter().any(|(a, c)| u > *a && u < *c);
-        let mut all = posts.clone();
-        for w in posts.windows(2) {
-            let (a, c) = (w[0], w[1]);
-            if in_span((a + c) * 0.5) {
-                continue;
-            }
-            let k = ((c - a) / 1.5).round().max(1.0) as usize;
-            for j in 1..k {
-                all.push(a + (c - a) * j as f32 / k as f32);
-            }
-        }
-        all.sort_by(f32::total_cmp);
-        for &u in &all {
-            b.lbox(&wf, u, mid_y, 0.0, Vec3::new(0.07, half_h, 0.06), trim, Surface::Steel);
-        }
-        for w in all.windows(2) {
-            let (a, c) = (w[0], w[1]);
-            if c - a < 0.5 || in_span((a + c) * 0.5) {
-                continue;
-            }
-            let pm = wf.at((a + c) * 0.5, mid_y, 0.0);
-            let mut rng = Rng::at(seed ^ 0x00B7_ACE0, pm.x, pm.z);
-            if rng.f() < 0.55 {
-                let (ya, yc) = if rng.f() < 0.5 { (lo + 0.18, hi - 0.3) } else { (hi - 0.3, lo + 0.18) };
-                b.m.beam(wf.at(a + 0.07, ya, 0.0), wf.at(c - 0.07, yc, 0.0), 0.1, 0.12, trim, Surface::Steel, 1.0);
+        let k = (((ue - us) / 1.1).round() as usize).clamp(1, 64);
+        for j in 0..=k {
+            let u = us + (ue - us) * j as f32 / k as f32;
+            let blocked =
+                holes.iter().any(|o| o.edge == i && o.kind.is_door() && o.v1 > lo && o.v0 < band.hi && u > o.u0 - 0.25 && u < o.u1 + 0.25);
+            if !blocked {
+                b.lbox(&wf, u, (lo + band.hi) * 0.5, FIN * 0.5, Vec3::new(0.07, (band.hi - lo) * 0.5, FIN * 0.5), col, s);
             }
         }
     }
 }
 
-/// Ivy patches climbing from the ground on stone bands.
-fn ivy(b: &mut B, poly: &[Vec2], y0: f32, band: &Band, holes: &[Hole], round: bool, seed: u64) {
-    let offp = offset_poly(poly, band.off);
-    let chance = if round { 0.22 } else { 0.45 };
-    for i in 0..poly.len() {
-        let wf = Wf::new(poly, &offp, i, y0);
-        if wf.len < 1.0 {
+/// Silo ribs: full-height pilasters on every other facet corner, clear of doors.
+#[allow(clippy::too_many_arguments)]
+fn ribs(b: &mut B, poly: &[Vec2], lens: &[f32], y0: f32, lo: f32, hi: f32, depth: f32, holes: &[Hole], col: Vec3) {
+    let n = poly.len();
+    for i in (0..n).step_by(2) {
+        let prev = (i + n - 1) % n;
+        let blocked =
+            holes.iter().any(|o| o.kind.is_door() && ((o.edge == i && o.u0 < 0.35) || (o.edge == prev && o.u1 > lens[prev] - 0.35)));
+        if blocked {
             continue;
         }
-        let m = wf.at(wf.len * 0.5, 0.0, 0.0);
-        let mut rng = Rng::at(seed ^ 0x1717_0000, m.x, m.z);
-        if rng.f() >= chance {
-            continue;
+        let n0 = outward((poly[i] - poly[prev]).normalize_or_zero());
+        let n1 = outward((poly[(i + 1) % n] - poly[i]).normalize_or_zero());
+        let m = (n0 + n1).normalize_or(n1);
+        let c = poly[i] + m * depth * 0.5;
+        let tangent = p3(Vec2::new(-m.y, m.x), 0.0);
+        b.m.oriented_box(p3(c, y0 + (lo + hi) * 0.5), Vec3::new(0.12, (hi - lo) * 0.5, depth * 0.5), tangent, col, Surface::Concrete, 1.0);
+    }
+}
+
+/// Overgrowth: ivy climbing from the ground, moss on the slab ledges, dark water streaks
+/// under them. Amount and reach scale with `og` (0..=1).
+#[allow(clippy::too_many_arguments)]
+fn weathering(b: &mut B, poly: &[Vec2], y0: f32, bands: &[Band], courses: &[(f32, f32, f32)], ledge_out: f32, holes: &[Hole], og: f32, seed: u64) {
+    let leaves = palette::leaves();
+    let n = poly.len();
+    if let Some(band) = bands.iter().find(|bd| bd.surf != Surface::Plinth) {
+        let offp = offset_poly(poly, band.off);
+        for i in 0..n {
+            let wf = Wf::new(poly, &offp, i, y0);
+            if wf.len < 1.0 {
+                continue;
+            }
+            let m = wf.at(wf.len * 0.5, 0.0, 0.0);
+            let mut rng = Rng::at(seed ^ 0x1717_0000, m.x, m.z);
+            if rng.f() >= 0.1 + 0.75 * og {
+                continue;
+            }
+            let uc = rng.range(0.4, (wf.len - 0.4).max(0.41));
+            let top = rng.range(1.0, 1.4 + 5.0 * og).min(band.hi - 0.15);
+            let w0 = rng.range(0.5, 0.9 + og);
+            if holes.iter().any(|o| o.edge == i && o.u0 < uc + w0 * 0.5 + 0.2 && uc - w0 * 0.5 - 0.2 < o.u1 && o.v0 < top + 0.6) {
+                continue;
+            }
+            let base_y = band.lo.max(-0.1);
+            let rows = ((top - base_y) / 0.45).ceil().clamp(1.0, 12.0) as usize;
+            for r in 0..rows {
+                let y = base_y + r as f32 * 0.45;
+                let w = w0 * (1.0 - r as f32 / rows as f32 * 0.6) * rng.range(0.7, 1.1);
+                let u = uc + rng.range(-0.15, 0.15);
+                b.wquad(&wf, u - w * 0.5, u + w * 0.5, y, y + 0.6, 0.04, false, leaves * rng.range(0.7, 1.05), Surface::Fiber);
+            }
         }
-        let uc = rng.range(0.4, (wf.len - 0.4).max(0.41));
-        let top = rng.range(1.2, 3.4).min(band.hi - 0.1);
-        if holes.iter().any(|o| o.edge == i && o.u0 < uc + 0.6 && uc - 0.6 < o.u1 && o.v0 < top) {
+    }
+    for (ci, &(y, below, above)) in courses.iter().enumerate() {
+        let out = below.max(above) + ledge_out;
+        let Some(wall) = bands.iter().find(|bd| bd.surf != Surface::Plinth && bd.lo < y - 0.5 && bd.hi > y - 0.5).copied() else {
             continue;
-        }
-        let rows = ((top - band.lo.max(-0.1)) / 0.42).ceil().clamp(1.0, 10.0) as usize;
-        for r in 0..rows {
-            let y = band.lo.max(-0.1) + r as f32 * 0.42;
-            let w = rng.range(0.4, 0.8) * (1.0 - r as f32 / rows as f32 * 0.5);
-            let u = uc + rng.range(-0.18, 0.18);
-            let c = palette::leaves() * rng.range(0.8, 1.1);
-            b.wquad(&wf, u - w * 0.5, u + w * 0.5, y, y + 0.55, 0.05, false, c, Surface::Leaves);
+        };
+        let (pa, pb) = (offset_poly(poly, above), offset_poly(poly, below));
+        for i in 0..n {
+            let wa = Wf::new(poly, &pa, i, y0);
+            let wb = Wf::new(poly, &pb, i, y0);
+            if wa.len < 1.0 {
+                continue;
+            }
+            let m = wa.at(wa.len * 0.5, y, 0.0);
+            let mut rng = Rng::at(seed ^ 0x3055_0000 ^ ci as u64, m.x, m.z);
+            for _ in 0..((wa.len / 2.0) as usize).clamp(1, 16) {
+                let u = rng.range(0.3, wa.len - 0.3);
+                if rng.f() < og * 0.8 {
+                    let l = rng.range(0.4, 1.4);
+                    let d = out - above;
+                    let c = leaves * rng.range(0.55, 0.8);
+                    b.lbox(&wa, u, y + SLAB_HI + 0.025, d * 0.5, Vec3::new(l * 0.5, 0.03, d * 0.5 - 0.01), c, Surface::Fiber);
+                }
+                if rng.f() < og * 0.7 {
+                    let top = y - SLAB_LO;
+                    let bot = (top - rng.range(0.5, 0.6 + 2.0 * og)).max(wall.lo + 0.05);
+                    let sw = rng.range(0.1, 0.35);
+                    let clear = !holes.iter().any(|o| o.edge == i && o.u0 < u + sw && u - sw < o.u1 && o.v1 > bot && o.v0 < top);
+                    if clear && top - bot > 0.15 {
+                        b.wquad(&wb, u - sw, u + sw, bot, top, 0.02, false, wall.color * 0.55, wall.surf);
+                    }
+                }
+            }
         }
     }
 }
@@ -1007,15 +974,14 @@ fn ivy(b: &mut B, poly: &[Vec2], y0: f32, band: &Band, holes: &[Hole], round: bo
 #[derive(Clone, Copy, Debug)]
 struct RoofOpts {
     overhang: f32,
-    /// Material of gable-end triangles (and dormer walls); `None` leaves gables open.
+    /// Material of gable-end infill (and sawtooth bay ends); `None` leaves them open.
     gable: Option<(Surface, Vec3)>,
-    /// Half-timber pattern on gables in this colour.
-    timber: Option<Vec3>,
+    /// Flat roofs: crenellated planter boxes on the parapet.
     planters: bool,
-    corbels: bool,
+    /// Flat roofs: thick parapet (else a thin overhanging slab with an underside).
     parapet: bool,
-    finial: bool,
-    dormers: bool,
+    /// Flat roofs on rectangles: rows of tilted solar panels.
+    solar: bool,
     trim: Vec3,
     seed: u64,
 }
@@ -1057,12 +1023,13 @@ fn rect_frame(p: &[Vec2]) -> Option<Rf> {
     })
 }
 
-/// What was built, so the chimney can find the roof surface.
+/// What was built, so the vent stack can find the roof surface.
 #[derive(Clone, Debug)]
 enum RoofGeom {
     None,
     Flat { top: f32 },
-    Ridge { rf: Rf, base: f32, rise: f32, hip: bool, tv: f32 },
+    Ridge { rf: Rf, base: f32, rise: f32, tv: f32 },
+    Saw { rf: Rf, base: f32, rise: f32, bw: f32, tv: f32 },
     Pyramid { c: Vec2, base: f32, rise: f32, edges: Vec<(Vec2, f32)>, tv: f32 },
 }
 
@@ -1072,15 +1039,13 @@ impl RoofGeom {
         match self {
             RoofGeom::None => None,
             RoofGeom::Flat { top } => Some(*top),
-            RoofGeom::Ridge { rf, base, rise, hip, tv } => {
-                let s = (p - rf.c).dot(rf.ax).abs();
+            RoofGeom::Ridge { rf, base, rise, tv } => {
                 let t = (p - rf.c).dot(rf.ac).abs();
-                let k = rise / rf.b.max(0.05);
-                let mut d = t;
-                if *hip {
-                    d = d.max(s - (rf.a - rf.b).max(0.0));
-                }
-                Some(base + rise - k * d.min(rf.b) + tv)
+                Some(base + rise - rise / rf.b.max(0.05) * t.min(rf.b) + tv)
+            }
+            RoofGeom::Saw { rf, base, rise, bw, tv } => {
+                let s = (p - rf.c).dot(rf.ax) + rf.a;
+                Some(base + rise * (s.rem_euclid(bw.max(0.05)) / bw.max(0.05)).min(1.0) + tv)
             }
             RoofGeom::Pyramid { c, base, rise, edges, tv } => {
                 let r = edges.iter().map(|(n, d)| (p - *c).dot(*n) / d.max(0.05)).fold(0.0f32, f32::max).min(1.0);
@@ -1088,6 +1053,17 @@ impl RoofGeom {
             }
         }
     }
+}
+
+/// Roof covering of slab roofs by palette entry: greens (0, 1) → sedum, else standing seam.
+/// Returns (surface, slab thickness).
+fn roof_cover(c: Colors) -> (Surface, f32) {
+    if c.roof % ROOF_COLORS < 2 { (Surface::Sedum, 0.3) } else { (Surface::Seam, 0.24) }
+}
+
+/// Tint of a sedum mat: the roof colour if it is one of the greens, else a leaf green.
+fn sedum_color(c: Colors) -> Vec3 {
+    if c.roof % ROOF_COLORS < 2 { palette::roof(c) } else { palette::leaves() * 0.9 }
 }
 
 fn roof_impl(b: &mut B, poly: &[Vec2], base: f32, style: RoofStyle, pitch: f32, colors: Colors, o: &RoofOpts) -> RoofGeom {
@@ -1110,24 +1086,27 @@ fn roof_impl(b: &mut B, poly: &[Vec2], base: f32, style: RoofStyle, pitch: f32, 
     let rf = rect_frame(&poly);
     let flat = style == RoofStyle::Green || pitch < 0.05 || (rf.is_none() && !star);
     if flat {
-        return flat_roof(b, &poly, base, o);
+        return flat_roof(b, &poly, base, sedum_color(colors), o);
     }
-    let (surf, thick) = roof_cover(colors);
     let col = palette::roof(colors);
     match (rf, style) {
-        (Some(rf), RoofStyle::Pitched) | (Some(rf), RoofStyle::Sawtooth) => {
-            let rise = (pitch * rf.b).min(30.0);
-            ridge_roof(b, &rf, base, rise, style == RoofStyle::Sawtooth, surf, thick, col, o)
+        (Some(rf), RoofStyle::Pitched) => {
+            let (surf, tv) = roof_cover(colors);
+            ridge_roof(b, &rf, base, (pitch * rf.b).min(30.0), surf, tv, col, o)
+        }
+        (Some(rf), RoofStyle::Sawtooth) => {
+            let (surf, tv) = roof_cover(colors);
+            sawtooth_roof(b, &rf, base, pitch, surf, tv, col, o)
         }
         _ => {
-            let rise = (pitch * dmin).min(30.0);
-            pyramid_roof(b, &poly, c, &edges, base, rise, surf, thick, col, o)
+            let shell = palette::stone().lerp(col, 0.15);
+            shell_roof(b, &poly, c, &edges, base, (pitch * dmin).min(30.0), shell, o)
         }
     }
 }
 
-/// One roof plane: top surface (raised by `tv`), boarded underside, and fascia faces on the
-/// edges that have an outward direction in `fascia`.
+/// One roof slab: top surface (raised by `tv`), concrete soffit, and concrete edge faces on
+/// the edges that have an outward direction in `fascia`.
 #[allow(clippy::too_many_arguments)]
 fn roof_face(b: &mut B, pts: &[Vec3], fascia: &[Option<Vec3>], tv: f32, e: Vec3, col: Vec3, surf: Surface) {
     let len = pts.len();
@@ -1149,13 +1128,13 @@ fn roof_face(b: &mut B, pts: &[Vec3], fascia: &[Option<Vec3>], tv: f32, e: Vec3,
         s = -s;
     }
     let up = Vec3::Y * tv;
-    let under = palette::wood() * 0.6;
+    let concrete = palette::stone();
     for (side, normal) in [(true, n), (false, -n)] {
         let ord: Vec<usize> = if side { order.clone() } else { order.iter().rev().copied().collect() };
         let base_i = b.m.positions.len() as u32;
         for &i in &ord {
             let p = if side { pts[i] + up } else { pts[i] };
-            let (c, sf) = if side { (col, surf) } else { (under, Surface::Cladding) };
+            let (c, sf) = if side { (col, surf) } else { (concrete * 0.7, Surface::Concrete) };
             b.m.vertex(p, normal, Vec2::new(p.dot(e), p.dot(s)), c, sf);
         }
         for k in 1..len - 1 {
@@ -1170,202 +1149,185 @@ fn roof_face(b: &mut B, pts: &[Vec3], fascia: &[Option<Vec3>], tv: f32, e: Vec3,
             let (a, c) = (pts[i], pts[(i + 1) % len]);
             let l = a.distance(c);
             let uv = [Vec2::ZERO, Vec2::new(l, 0.0), Vec2::new(l, tv), Vec2::new(0.0, tv)];
-            b.face([a, c, c + up, a + up], uv, want, col * 0.8, surf);
+            b.face([a, c, c + up, a + up], uv, want, concrete * 0.85, Surface::Concrete);
         }
     }
 }
 
+/// Sharp slab gable: two thick planes meeting at a knife ridge, deep overhang all round, the
+/// slab thickness showing at the open gable ends.
 #[allow(clippy::too_many_arguments)]
-fn ridge_roof(b: &mut B, rf: &Rf, base: f32, rise: f32, hip: bool, surf: Surface, tv: f32, col: Vec3, o: &RoofOpts) -> RoofGeom {
+fn ridge_roof(b: &mut B, rf: &Rf, base: f32, rise: f32, surf: Surface, tv: f32, col: Vec3, o: &RoofOpts) -> RoofGeom {
     let k = rise / rf.b.max(0.05);
-    let oe = o.overhang.min(0.8 / k.max(1e-3));
+    let oe = o.overhang.min(0.9 / k.max(1e-3));
     let ye = base - oe * k;
     let ridge = base + rise;
-    let (bg, ag) = (rf.b + oe, rf.a + if hip { oe } else { o.overhang });
+    let (bg, ag) = (rf.b + oe, rf.a + o.overhang);
     let (ax3, ac3) = (p3(rf.ax, 0.0), p3(rf.ac, 0.0));
     let w = |s: f32, t: f32, y: f32| rf.w(s, t, y);
-    let cap = col * 0.75;
-    if !hip {
-        for sg in [1.0f32, -1.0] {
-            let pts = [w(-ag, sg * bg, ye), w(ag, sg * bg, ye), w(ag, 0.0, ridge), w(-ag, 0.0, ridge)];
-            roof_face(b, &pts, &[Some(ac3 * sg), Some(ax3), None, Some(-ax3)], tv, ax3, col, surf);
-        }
-        b.m.beam(w(-ag - 0.05, 0.0, ridge + tv - 0.07), w(ag + 0.05, 0.0, ridge + tv - 0.07), 0.3, 0.16, cap, surf, 1.0);
+    for sg in [1.0f32, -1.0] {
+        let pts = [w(-ag, sg * bg, ye), w(ag, sg * bg, ye), w(ag, 0.0, ridge), w(-ag, 0.0, ridge)];
+        roof_face(b, &pts, &[Some(ac3 * sg), Some(ax3), None, Some(-ax3)], tv, ax3, col * if sg > 0.0 { 1.0 } else { 0.94 }, surf);
+    }
+    for ss in [1.0f32, -1.0] {
+        b.marker(MarkerKind::Perch, w(ss * ag * 0.92, 0.0, ridge + tv + 0.05), Vec3::Y);
+    }
+    if let Some((gs, gc)) = o.gable {
         for ss in [1.0f32, -1.0] {
-            b.marker(MarkerKind::Perch, w(ss * ag * 0.92, 0.0, ridge + tv + 0.12), Vec3::Y);
+            let sa = ss * rf.a;
+            b.tri(w(sa, -rf.b, base), w(sa, rf.b, base), w(sa, 0.0, ridge), ax3 * ss, gc, gs);
+        }
+    }
+    RoofGeom::Ridge { rf: *rf, base, rise, tv }
+}
+
+/// North-light sawtooth: monopitch slab bays along the long axis, each rising to a vertical
+/// glazed strip (with steel mullions) facing +ridge axis.
+#[allow(clippy::too_many_arguments)]
+fn sawtooth_roof(b: &mut B, rf: &Rf, base: f32, pitch: f32, surf: Surface, tv: f32, col: Vec3, o: &RoofOpts) -> RoofGeom {
+    let nb = ((rf.a * 2.0 / 3.0).round() as usize).clamp(1, 12);
+    let bw = rf.a * 2.0 / nb as f32;
+    let rise = (pitch * rf.b * 0.5).max(0.4).min(bw * 0.9).min(4.0);
+    let ov = o.overhang.min(0.6);
+    let bg = rf.b + ov;
+    let (ax3, ac3) = (p3(rf.ax, 0.0), p3(rf.ac, 0.0));
+    let w = |s: f32, t: f32, y: f32| rf.w(s, t, y);
+    let top = base + rise;
+    for j in 0..nb {
+        let s0 = -rf.a + bw * j as f32;
+        let s1 = s0 + bw;
+        let s0e = if j == 0 { s0 - ov } else { s0 };
+        let ye = base - (s0 - s0e) * rise / bw;
+        let pts = [w(s0e, -bg, ye), w(s1, -bg, top), w(s1, bg, top), w(s0e, bg, ye)];
+        roof_face(b, &pts, &[Some(-ac3), Some(ax3), Some(ac3), Some(-ax3)], tv, ac3, col, surf);
+        let gy = if j + 1 < nb { base + tv } else { base };
+        if top - gy > 0.1 {
+            let (l, hgt) = (rf.b * 2.0, top - gy);
+            let uv = [Vec2::ZERO, Vec2::new(l, 0.0), Vec2::new(l, hgt), Vec2::new(0.0, hgt)];
+            b.face([w(s1, -rf.b, gy), w(s1, rf.b, gy), w(s1, rf.b, top), w(s1, -rf.b, top)], uv, ax3, Vec3::ONE, Surface::Window);
+            let m = ((l / 1.2).round() as usize).clamp(1, 24);
+            for i in 1..m {
+                let t = -rf.b + l * i as f32 / m as f32;
+                b.m.oriented_box(w(s1 + 0.03, t, (gy + top) * 0.5), Vec3::new(0.03, hgt * 0.5, 0.04), ax3, o.trim, Surface::Steel, 1.0);
+            }
+            b.marker(MarkerKind::WindowLight, w(s1 - 0.1, 0.0, (gy + top) * 0.5), ax3);
         }
         if let Some((gs, gc)) = o.gable {
-            for ss in [1.0f32, -1.0] {
-                let sa = ss * rf.a;
-                b.tri(w(sa, -rf.b, base), w(sa, rf.b, base), w(sa, 0.0, ridge), ax3 * ss, gc, gs);
-                if let Some(tc) = o.timber {
-                    gable_timber(b, rf, ss, base, rise, tc);
-                }
-            }
-            if o.dormers && rise > 2.5 && rf.a >= 2.4 {
-                let count = if rf.a * 2.0 >= 7.0 { 2 } else { 1 };
-                for sg in [1.0f32, -1.0] {
-                    for j in 0..count {
-                        let s0 = if count == 1 { 0.0 } else { (j as f32 * 2.0 - 1.0) * rf.a * 0.42 };
-                        dormer(b, rf, s0, sg, base, rise, tv, (gs, gc), (surf, col), o.trim);
-                    }
-                }
-            }
-        }
-    } else {
-        let r = (rf.a - rf.b).max(0.0);
-        for sg in [1.0f32, -1.0] {
-            let pts = [w(-ag, sg * bg, ye), w(ag, sg * bg, ye), w(r, 0.0, ridge), w(-r, 0.0, ridge)];
-            roof_face(b, &pts, &[Some(ac3 * sg), None, None, None], tv, ax3, col, surf);
-            let end = [w(sg * ag, -bg, ye), w(sg * ag, bg, ye), w(sg * r, 0.0, ridge)];
-            roof_face(b, &end, &[Some(ax3 * sg), None, None], tv, ac3, col, surf);
-        }
-        if r > 0.1 {
-            b.m.beam(w(-r, 0.0, ridge + tv - 0.07), w(r, 0.0, ridge + tv - 0.07), 0.28, 0.15, cap, surf, 1.0);
-        }
-        for ss in [1.0f32, -1.0] {
             for sg in [1.0f32, -1.0] {
-                b.m.beam(w(ss * ag, sg * bg, ye + tv - 0.05), w(ss * r, 0.0, ridge + tv - 0.07), 0.2, 0.12, cap, surf, 1.0);
+                b.tri(w(s0, sg * rf.b, base), w(s1, sg * rf.b, base), w(s1, sg * rf.b, top), ac3 * sg, gc, gs);
             }
-            b.marker(MarkerKind::Perch, w(ss * r, 0.0, ridge + tv + 0.12), Vec3::Y);
         }
     }
-    RoofGeom::Ridge { rf: *rf, base, rise, hip, tv }
-}
-
-/// Collar, king post and struts on a gable triangle.
-fn gable_timber(b: &mut B, rf: &Rf, ss: f32, base: f32, rise: f32, tc: Vec3) {
-    let s = ss * (rf.a + 0.03);
-    let w = |t: f32, y: f32| rf.w(s, t, y);
-    let yc = base + rise * 0.45;
-    let hw = rf.b * 0.55 - 0.05;
-    b.m.beam(w(-rf.b + 0.05, base), w(rf.b - 0.05, base), 0.1, 0.14, tc, Surface::Steel, 1.0);
-    b.m.beam(w(-hw, yc - 0.07), w(hw, yc - 0.07), 0.1, 0.13, tc, Surface::Steel, 1.0);
-    let post_h = rise * 0.9;
-    b.m.oriented_box(w(0.0, base + post_h * 0.5), Vec3::new(0.07, post_h * 0.5, 0.05), p3(rf.ac, 0.0), tc, Surface::Steel, 1.0);
-    for sd in [-1.0f32, 1.0] {
-        b.m.beam(w(sd * rf.b * 0.75, base + 0.12), w(sd * 0.12, yc - 0.1), 0.09, 0.11, tc, Surface::Steel, 1.0);
+    for s in [-rf.a + bw, rf.a] {
+        b.marker(MarkerKind::Perch, w(s, 0.0, top + tv + 0.05), Vec3::Y);
     }
+    RoofGeom::Saw { rf: *rf, base, rise, bw, tv }
 }
 
-/// Small gabled dormer window sitting on the slope on side `sg` at `s0` along the ridge.
+/// Precast shell: a folded-plate pyramid (eave edges kink up at their midpoints) on polygons
+/// with up to six sides, a shallow dome with a concrete oculus ring on rounder ones.
 #[allow(clippy::too_many_arguments)]
-fn dormer(b: &mut B, rf: &Rf, s0: f32, sg: f32, base: f32, rise: f32, tv: f32, wall: (Surface, Vec3), roof: (Surface, Vec3), trim: Vec3) {
-    let k = rise / rf.b.max(0.05);
-    let ridge_top = base + rise + tv;
-    let top = |t: f32| ridge_top - k * t;
-    let w = |s: f32, t: f32, y: f32| rf.w(s0 + s, t * sg, y);
-    let (hw, hd, rd) = (0.6, 0.9, 0.45);
-    let tf = 0.62 * rf.b;
-    let yb = top(tf);
-    let ye = yb + hd;
-    let ya = ye + rd;
-    if ya > ridge_top - 0.15 {
-        return;
-    }
-    let te = (ridge_top - ye) / k;
-    let ta = (ridge_top - ya) / k;
-    let out = p3(rf.ac * sg, 0.0);
-    let ax = p3(rf.ax, 0.0);
-    let uv = [Vec2::ZERO, Vec2::new(1.2, 0.0), Vec2::new(1.2, hd), Vec2::new(0.0, hd)];
-    b.face([w(-hw, tf, yb), w(hw, tf, yb), w(hw, tf, ye), w(-hw, tf, ye)], uv, out, wall.1, wall.0);
-    b.tri(w(-hw, tf, ye), w(hw, tf, ye), w(0.0, tf, ya), out, wall.1, wall.0);
-    for sd in [-1.0f32, 1.0] {
-        b.tri(w(sd * hw, tf, yb), w(sd * hw, tf, ye), w(sd * hw, te, ye), ax * sd, wall.1, wall.0);
-    }
-    let wo = tf + 0.02;
-    let wuv = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y];
-    b.face([w(-0.3, wo, yb + 0.15), w(0.3, wo, yb + 0.15), w(0.3, wo, yb + 0.75), w(-0.3, wo, yb + 0.75)], wuv, out, palette::white(), Surface::Window);
-    b.m.beam(w(-0.36, wo, yb + 0.06), w(0.36, wo, yb + 0.06), 0.08, 0.08, trim, Surface::Steel, 1.0);
-    b.marker(MarkerKind::WindowLight, w(0.0, wo, yb + 0.45), out);
-    let tfo = tf + 0.18;
-    let yev = ye - 0.06;
-    let tev = (ridge_top - yev) / k;
-    let dtv = 0.08;
-    for sd in [-1.0f32, 1.0] {
-        let pts = [w(sd * (hw + 0.12), tfo, yev), w(sd * (hw + 0.12), tev, yev), w(0.0, ta, ya), w(0.0, tfo, ya)];
-        roof_face(b, &pts, &[Some(ax * sd), None, None, Some(out)], dtv, out, roof.1, roof.0);
-    }
-    b.m.beam(w(0.0, tfo + 0.03, ya + dtv - 0.05), w(0.0, ta, ya + dtv - 0.05), 0.16, 0.1, roof.1 * 0.75, roof.0, 1.0);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn pyramid_roof(b: &mut B, poly: &[Vec2], c: Vec2, edges: &[(Vec2, f32)], base: f32, rise: f32, surf: Surface, tv: f32, col: Vec3, o: &RoofOpts) -> RoofGeom {
+fn shell_roof(b: &mut B, poly: &[Vec2], c: Vec2, edges: &[(Vec2, f32)], base: f32, rise: f32, col: Vec3, o: &RoofOpts) -> RoofGeom {
     let dmin = edges.iter().map(|e| e.1).fold(f32::INFINITY, f32::min).max(0.05);
     let k = rise / dmin;
-    let oe = o.overhang.min(0.8 / k.max(1e-3));
+    let oe = o.overhang.min(0.9 / k.max(1e-3));
     let ye = base - oe * k;
     let g = offset_poly(poly, oe);
-    let apex = p3(c, base + rise);
     let n = g.len();
-    for i in 0..n {
-        let (a, q) = (g[i], g[(i + 1) % n]);
-        let e = p3((q - a).normalize_or(Vec2::X), 0.0);
-        let pts = [p3(a, ye), p3(q, ye), apex];
-        roof_face(b, &pts, &[Some(p3(edges[i].0, 0.0)), None, None], tv, e, col, surf);
-    }
-    let top = apex + Vec3::Y * tv;
-    if o.finial {
-        b.m.cylinder(top - Vec3::Y * 0.1, 0.09, 0.0, 1.0, 4, false, false, palette::metal(), Surface::Metal, 1.0);
-        b.m.aabb(top + Vec3::new(-0.09, 0.3, -0.09), top + Vec3::new(0.09, 0.48, 0.09), palette::glow() * 0.9, Surface::Metal, 1.0);
-        b.marker(MarkerKind::Perch, top + Vec3::Y * 0.95, Vec3::Y);
+    let tv = 0.25;
+    let surf = Surface::Precast;
+    let apex = p3(c, base + rise);
+    let mut top = apex.y + tv;
+    if n <= 6 {
+        let fold = rise * 0.22;
+        for i in 0..n {
+            let (a, q) = (g[i], g[(i + 1) % n]);
+            let e = p3((q - a).normalize_or(Vec2::X), 0.0);
+            let m = p3((a + q) * 0.5, ye + fold);
+            let out = Some(p3(edges[i].0, 0.0));
+            roof_face(b, &[p3(a, ye), m, apex], &[out, None, None], tv, e, col, surf);
+            roof_face(b, &[m, p3(q, ye), apex], &[out, None, None], tv, e, col * 0.9, surf);
+        }
     } else {
-        b.m.aabb(top - Vec3::new(0.15, 0.12, 0.15), top + Vec3::new(0.15, 0.08, 0.15), col * 0.75, surf, 1.0);
-        b.marker(MarkerKind::Perch, top + Vec3::Y * 0.15, Vec3::Y);
+        let ring = |f: f32| -> Vec<Vec2> { g.iter().map(|p| c + (*p - c) * f).collect() };
+        let levels = [(1.0f32, ye), (0.6, base + rise * 0.66), (0.2, base + rise)];
+        for l in 0..2 {
+            let ((fa, ya), (fb, yb)) = (levels[l], levels[l + 1]);
+            let (ra, rb) = (ring(fa), ring(fb));
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let e = p3((g[j] - g[i]).normalize_or(Vec2::X), 0.0);
+                let out = if l == 0 { Some(p3(edges[i].0, 0.0)) } else { None };
+                roof_face(b, &[p3(ra[i], ya), p3(ra[j], ya), p3(rb[j], yb), p3(rb[i], yb)], &[out, None, None, None], tv, e, col, surf);
+            }
+        }
+        let cap: Vec<Vec3> = ring(0.2).iter().map(|p| p3(*p, top)).collect();
+        b.m.polygon(&cap, true, col * 0.95, surf, 1.0);
+        let r = (dmin * 0.1).max(0.15);
+        b.m.cylinder(p3(c, top - 0.02), r, r, 0.35, 8, true, false, palette::stone() * 0.9, Surface::Concrete, 1.0);
+        top += 0.33;
     }
+    b.marker(MarkerKind::Perch, p3(c, top + 0.05), Vec3::Y);
     RoofGeom::Pyramid { c, base, rise, edges: edges.to_vec(), tv }
 }
 
-fn flat_roof(b: &mut B, poly: &[Vec2], base: f32, o: &RoofOpts) -> RoofGeom {
+/// Flat sedum roof with grass clumps: thick parapet (optionally crenellated with planter boxes,
+/// optionally with solar panels) or, without parapet, a thin overhanging slab.
+fn flat_roof(b: &mut B, poly: &[Vec2], base: f32, sedum: Vec3, o: &RoofOpts) -> RoofGeom {
     let stone = palette::stone();
-    let slab_y = base + 0.15;
-    let top = offset_poly(poly, 0.03);
-    for t in triangulate(&top) {
-        b.tri(p3(top[t[0]], slab_y), p3(top[t[1]], slab_y), p3(top[t[2]], slab_y), Vec3::Y, stone * 0.8, Surface::Slabs);
+    let leaves = palette::leaves();
+    let slab_y = base + 0.2;
+    let ov = if o.parapet { 0.03 } else { o.overhang.max(0.03) };
+    let top = offset_poly(poly, ov);
+    let tris = triangulate(&top);
+    for t in &tris {
+        b.tri(p3(top[t[0]], slab_y), p3(top[t[1]], slab_y), p3(top[t[2]], slab_y), Vec3::Y, sedum, Surface::Sedum);
     }
-    wall_band(b, poly, 0.0, &Band::new(base - 0.05, slab_y, 0.03, Surface::Concrete, stone * 0.9), &[], Vec3::ONE);
+    wall_band(b, poly, 0.0, &Band::new(base - 0.1, slab_y, ov, Surface::Concrete, stone * 0.9), &[], Vec3::ONE);
     if !o.parapet {
+        for t in &tris {
+            b.tri(p3(top[t[0]], base - 0.1), p3(top[t[1]], base - 0.1), p3(top[t[2]], base - 0.1), -Vec3::Y, stone * 0.7, Surface::Concrete);
+        }
+        clumps(b, poly, slab_y, sedum, o.seed, 0.3);
         b.marker(MarkerKind::Perch, p3(poly[0], slab_y + 0.05), Vec3::Y);
         return RoofGeom::Flat { top: slab_y };
     }
-    let (out, inn) = if o.corbels { (0.3, 0.0) } else { (0.05, -0.25) };
-    let p_lo = if o.corbels { base - 0.1 } else { base - 0.05 };
-    let p_hi = slab_y + 0.55;
+    let (out, inn) = (0.1, -0.4);
+    let p_lo = base - 0.1;
+    let p_hi = slab_y + 0.6;
     wall_band(b, poly, 0.0, &Band::new(p_lo, p_hi, out, Surface::Concrete, stone), &[], Vec3::ONE);
     let mut inner = Band::new(slab_y, p_hi, inn, Surface::Concrete, stone * 0.85);
     inner.inward = true;
     wall_band(b, poly, 0.0, &inner, &[], Vec3::ONE);
     annulus(b, poly, 0.0, p_hi, out, inn, true, &[], stone * 0.95, Surface::Concrete);
-    if o.corbels {
-        annulus(b, poly, 0.0, p_lo, out, 0.0, false, &[], stone * 0.8, Surface::Concrete);
-        for i in 0..poly.len() {
-            let wf = Wf::new(poly, poly, i, 0.0);
-            let count = ((wf.len / 0.7) as usize).clamp(1, 64);
-            for j in 0..count {
-                let u = wf.len * (j as f32 + 0.5) / count as f32;
-                b.lbox(&wf, u, p_lo - 0.2, 0.15, Vec3::new(0.09, 0.2, 0.15), stone * 0.85, Surface::Concrete);
-                b.lbox(&wf, u, p_lo - 0.48, 0.07, Vec3::new(0.08, 0.08, 0.07), stone * 0.85, Surface::Concrete);
-            }
-        }
-    }
+    clumps(b, poly, slab_y, sedum, o.seed, 0.8);
     let mut perch_y = p_hi;
     if o.planters {
-        let mid = (out + inn) * 0.5;
-        let offm = offset_poly(poly, mid);
+        let offm = offset_poly(poly, (out + inn) * 0.5);
+        let hd = (out - inn) * 0.5;
+        let mut rng = Rng::at(o.seed ^ 0x9A47_0000, poly[0].x, poly[0].y);
         for i in 0..poly.len() {
             let wf = Wf::new(poly, &offm, i, 0.0);
             let l = wf.u_end() - wf.u_start();
             if l < 0.3 {
                 continue;
             }
-            let count = ((l / 1.1).round() as usize).clamp(1, 64);
+            let count = ((l / 1.2).round() as usize).clamp(1, 64);
             let seg = l / count as f32;
             for j in 0..count {
                 let u = wf.u_start() + seg * (j as f32 + 0.5);
-                b.lbox(&wf, u, p_hi + 0.22, 0.0, Vec3::new((seg * 0.27).min(0.3), 0.22, (out - inn) * 0.5), stone, Surface::Concrete);
+                let hw = (seg * 0.3).min(0.35);
+                b.lbox(&wf, u, p_hi + 0.2, 0.0, Vec3::new(hw, 0.2, hd), stone * 0.95, Surface::Concrete);
+                b.lbox(&wf, u, p_hi + 0.43, 0.0, Vec3::new(hw * 0.9, 0.05, hd * 0.85), leaves, Surface::Leaves);
+                let sw = hw * rng.range(0.4, 0.9);
+                let drop = rng.range(0.3, 1.1);
+                b.wquad(&wf, u - sw, u + sw, p_hi + 0.35 - drop, p_hi + 0.44, hd + 0.02, false, leaves * 0.8, Surface::Fiber);
             }
         }
-        perch_y += 0.44;
+        perch_y += 0.5;
+    }
+    if o.solar {
+        solar_panels(b, poly, slab_y);
     }
     let mut rng = Rng::at(o.seed ^ 0xF1A7, poly[0].x, poly[0].y);
     let k = (rng.f() * poly.len() as f32) as usize % poly.len();
@@ -1373,11 +1335,60 @@ fn flat_roof(b: &mut B, poly: &[Vec2], base: f32, o: &RoofOpts) -> RoofGeom {
     RoofGeom::Flat { top: slab_y }
 }
 
+/// Grass and shrub clumps scattered on a sedum mat, at least `margin` inside the outline.
+fn clumps(b: &mut B, poly: &[Vec2], y: f32, col: Vec3, seed: u64, margin: f32) {
+    let c = area_centroid(poly);
+    let mut rng = Rng::at(seed ^ 0xC1A4_0000, c.x, c.y);
+    let (lo, hi) = poly.iter().fold((Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)), |(l, h), p| (l.min(*p), h.max(*p)));
+    let want = ((signed_area(poly).abs() / 6.0) as usize).clamp(2, 24);
+    let ring = closed(poly);
+    let mut placed = 0;
+    for _ in 0..want * 3 {
+        if placed >= want {
+            break;
+        }
+        let p = Vec2::new(rng.range(lo.x, hi.x), rng.range(lo.y, hi.y));
+        if !contains(poly, p) || closest_on_polyline(&ring, p).1 < margin {
+            continue;
+        }
+        let hw = rng.range(0.2, 0.45);
+        let ht = rng.range(0.08, 0.3);
+        let ang = rng.range(0.0, PI);
+        let shade = col.lerp(palette::leaves(), 0.5) * rng.range(0.75, 1.1);
+        let half = Vec3::new(hw, ht * 0.5, hw * rng.range(0.6, 1.0));
+        b.m.oriented_box(p3(p, y + ht * 0.5), half, Vec3::new(ang.cos(), 0.0, ang.sin()), shade, Surface::Leaves, 1.0);
+        placed += 1;
+    }
+}
+
+/// Rows of tilted solar panels on a flat rectangular roof.
+fn solar_panels(b: &mut B, poly: &[Vec2], y: f32) {
+    let Some(rf) = rect_frame(poly) else { return };
+    let pw = (rf.a - 1.2).min(2.5);
+    let rows = ((rf.b * 2.0 - 1.6) / 1.6).floor().clamp(0.0, 6.0) as usize;
+    if pw < 0.4 {
+        return;
+    }
+    let (panel, frame) = (palette::metal() * 1.3, palette::metal());
+    for r in 0..rows {
+        let t = -rf.b + 0.9 + r as f32 * 1.6;
+        let q = [rf.w(-pw, t, y + 0.25), rf.w(pw, t, y + 0.25), rf.w(pw, t + 0.9, y + 0.75), rf.w(-pw, t + 0.9, y + 0.75)];
+        let uv = [Vec2::ZERO, Vec2::new(pw * 2.0, 0.0), Vec2::new(pw * 2.0, 1.0), Vec2::new(0.0, 1.0)];
+        b.face(q, uv, Vec3::Y, panel, Surface::Metal);
+        b.face(q, uv, -Vec3::Y, frame, Surface::Metal);
+        for s in [-pw + 0.15, pw - 0.15] {
+            b.m.oriented_box(rf.w(s, t + 0.75, y + 0.35), Vec3::new(0.03, 0.3, 0.03), p3(rf.ax, 0.0), frame, Surface::Steel, 1.0);
+        }
+    }
+}
+
 // =============================================================================================
-// Chimney, shelters, yard props
+// Vent stack, pavilion, decor
 // =============================================================================================
 
-fn chimney(b: &mut B, rf: &Rf, geom: &RoofGeom, eave: f32, seed: u64) {
+/// Ventilation stack near a roof corner: a square concrete shaft under a cap slab on steel
+/// posts, or a steel flue with a collar. Emits steam (`ChimneySmoke`).
+fn vent_stack(b: &mut B, rf: &Rf, geom: &RoofGeom, eave: f32, slab: Vec3, trim: Vec3, seed: u64) {
     let mut rng = Rng::at(seed ^ 0xC417_0000, rf.c.x, rf.c.y);
     let s1 = if rng.f() < 0.5 { -1.0 } else { 1.0 };
     let s2 = if rng.f() < 0.5 { -1.0 } else { 1.0 };
@@ -1389,74 +1400,51 @@ fn chimney(b: &mut B, rf: &Rf, geom: &RoofGeom, eave: f32, seed: u64) {
     let top = (roof_y + if flat { 1.9 } else { 1.0 }).max(eave + 1.2);
     let bot = eave - 0.5;
     let ax = p3(rf.ax, 0.0);
-    b.m.oriented_box(p3(p, (bot + top) * 0.5), Vec3::new(0.32, (top - bot) * 0.5, 0.32), ax, palette::stone() * 0.92, Surface::Concrete, 1.0);
-    b.m.oriented_box(p3(p, top + 0.06), Vec3::new(0.42, 0.07, 0.42), ax, palette::foundation(), Surface::Plinth, 1.0);
-    let pot = palette::roof(Colors { roof: 0, wall: 0, trim: 0 }) * 0.85;
-    b.m.cylinder(p3(p, top + 0.12), 0.13, 0.11, 0.28, 6, true, false, pot, Surface::Sedum, 1.0);
-    b.marker(MarkerKind::ChimneySmoke, p3(p, top + 0.45), Vec3::Y);
+    if rng.f() < 0.5 {
+        b.m.oriented_box(p3(p, (bot + top) * 0.5), Vec3::new(0.3, (top - bot) * 0.5, 0.3), ax, slab * 0.95, Surface::Concrete, 1.0);
+        b.m.oriented_box(p3(p, top + 0.3), Vec3::new(0.42, 0.06, 0.42), ax, slab, Surface::Concrete, 1.0);
+        let ac = p3(rf.ac, 0.0);
+        for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            b.m.oriented_box(p3(p, top + 0.12) + ax * 0.26 * sx + ac * 0.26 * sz, Vec3::new(0.03, 0.12, 0.03), ax, trim, Surface::Steel, 1.0);
+        }
+    } else {
+        b.m.cylinder(p3(p, bot), 0.22, 0.22, top - bot, 8, false, false, trim, Surface::Steel, 1.0);
+        b.m.cylinder(p3(p, top - 0.15), 0.27, 0.27, 0.15, 8, true, true, palette::metal(), Surface::Metal, 1.0);
+    }
+    b.marker(MarkerKind::ChimneySmoke, p3(p, top + 0.5), Vec3::Y);
 }
 
-/// Very low "walls": an open shelter on posts whose roof nearly reaches the ground.
+/// Very low walls: a pavilion, i.e. a roof slab on slender concrete pilotis.
 #[allow(clippy::too_many_arguments)]
-fn shelter(
-    b: &mut B,
-    poly: &[Vec2],
-    y0: f32,
-    h: f32,
-    style: RoofStyle,
-    pitch: f32,
-    inradius: f32,
-    round: bool,
-    colors: Colors,
-    terrain: &Terrain,
-    seed: u64,
-    center: Vec2,
-) {
-    let trim = palette::trim(colors);
+fn pavilion(b: &mut B, poly: &[Vec2], y0: f32, h: f32, style: RoofStyle, pitch: f32, colors: Colors, terrain: &Terrain, seed: u64, center: Vec2) {
+    let slab = palette::stone();
+    let canopy = y0 + 2.2 + h * 0.6;
     let n = poly.len();
     let step = if n <= 4 { 1 } else { (n / 6).max(1) };
-    let mut tops = Vec::new();
-    for i in (0..n).step_by(step) {
-        let v = poly[i];
-        let q = v + (center - v).normalize_or_zero() * 0.15;
-        let top = y0 + h;
-        let gy = fin(terrain.height(q), y0).min(top - 0.2);
-        let bot = gy - SINK;
-        b.m.oriented_box(p3(q, (bot + top) * 0.5), Vec3::new(0.08, (top - bot) * 0.5, 0.08), Vec3::X, trim, Surface::Steel, 1.0);
-        tops.push(p3(q, top - 0.16));
-    }
-    if tops.len() >= 2 {
-        for i in 0..tops.len() {
-            b.m.beam(tops[i], tops[(i + 1) % tops.len()], 0.12, 0.16, trim, Surface::Steel, 1.0);
+    let corners: Vec<Vec2> = (0..n).step_by(step).map(|i| poly[i] + (center - poly[i]).normalize_or_zero() * 0.35).collect();
+    let mut cols = corners.clone();
+    if n <= 4 {
+        for i in 0..corners.len() {
+            let (a, q) = (corners[i], corners[(i + 1) % corners.len()]);
+            let k = ((a.distance(q) / 3.5) as usize).min(8);
+            cols.extend((1..=k).map(|j| a.lerp(q, j as f32 / (k + 1) as f32)));
         }
     }
-    let need = (2.4 - h).max(0.0) / inradius.max(0.3);
-    let pitch = pitch.max(need).max(0.3);
-    let style = if style == RoofStyle::Green { if round { RoofStyle::Shell } else { RoofStyle::Pitched } } else { style };
-    let opts = RoofOpts {
-        overhang: OVERHANG,
-        gable: None,
-        timber: None,
-        planters: false,
-        corbels: false,
-        parapet: false,
-        finial: round,
-        dormers: false,
-        trim,
-        seed,
-    };
-    roof_impl(b, poly, y0 + h, style, pitch, colors, &opts);
+    for q in &cols {
+        let gy = fin(terrain.height(*q), y0).min(canopy - 0.3);
+        b.m.cylinder(p3(*q, gy - SINK), 0.11, 0.11, canopy - gy + SINK, 6, false, false, slab * 0.95, Surface::Concrete, 1.0);
+    }
+    let opts = RoofOpts { overhang: 0.6, gable: None, planters: false, parapet: false, solar: false, trim: palette::trim(colors), seed };
+    roof_impl(b, poly, canopy, style, pitch, colors, &opts);
+    // A cast bench under the canopy.
     let mut rng = Rng::at(seed ^ 0x7E47, center.x, center.y);
     if rng.f() < 0.6 {
         let gy = fin(terrain.height(center), y0);
         let ang = rng.range(0.0, PI);
         let x = Vec3::new(ang.cos(), 0.0, ang.sin());
-        b.m.oriented_box(Vec3::new(center.x, gy + 0.22, center.y), Vec3::new(0.45, 0.25, 0.3), x, palette::hay(), Surface::Fiber, 1.0);
-        if rng.f() < 0.5 {
-            b.m.oriented_box(Vec3::new(center.x, gy + 0.68, center.y) + x * 0.1, Vec3::new(0.42, 0.22, 0.28), x, palette::hay() * 0.95, Surface::Fiber, 1.0);
-        }
+        b.m.oriented_box(Vec3::new(center.x, gy + 0.2, center.y), Vec3::new(0.8, 0.22, 0.22), x, slab * 0.85, Surface::Concrete, 1.0);
     }
-    // Folk gather under the shelter's front.
+    // Folk gather under the pavilion's front.
     let mut best = 0;
     for i in 1..n {
         if poly[i].distance(poly[(i + 1) % n]) > poly[best].distance(poly[(best + 1) % n]) + 1e-3 {
@@ -1464,102 +1452,109 @@ fn shelter(
         }
     }
     let (a, q) = (poly[best], poly[(best + 1) % n]);
-    let spot = (a + q) * 0.5 + outward((q - a).normalize_or(Vec2::X)) * 0.8;
-    b.marker(MarkerKind::Door, p3(spot, fin(terrain.height(spot), y0)), p3(outward((q - a).normalize_or(Vec2::X)), 0.0));
+    let nrm = outward((q - a).normalize_or(Vec2::X));
+    let spot = (a + q) * 0.5 + nrm * 0.8;
+    b.marker(MarkerKind::Door, p3(spot, fin(terrain.height(spot), y0)), p3(nrm, 0.0));
 }
 
-/// A haystack, barrels, a woodpile or a washing line beside some houses.
+/// Rain chain from an eave corner into a gravel basin, a planter trough with shrubs, and a
+/// balcony slab with steel railings on multi-storey blocks.
 #[allow(clippy::too_many_arguments)]
-fn yard_decor(
+fn decor(
     b: &mut B,
     poly: &[Vec2],
+    lens: &[f32],
     y0: f32,
     h: f32,
-    door_edge: usize,
-    round: bool,
-    tower: bool,
-    bands: &[Band],
+    cant: f32,
+    fins: bool,
+    holes: &[Hole],
+    slab: Vec3,
+    trim: Vec3,
+    og: f32,
     terrain: &Terrain,
     seed: u64,
-    holes: &[Hole],
 ) {
-    let c = poly.iter().copied().sum::<Vec2>() / poly.len() as f32;
-    let mut rng = Rng::at(seed ^ 0xDEC0_0000, c.x, c.y);
-    let r = rng.f();
     let n = poly.len();
-    // A wall that is not the door wall.
+    let c = poly.iter().copied().sum::<Vec2>() / n as f32;
+    let mut rng = Rng::at(seed ^ 0xDEC0_0000, c.x, c.y);
+    let leaves = palette::leaves();
+    let metal = palette::metal();
+    let door_edge = holes.iter().find(|o| o.kind.is_door()).map_or(usize::MAX, |o| o.edge);
+    let door_near = |e: usize, u0: f32, u1: f32| holes.iter().any(|o| o.edge == e && o.kind.is_door() && o.u0 - 1.4 < u1 && u0 < o.u1 + 1.4);
+    let reach = if fins { FIN + 0.15 } else { 0.0 };
+    let ground = |p: Vec2| fin(terrain.height(p), y0);
+
+    // Rain chain at a corner of a rectangular block.
+    if n == 4 && rng.f() < 0.75 {
+        let k = ((rng.f() * n as f32) as usize).min(n - 1);
+        let prev = (k + n - 1) % n;
+        if !door_near(k, 0.0, 0.3) && !door_near(prev, lens[prev] - 0.3, lens[prev]) {
+            let n0 = outward((poly[k] - poly[prev]).normalize_or_zero());
+            let n1 = outward((poly[(k + 1) % n] - poly[k]).normalize_or_zero());
+            let p = poly[k] + (n0 + n1) * (cant + reach + 0.35);
+            let top = y0 + h - 0.12;
+            let g = ground(p);
+            b.m.beam(p3(poly[k] + (n0 + n1) * cant, top - 0.05), p3(p, top - 0.05), 0.08, 0.08, metal, Surface::Metal, 1.0);
+            let links = ((top - g - 0.12) / 0.3).max(0.0) as usize;
+            for j in 0..links.min(90) {
+                let ax = if j % 2 == 0 { p3(n0, 0.0) } else { p3(n1, 0.0) };
+                b.m.oriented_box(p3(p, g + 0.12 + j as f32 * 0.3), Vec3::new(0.05, 0.08, 0.025), ax, metal, Surface::Metal, 1.0);
+            }
+            b.m.oriented_box(p3(p, g + 0.02), Vec3::new(0.32, 0.1, 0.32), p3(n1, 0.0), slab * 0.8, Surface::Plinth, 1.0);
+        }
+    }
+
+    // Planter trough with shrubs along a wall without a door.
     let mut e = ((rng.f() * n as f32) as usize).min(n - 1);
     if e == door_edge {
-        e = (e + n / 2).min(n - 1) % n;
+        e = (e + n / 2) % n;
     }
     let wf = Wf::new(poly, poly, e, y0);
-    if wf.len < 1.5 {
-        return;
-    }
-    let u = wf.len * rng.range(0.3, 0.7);
-    if holes.iter().any(|o| o.edge == e && o.kind.is_door() && (o.u0 - 1.2..o.u1 + 1.2).contains(&u)) {
-        return;
-    }
-    let plinth = bands.first().map_or(0.0, |bd| if bd.off > 0.0 { bd.off } else { 0.0 });
-    let spot = |out: f32| {
-        let p = wf.at(u, 0.0, out + plinth);
-        let g = fin(terrain.height(Vec2::new(p.x, p.z)), y0);
-        Vec3::new(p.x, g, p.z)
-    };
-    let wood = palette::wood();
-    if tower {
-        if r < 0.35 {
-            barrels(b, spot(0.5), wf.d, &mut rng, wood);
+    if rng.f() < 0.65 && wf.len >= 2.2 {
+        let hl = rng.range(0.6, 1.2).min(wf.len * 0.5 - 0.4);
+        let u = rng.range(hl + 0.3, wf.len - hl - 0.3);
+        if !door_near(e, u - hl, u + hl) {
+            let out = reach + 0.4;
+            let gp = wf.at(u, 0.0, out);
+            let gy = ground(Vec2::new(gp.x, gp.z)) - y0;
+            b.lbox(&wf, u, gy + 0.2, out, Vec3::new(hl, 0.26, 0.3), slab * 0.85, Surface::Plinth);
+            b.lbox(&wf, u, gy + 0.47, out, Vec3::new(hl - 0.05, 0.03, 0.26), leaves * 0.8, Surface::Leaves);
+            for _ in 0..2 + (rng.f() * 2.0) as usize {
+                let su = u + rng.range(-hl + 0.25, hl - 0.25);
+                let r = rng.range(0.18, 0.32);
+                b.lbox(&wf, su, gy + 0.5 + r, out + rng.range(-0.08, 0.08), Vec3::new(r, r, r * 0.9), leaves * rng.range(0.75, 1.1), Surface::Leaves);
+            }
+            let sw = hl * rng.range(0.3, 0.8);
+            b.wquad(&wf, u - sw, u + sw, gy + 0.1 + rng.range(0.0, 0.2), gy + 0.47, out + 0.31, false, leaves * 0.7, Surface::Fiber);
         }
-        return;
     }
-    if r < 0.22 {
-        let p = spot(1.0);
-        b.m.cylinder(p - Vec3::Y * 0.05, 0.62, 0.5, 0.85, 7, false, false, palette::hay(), Surface::Fiber, 1.0);
-        b.m.cylinder(p + Vec3::Y * 0.8, 0.5, 0.0, 0.55, 7, false, false, palette::hay() * 0.95, Surface::Fiber, 1.0);
-    } else if r < 0.42 {
-        barrels(b, spot(0.45), wf.d, &mut rng, wood);
-    } else if r < 0.62 {
-        let p = spot(0.35);
-        let bark = palette::bark();
-        for row in 0..3 {
-            let logs = 4 - row;
-            for j in 0..logs {
-                let off = (j as f32 - (logs - 1) as f32 * 0.5) * 0.2;
-                let base = p + Vec3::Y * (0.1 + row as f32 * 0.17) + wf.n * off;
-                b.m.beam(base - wf.d * 0.55, base + wf.d * 0.55, 0.17, 0.16, bark * rng.range(0.85, 1.1), Surface::Bark, 1.0);
+
+    // Balcony on the first floor slab, opposite the door.
+    if n == 4 && h >= 5.5 && rng.f() < 0.65 {
+        let e = if door_edge < n { (door_edge + 2) % n } else { e };
+        let wf = Wf::at_off(poly, cant, e, y0);
+        if wf.len >= 3.6 {
+            let u = wf.len * 0.5 + rng.range(-0.15, 0.15) * (wf.len - 3.4);
+            let y = STOREY + SLAB_HI;
+            let depth = 1.4;
+            b.lbox(&wf, u, y - 0.12, depth * 0.5, Vec3::new(1.3, 0.12, depth * 0.5), slab, Surface::Concrete);
+            let corners = [wf.at(u - 1.25, y, 0.0), wf.at(u - 1.25, y, depth - 0.05), wf.at(u + 1.25, y, depth - 0.05), wf.at(u + 1.25, y, 0.0)];
+            for pair in corners.windows(2) {
+                for ry in [0.5, 1.0] {
+                    b.m.beam(pair[0] + Vec3::Y * ry, pair[1] + Vec3::Y * ry, 0.05, 0.05, trim, Surface::Steel, 1.0);
+                }
+                let k = ((pair[0].distance(pair[1]) / 0.6).ceil() as usize).clamp(1, 16);
+                for j in 0..=k {
+                    let p = pair[0].lerp(pair[1], j as f32 / k as f32);
+                    b.m.oriented_box(p + Vec3::Y * 0.5, Vec3::new(0.025, 0.5, 0.025), wf.d, trim, Surface::Steel, 1.0);
+                }
+            }
+            if rng.f() < 0.4 + 0.5 * og {
+                b.lbox(&wf, u + 0.95, y + 0.25, depth - 0.35, Vec3::new(0.22, 0.25, 0.22), slab * 0.9, Surface::Concrete);
+                b.lbox(&wf, u + 0.95, y + 0.65, depth - 0.35, Vec3::new(0.28, 0.2, 0.26), leaves, Surface::Fiber);
             }
         }
-    } else if r < 0.78 && !round && h >= 2.4 {
-        // Washing line from the wall to a post.
-        let attach = wf.at(u, 1.9, 0.05 + plinth);
-        let post = spot(3.2);
-        b.m.oriented_box(post + Vec3::Y * 0.85, Vec3::new(0.06, 1.15, 0.06), wf.d, palette::wood(), Surface::Steel, 1.0);
-        let ptop = post + Vec3::Y * 1.9;
-        b.m.beam(attach, ptop, 0.03, 0.03, palette::white() * 0.9, Surface::Fiber, 1.0);
-        let dir = (ptop - attach).normalize_or(Vec3::X);
-        let side = dir.cross(Vec3::Y).normalize_or(Vec3::X);
-        for (j, f) in [0.3f32, 0.52, 0.75].iter().enumerate() {
-            let top = attach.lerp(ptop, *f) - Vec3::Y * 0.02;
-            let hw = rng.range(0.15, 0.24);
-            let ht = rng.range(0.35, 0.55);
-            let a = top - dir * hw;
-            let d = top + dir * hw;
-            let col = if j % 2 == 0 { palette::white() } else { palette::flower(rng.f().mul_add(6.0, 0.0) as u32) };
-            let quad = [a, d, d - Vec3::Y * ht, a - Vec3::Y * ht];
-            let uv = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y];
-            b.face(quad, uv, side, col, Surface::Fiber);
-            b.face(quad, uv, -side, col, Surface::Fiber);
-        }
-    }
-}
-
-fn barrels(b: &mut B, p: Vec3, along: Vec3, rng: &mut Rng, wood: Vec3) {
-    let count = 1 + (rng.f() * 3.0) as usize;
-    for j in 0..count.min(3) {
-        let q = p + along * (j as f32 * 0.62 - 0.6);
-        b.m.cylinder(q - Vec3::Y * 0.03, 0.27, 0.27, 0.75, 7, true, false, wood * rng.range(0.8, 1.05), Surface::Cladding, 1.0);
-        b.m.cylinder(q + Vec3::Y * 0.2, 0.285, 0.285, 0.06, 7, false, false, palette::metal(), Surface::Metal, 1.0);
     }
 }
 
@@ -1570,7 +1565,7 @@ fn barrels(b: &mut B, p: Vec3, along: Vec3, rng: &mut Rng, wood: Vec3) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Opening, ROOF_COLORS};
+    use crate::model::Opening;
 
     fn ground() -> Terrain {
         Terrain::build(1, &[], &[])
@@ -1580,14 +1575,14 @@ mod tests {
         Footprint::Rect { center: Vec2::new(2.0, -3.0), half: Vec2::new(hx, hz), angle: 0.4 }
     }
 
-    fn house(fp: Footprint, h: f32, roof: RoofStyle, pitch: f32, material: Material, ht: bool) -> House {
+    fn house(fp: Footprint, h: f32, roof: RoofStyle, pitch: f32, material: Material, fins: bool) -> House {
         House {
             footprint: fp,
             wall_height: h,
             roof,
             roof_pitch: pitch,
             material,
-            fins: ht,
+            fins,
             foundation: 0.4,
             planters: true,
             openings: vec![],
@@ -1598,6 +1593,10 @@ mod tests {
 
     fn count(mk: &[Marker], k: MarkerKind) -> usize {
         mk.iter().filter(|m| m.kind == k).count()
+    }
+
+    fn has(m: &MeshData, s: Surface) -> bool {
+        m.surfaces.contains(&(s as u8))
     }
 
     fn check(m: &MeshData, mk: &[Marker]) {
@@ -1619,17 +1618,23 @@ mod tests {
         ];
         let mats = [Material::Concrete, Material::RammedEarth, Material::Timber];
         let roofs = [RoofStyle::Pitched, RoofStyle::Sawtooth, RoofStyle::Shell, RoofStyle::Green];
+        let mut rc = 0u8;
         for fp in fps {
-            for h in [0.8, 2.0, 3.6, 5.5, 10.0] {
+            for h in [0.8, 3.6, 7.0, 12.0] {
                 for roof in roofs {
                     for mat in mats {
-                        for ht in [false, true] {
-                            for pitch in [0.0, 0.7, 2.0] {
-                                for rc in [0, 1, 4] {
-                                    let mut hs = house(fp, h, roof, pitch, mat, ht);
-                                    hs.colors.roof = rc;
-                                    let (m, mk) = house_mesh(&hs, &[], &t, 9);
-                                    check(&m, &mk);
+                        for fins in [false, true] {
+                            for planters in [false, true] {
+                                for og in [0.0, 1.0] {
+                                    for pitch in [0.0, 0.8] {
+                                        let mut hs = house(fp, h, roof, pitch, mat, fins);
+                                        hs.planters = planters;
+                                        hs.overgrowth = og;
+                                        rc = (rc + 1) % ROOF_COLORS;
+                                        hs.colors.roof = rc;
+                                        let (m, mk) = house_mesh(&hs, &[], &t, 9);
+                                        check(&m, &mk);
+                                    }
                                 }
                             }
                         }
@@ -1640,35 +1645,55 @@ mod tests {
     }
 
     #[test]
-    fn rect_house_has_door_chimney_windows_lantern() {
+    fn block_has_door_vent_windows_light() {
         let t = ground();
         let (m, mk) = house_mesh(&house(rect(3.0, 4.0), 3.5, RoofStyle::Pitched, 0.8, Material::RammedEarth, false), &[], &t, 3);
         check(&m, &mk);
         assert_eq!(count(&mk, MarkerKind::Door), 1);
         assert_eq!(count(&mk, MarkerKind::ChimneySmoke), 1);
         assert!(count(&mk, MarkerKind::WindowLight) >= 4);
-        assert!(count(&mk, MarkerKind::Lantern) >= 1);
+        assert!(count(&mk, MarkerKind::Lantern) >= 1, "entry canopy light");
         assert!(count(&mk, MarkerKind::Perch) >= 2);
-        // Smoke comes out above the ridge-ish area, well above the eaves.
-        let smoke = mk.iter().find(|k| k.kind == MarkerKind::ChimneySmoke).unwrap();
-        assert!(smoke.pos.y > 3.5 + 1.0);
+        assert!(has(&m, Surface::Earth) && has(&m, Surface::Plinth) && has(&m, Surface::Window));
+        // Steam comes out well above the eaves.
+        let steam = mk.iter().find(|k| k.kind == MarkerKind::ChimneySmoke).unwrap();
+        assert!(steam.pos.y > 3.5 + 1.0);
     }
 
     #[test]
-    fn towers() {
+    fn materials_and_covers() {
+        let t = ground();
+        let fp = rect(3.0, 4.0);
+        let (m, _) = house_mesh(&house(fp, 7.0, RoofStyle::Pitched, 0.8, Material::Concrete, false), &[], &t, 1);
+        assert!(has(&m, Surface::Concrete) && has(&m, Surface::Sedum), "roof colour 0 → sedum slab");
+        let mut hs = house(fp, 7.0, RoofStyle::Pitched, 0.8, Material::Timber, false);
+        hs.colors.roof = 3;
+        let (m, _) = house_mesh(&hs, &[], &t, 1);
+        assert!(has(&m, Surface::Cladding) && has(&m, Surface::Seam) && has(&m, Surface::Concrete), "timber + slab bands + seam");
+        let (m, _) = house_mesh(&house(fp, 4.0, RoofStyle::Shell, 0.8, Material::Concrete, false), &[], &t, 1);
+        assert!(has(&m, Surface::Precast));
+    }
+
+    #[test]
+    fn silo_towers() {
         let t = ground();
         let fp = Footprint::Round { center: Vec2::new(0.0, 0.0), radius: 2.5 };
         let (m, mk) = house_mesh(&house(fp, 11.0, RoofStyle::Shell, 1.5, Material::Concrete, false), &[], &t, 4);
         check(&m, &mk);
+        assert!(has(&m, Surface::Precast), "dome shell");
         assert!(count(&mk, MarkerKind::Perch) >= 1);
-        assert!(count(&mk, MarkerKind::WindowLight) >= 4, "arrow slits");
+        assert!(count(&mk, MarkerKind::WindowLight) >= 4, "slit windows");
         assert_eq!(count(&mk, MarkerKind::Door), 1);
         assert_eq!(count(&mk, MarkerKind::ChimneySmoke), 0);
         let perch = mk.iter().find(|k| k.kind == MarkerKind::Perch).unwrap();
-        assert!(perch.pos.y > 11.0 + 2.5);
-        // Flat tower: crenellated top, perch on the parapet.
+        assert!(perch.pos.y > 11.0 + 1.0);
+        // Ribs stand proud of the shell.
+        let (lo, hi) = m.bounds().unwrap();
+        assert!(hi.x > 2.6 && lo.x < -2.6);
+        // Green silo: parapet planters, perch on top.
         let (m, mk) = house_mesh(&house(fp, 9.0, RoofStyle::Green, 0.0, Material::Concrete, false), &[], &t, 4);
         check(&m, &mk);
+        assert!(has(&m, Surface::Sedum));
         let perch = mk.iter().find(|k| k.kind == MarkerKind::Perch).unwrap();
         assert!(perch.pos.y > 9.5);
     }
@@ -1697,7 +1722,7 @@ mod tests {
     #[test]
     fn cut_becomes_door() {
         let t = ground();
-        let mut hs = house(rect(3.0, 4.0), 3.0, RoofStyle::Sawtooth, 0.6, Material::RammedEarth, false);
+        let mut hs = house(rect(3.0, 4.0), 3.0, RoofStyle::Pitched, 0.6, Material::RammedEarth, false);
         hs.openings = vec![Opening { along: 2.0, kind: OpeningKind::Window }];
         let (_, mk) = house_mesh(&hs, &[], &t, 5);
         assert_eq!(count(&mk, MarkerKind::Door), 0);
@@ -1706,24 +1731,41 @@ mod tests {
         check(&m, &mk);
         assert_eq!(count(&mk, MarkerKind::Door), 2);
         assert_eq!(count(&mk, MarkerKind::WindowLight), 1);
-        // Auto houses: the cut replaces the automatic door.
+        // Auto blocks: the cut replaces the automatic door.
         hs.openings.clear();
         let (_, mk) = house_mesh(&hs, &cuts[..1], &t, 5);
         assert_eq!(count(&mk, MarkerKind::Door), 1);
     }
 
     #[test]
-    fn tent_shelter() {
+    fn pavilion_on_pilotis() {
         let t = ground();
         for fp in [rect(2.0, 3.0), Footprint::Round { center: Vec2::ZERO, radius: 2.0 }] {
             for roof in [RoofStyle::Pitched, RoofStyle::Green, RoofStyle::Sawtooth, RoofStyle::Shell] {
                 let (m, mk) = house_mesh(&house(fp, 0.7, roof, 0.3, Material::Timber, false), &[], &t, 6);
                 check(&m, &mk);
                 let (_, hi) = m.bounds().unwrap();
-                assert!(hi.y > 2.0, "tent roof should rise to head height");
-                assert_eq!(count(&mk, MarkerKind::WindowLight), 0);
+                assert!(hi.y > 2.4, "canopy above head height");
+                assert!(!has(&m, Surface::Cladding) && !has(&m, Surface::Door), "no walls, just pilotis");
+                assert_eq!(count(&mk, MarkerKind::Door), 1);
+                if roof != RoofStyle::Sawtooth {
+                    assert_eq!(count(&mk, MarkerKind::WindowLight), 0);
+                }
             }
         }
+    }
+
+    #[test]
+    fn sawtooth_has_glazing() {
+        let t = ground();
+        let (m, mk) = house_mesh(&house(rect(3.0, 6.0), 4.0, RoofStyle::Sawtooth, 1.0, Material::Concrete, false), &[], &t, 2);
+        check(&m, &mk);
+        assert!(has(&m, Surface::Window));
+        let glazing = m.surfaces.iter().zip(&m.positions).filter(|(s, p)| **s == Surface::Window as u8 && p[1] > 4.0).count();
+        assert!(glazing >= 4 * 4, "north-light strips above the eaves");
+        let square = vec![Vec2::new(0.0, 0.0), Vec2::new(6.0, 0.0), Vec2::new(6.0, 9.0), Vec2::new(0.0, 9.0)];
+        let (m, _) = roof_mesh(&square, 3.0, RoofStyle::Sawtooth, 0.8, Colors::default(), 1);
+        assert!(has(&m, Surface::Window));
     }
 
     #[test]
@@ -1760,29 +1802,29 @@ mod tests {
         assert!(m.is_valid());
         let (m, _) = roof_mesh(&[Vec2::ZERO, Vec2::X, Vec2::new(2.0, 0.0)], 2.0, RoofStyle::Sawtooth, 0.6, Colors::default(), 1);
         assert!(m.is_valid());
-        // Gable on a rectangle: ridge above the eaves.
+        // Slab gable on a rectangle: ridge above the eaves.
         let (m, mk) = roof_mesh(&square, 4.0, RoofStyle::Pitched, 1.0, Colors::default(), 1);
         assert!(m.bounds().unwrap().1.y > 4.0 + 2.9);
         assert!(count(&mk, MarkerKind::Perch) >= 2);
     }
 
     #[test]
-    fn yard_decor_stands_on_ground() {
+    fn decor_stands_on_ground() {
         use crate::model::{TerrainDab, TerrainOp};
         let slope = [TerrainDab { center: Vec2::new(2.0, -3.0), radius: 9.0, op: TerrainOp::Sculpt { amount: 2.0 } }];
         let t = Terrain::build(5, &slope, &[]);
         let fp = rect(3.0, 2.2);
         let poly = footprint_polygon(&fp);
-        let mut washing = 0;
+        let mut seen = 0;
         for seed in 0..80 {
-            let hs = house(fp, 5.5, RoofStyle::Pitched, 0.8, Material::RammedEarth, true);
+            let hs = house(fp, 5.5, RoofStyle::Pitched, 0.8, Material::RammedEarth, seed % 2 == 0);
             let (m, _) = house_mesh(&hs, &[], &t, seed);
-            // Decor-material triangles clear of the house outline (> 0.6 m outside the walls).
+            // Ground-decor triangles (planters, rain chains, basins) clear of the walls.
             let mut lowest = f32::INFINITY;
             let mut any = false;
             for tri in m.indices.chunks(3) {
                 let s = m.surfaces[tri[0] as usize];
-                if ![Surface::Fiber, Surface::Steel, Surface::Bark, Surface::Cladding].iter().any(|k| *k as u8 == s) {
+                if ![Surface::Leaves, Surface::Metal, Surface::Plinth].iter().any(|k| *k as u8 == s) {
                     continue;
                 }
                 let ps: Vec<Vec3> = tri.iter().map(|&i| Vec3::from_array(m.positions[i as usize])).collect();
@@ -1795,17 +1837,18 @@ mod tests {
                 lowest = lowest.min(ps.iter().map(|p| p.y - t.height(Vec2::new(p.x, p.z))).fold(f32::INFINITY, f32::min));
             }
             if any {
-                washing += 1;
+                seen += 1;
                 assert!(lowest < 0.3 && lowest > -0.6, "seed {seed}: decor lowest point is {lowest} m from the ground");
             }
         }
-        assert!(washing > 5, "decor expected on several seeds");
+        assert!(seen > 5, "decor expected on several seeds");
     }
 
     #[test]
     fn deterministic() {
         let t = ground();
-        let hs = house(rect(3.0, 4.0), 5.5, RoofStyle::Pitched, 1.4, Material::RammedEarth, true);
+        let mut hs = house(rect(3.0, 4.0), 7.5, RoofStyle::Green, 0.0, Material::RammedEarth, true);
+        hs.overgrowth = 0.8;
         let a = house_mesh(&hs, &[], &t, 11);
         let b = house_mesh(&hs, &[], &t, 11);
         assert_eq!(a.0, b.0);
@@ -1816,15 +1859,26 @@ mod tests {
     }
 
     #[test]
+    fn overgrowth_adds_greenery() {
+        let t = ground();
+        let green = |og: f32| {
+            let mut hs = house(rect(3.0, 4.0), 7.0, RoofStyle::Pitched, 0.8, Material::Concrete, false);
+            hs.overgrowth = og;
+            (0..6).map(|s| house_mesh(&hs, &[], &t, s).0.surfaces.iter().filter(|v| **v == Surface::Fiber as u8).count()).sum::<usize>()
+        };
+        assert!(green(1.0) > green(0.0) + 100);
+    }
+
+    #[test]
     fn bounds_sanity() {
         let t = ground();
-        for roof in [RoofStyle::Pitched, RoofStyle::Sawtooth, RoofStyle::Shell] {
-            for ht in [false, true] {
+        for (roof, min_rise) in [(RoofStyle::Pitched, 2.1), (RoofStyle::Sawtooth, 0.6), (RoofStyle::Shell, 2.1)] {
+            for fins in [false, true] {
                 let h = 4.0;
-                let (m, _) = house_mesh(&house(rect(3.0, 4.0), h, roof, 0.8, Material::RammedEarth, ht), &[], &t, 2);
+                let (m, _) = house_mesh(&house(rect(3.0, 4.0), h, roof, 0.8, Material::RammedEarth, fins), &[], &t, 2);
                 let (lo, hi) = m.bounds().unwrap();
                 assert!(lo.y >= -1.0);
-                assert!(hi.y > h + 0.8 * 3.0 * 0.9, "{roof:?}: apex {hi:?}");
+                assert!(hi.y > h + min_rise, "{roof:?}: apex {hi:?}");
             }
         }
         let (m, _) = house_mesh(&house(rect(3.0, 4.0), 4.0, RoofStyle::Green, 0.0, Material::Concrete, false), &[], &t, 2);
@@ -1835,27 +1889,41 @@ mod tests {
     #[test]
     fn triangle_budget() {
         let t = ground();
-        for roof in [RoofStyle::Pitched, RoofStyle::Sawtooth] {
+        for roof in [RoofStyle::Pitched, RoofStyle::Sawtooth, RoofStyle::Green] {
             for seed in 0..8 {
-                let mut hs = house(rect(3.0, 4.0), 5.6, roof, 1.0, Material::RammedEarth, true);
+                let mut hs = house(rect(3.0, 4.0), 9.0, roof, 1.0, Material::RammedEarth, true);
                 hs.colors.roof = (seed % ROOF_COLORS as u64) as u8;
+                hs.overgrowth = 1.0;
                 let (m, _) = house_mesh(&hs, &[], &t, seed);
                 let tris = m.indices.len() / 3;
-                assert!(tris <= 5000, "{tris} triangles");
+                assert!(tris <= 6000, "{tris} triangles");
             }
         }
     }
 
     #[test]
-    fn half_timber_jetty_and_dormers() {
+    fn fins_slabs_and_cantilever() {
         let t = ground();
-        let hs = house(rect(3.0, 4.5), 5.6, RoofStyle::Pitched, 1.2, Material::RammedEarth, true);
-        let (m, mk) = house_mesh(&hs, &[], &t, 8);
-        check(&m, &mk);
-        assert!(m.surfaces.contains(&(Surface::Steel as u8)));
-        assert!(m.surfaces.contains(&(Surface::Concrete as u8)));
-        // Upper storey windows plus dormers (rise 3.6 m > 2.5 m).
-        assert!(count(&mk, MarkerKind::WindowLight) >= 8);
+        let plain = house(rect(3.0, 4.5), 7.0, RoofStyle::Pitched, 1.0, Material::Concrete, false);
+        let (m0, mk) = house_mesh(&plain, &[], &t, 8);
+        check(&m0, &mk);
+        assert!(count(&mk, MarkerKind::WindowLight) >= 8, "two storeys of windows");
+        let mut finned = plain.clone();
+        finned.fins = true;
+        let (m1, mk) = house_mesh(&finned, &[], &t, 8);
+        check(&m1, &mk);
+        assert!(m1.vertex_count() > m0.vertex_count() + 24 * 20, "fin grid");
+        // Upper storey cantilevers beyond the footprint: walls reach outside the ground outline.
+        let poly = footprint_polygon(&plain.footprint);
+        let ring = crate::geom::closed(&poly);
+        let out = m0
+            .positions
+            .iter()
+            .zip(&m0.surfaces)
+            .filter(|(p, s)| **s == Surface::Concrete as u8 && p[1] > 4.0 && p[1] < 6.5)
+            .map(|(p, _)| crate::geom::closest_on_polyline(&ring, Vec2::new(p[0], p[2])).1)
+            .fold(0.0f32, f32::max);
+        assert!(out > 0.25, "cantilever {out}");
     }
 
     #[test]
@@ -1871,6 +1939,7 @@ mod tests {
             for h in [0.0, f32::NAN, 1.49, 1.5, 24.0, 100.0] {
                 let mut hs = house(fp, h, RoofStyle::Pitched, f32::NAN, Material::RammedEarth, true);
                 hs.foundation = f32::NAN;
+                hs.overgrowth = f32::NAN;
                 hs.openings = vec![Opening { along: f32::NAN, kind: OpeningKind::Door }, Opening { along: -5.0, kind: OpeningKind::Window }];
                 let cuts = [Cut { along: f32::INFINITY, width: f32::NAN, height: 0.0 }, Cut { along: 1e6, width: 9.0, height: 2.0 }];
                 let (m, mk) = house_mesh(&hs, &cuts, &t, 0);
@@ -1879,4 +1948,3 @@ mod tests {
         }
     }
 }
-
