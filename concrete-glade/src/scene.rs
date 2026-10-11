@@ -154,7 +154,7 @@ pub fn demo_world(seed: u64) -> World {
             })
             .collect()
     };
-    w.add(Structure::Wall { points: arc(27.0, -20.0, 200.0, 24, Vec2::ZERO), height: 16, dam: false });
+    w.add(Structure::Wall { points: arc(24.0, -20.0, 200.0, 24, Vec2::ZERO), height: 16, dam: false });
     w.add(Structure::Wall {
         points: vec![Vec2::new(-36.0, 4.0), Vec2::new(-30.0, -18.0), Vec2::new(-14.0, -34.0)],
         height: 32,
@@ -164,11 +164,12 @@ pub fn demo_world(seed: u64) -> World {
     w.add(Structure::Block { min: Vec2::new(-14.0, -10.0), max: Vec2::new(-2.0, 4.0), height: 30 });
     w.add(Structure::Block { min: Vec2::new(-5.0, -4.0), max: Vec2::new(9.0, 5.0), height: 20 });
     w.add(Structure::Block { min: Vec2::new(9.0, -2.0), max: Vec2::new(15.0, 5.0), height: 12 });
-    w.add(Structure::Block { min: Vec2::new(4.0, -18.0), max: Vec2::new(11.0, -11.0), height: 46 });
+    w.add(Structure::Block { min: Vec2::new(-6.0, -24.0), max: Vec2::new(1.0, -17.0), height: 46 });
+    // Enters through the perimeter wall (carving a gate) and runs to the block.
     w.add(Structure::Road {
-        points: vec![Vec2::new(38.0, 22.0), Vec2::new(24.0, 15.0), Vec2::new(12.0, 11.0), Vec2::new(-6.0, 10.0)],
+        points: vec![Vec2::new(-30.0, 38.0), Vec2::new(-12.0, 20.8), Vec2::new(-4.0, 12.0), Vec2::new(3.0, 8.0)],
     });
-    w.add(Structure::Road { points: vec![Vec2::new(-24.0, 8.0), Vec2::new(-8.0, 10.0), Vec2::new(-6.0, 10.0)] });
+    w.add(Structure::Road { points: vec![Vec2::new(40.0, 0.0), Vec2::new(24.0, 0.0), Vec2::new(17.0, 7.0), Vec2::new(3.0, 8.0)] });
     w
 }
 
@@ -194,5 +195,38 @@ mod tests {
         w.remove(&ids);
         w.add(pending);
         assert!(ghost == generate(&w));
+    }
+
+    /// `cargo test --release -- --ignored --nocapture drag_frame_timing`
+    #[test]
+    #[ignore]
+    fn drag_frame_timing() {
+        let w = demo_world(9);
+        let t = terrain(9);
+        let mut prev = rebuild_grid(&w, &t, None, &[]);
+        let mut points = vec![Vec2::new(-30.0, 30.0)];
+        let (mut rebuild, mut mesh, mut chunks, n) = (0.0, 0.0, 0, 40);
+        for i in 0..n {
+            points.push(Vec2::new(-30.0 + i as f32 * 1.2, 30.0 - (i as f32 * 0.2).sin() * 4.0));
+            let pending = Structure::Wall { points: points.clone(), height: 32, dam: true };
+            let s = std::time::Instant::now();
+            let g = rebuild_grid(&w, &t, Some(&pending), &[]);
+            rebuild += s.elapsed().as_secs_f64();
+            let s = std::time::Instant::now();
+            let dirty = g.diff_chunks(&prev);
+            chunks += dirty.len();
+            for c in dirty {
+                std::hint::black_box(chunk_mesh_to_bevy(&mesh_chunk(&g, c)));
+            }
+            mesh += s.elapsed().as_secs_f64();
+            prev = g;
+        }
+        let ms = |x: f64| x * 1000.0 / n as f64;
+        println!("per drag frame: rebuild {:.2} ms, diff+remesh {:.2} ms ({:.1} chunks)", ms(rebuild), ms(mesh), chunks as f64 / n as f64);
+        let s = std::time::Instant::now();
+        for c in rebuild_grid(&w, &t, None, &[]).diff_chunks(&VoxelGrid::new()) {
+            std::hint::black_box(mesh_chunk(&prev, c));
+        }
+        println!("initial full mesh: {:.1} ms", s.elapsed().as_secs_f64() * 1000.0);
     }
 }

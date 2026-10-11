@@ -9,7 +9,7 @@ use concrete_glade::tools::ToolsPlugin;
 use concrete_glade::ui::HudPlugin;
 
 /// Frames to let the scene settle (pipelines compile, particles spread) before capture.
-const DEMO_SETTLE_FRAMES: u32 = 20;
+const DEMO_SETTLE_FRAMES: u32 = 120;
 
 #[derive(Resource)]
 struct DemoShot {
@@ -35,10 +35,10 @@ fn main() {
             .insert_resource(DemoShot { path, frames: 0 })
             .add_systems(Startup, |mut orbit: ResMut<Orbit>| {
                 orbit.snap(OrbitPose {
-                    focus: Vec2::new(-2.0, -4.0),
-                    yaw: 35f32.to_radians(),
+                    focus: Vec2::new(0.0, 3.0),
+                    yaw: 8f32.to_radians(),
                     pitch: 30f32.to_radians(),
-                    distance: 55.0,
+                    distance: 56.0,
                 })
             })
             .add_systems(Last, demo_shot);
