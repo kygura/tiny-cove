@@ -6,6 +6,7 @@
 //! paused and weather snapped; without those flags the render test keeps its own preset.
 
 use crate::env::Environment;
+use crate::world::BuiltScene;
 use crate::render::{GameCamera, GladeAssets, Particle, ParticleKind, particle_mesh, write_particle_mesh};
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 
@@ -212,6 +213,44 @@ fn lum(c: Vec3) -> f32 {
     c.dot(Vec3::new(0.3, 0.59, 0.11))
 }
 
+/// Weighted (normalised) mix of every kind's look.
+fn blend_look(w: &[f32; 6]) -> Look {
+    let sum: f32 = w.iter().sum::<f32>().max(1e-3);
+    let mut look: Look = [0.0; 15];
+    for (l, wi) in LOOKS.iter().zip(w) {
+        for (o, x) in look.iter_mut().zip(l) {
+            *o += x * wi / sum;
+        }
+    }
+    look
+}
+
+/// Palette at `hour` modified by `look`; `t` drives the slow wind variation.
+fn make_env(hour: f32, look: &Look, wet: f32, snow: f32, fog_extra: f32, t: f32) -> Environment {
+    let p = sample_palette(hour);
+    let desat = |c: Vec3, k: f32| Vec3::splat(lum(c)).lerp(c, k);
+    let grey = |c: Vec3| c.lerp(Vec3::splat(lum(c) * look[SKY]) * Vec3::new(0.97, 1.0, 1.04), look[GREY]);
+    let cold = Vec3::ONE.lerp(Vec3::new(0.88, 0.96, 1.1), look[COLD]);
+    let wind_dir = 0.4 + 0.8 * (t * 0.021).sin() + 0.3 * (t * 0.057).sin();
+    Environment {
+        sun_dir: light_dir(hour),
+        sun_color: desat(p[0], look[SAT]) * look[SUN] * cold,
+        ambient_sky: desat(p[1], 0.5 + 0.5 * look[SAT]) * look[AMB],
+        ambient_ground: desat(p[2], 0.5 + 0.5 * look[SAT]) * look[AMB],
+        shadow_tint: p[3].lerp(Vec3::new(0.78, 0.8, 0.9), look[FLAT]),
+        sky_top: grey(p[4]),
+        sky_horizon: grey(p[5]),
+        fog_color: grey(p[6]),
+        fog_density: 0.006 + look[FOG] + fog_extra,
+        wetness: wet,
+        snow,
+        night: (p[7].x + look[NIGHT_ADD]).min(1.0),
+        flash: 0.0,
+        wind: Vec2::new(wind_dir.cos(), wind_dir.sin()) * look[WIND] * (0.8 + 0.2 * (t * 0.13).sin()),
+        hour,
+    }
+}
+
 // ---------------------------------------------------------------- systems
 
 #[derive(Resource)]
@@ -324,42 +363,15 @@ fn update_env(time: Res<Time>, clock: Res<Clock>, mut weather: ResMut<Weather>, 
     } else {
         step_weights(&mut st.w, target, 6.0, dt);
     }
-    let sum: f32 = st.w.iter().sum();
-    let mut look: Look = [0.0; 15];
-    for (i, l) in LOOKS.iter().enumerate() {
-        for (o, x) in look.iter_mut().zip(l) {
-            *o += x * st.w[i] / sum;
-        }
-    }
-    let storm = st.w[STORM] / sum;
+    let look = blend_look(&st.w);
+    let storm = st.w[STORM] / st.w.iter().sum::<f32>();
 
     // Wetness and snow cover lag behind the weather.
     st.wet = if snap { look[WET].round() } else { approach(st.wet, look[WET], 20.0, 60.0, dt) };
     st.snow = if snap { look[COVER].round() } else { approach(st.snow, look[COVER], 30.0, 120.0, dt) };
 
     // Palette → environment.
-    let p = sample_palette(clock.hour);
-    let desat = |c: Vec3, k: f32| Vec3::splat(lum(c)).lerp(c, k);
-    let grey = |c: Vec3| c.lerp(Vec3::splat(lum(c) * look[SKY]) * Vec3::new(0.97, 1.0, 1.04), look[GREY]);
-    let cold = Vec3::ONE.lerp(Vec3::new(0.88, 0.96, 1.1), look[COLD]);
-    let wind_dir = 0.4 + 0.8 * (st.t * 0.021).sin() + 0.3 * (st.t * 0.057).sin();
-    *env = Environment {
-        sun_dir: light_dir(clock.hour),
-        sun_color: desat(p[0], look[SAT]) * look[SUN] * cold,
-        ambient_sky: desat(p[1], 0.5 + 0.5 * look[SAT]) * look[AMB],
-        ambient_ground: desat(p[2], 0.5 + 0.5 * look[SAT]) * look[AMB],
-        shadow_tint: p[3].lerp(Vec3::new(0.78, 0.8, 0.9), look[FLAT]),
-        sky_top: grey(p[4]),
-        sky_horizon: grey(p[5]),
-        fog_color: grey(p[6]),
-        fog_density: 0.006 + look[FOG] + weather.fog_extra,
-        wetness: st.wet,
-        snow: weather.snow_override.unwrap_or(st.snow),
-        night: (p[7].x + look[NIGHT_ADD]).min(1.0),
-        flash: 0.0,
-        wind: Vec2::new(wind_dir.cos(), wind_dir.sin()) * look[WIND] * (0.8 + 0.2 * (st.t * 0.13).sin()),
-        hour: clock.hour,
-    };
+    *env = make_env(clock.hour, &look, st.wet, weather.snow_override.unwrap_or(st.snow), weather.fog_extra, st.t);
 
     // Lightning.
     if storm > 0.6 {
@@ -377,6 +389,7 @@ fn update_env(time: Res<Time>, clock: Res<Clock>, mut weather: ResMut<Weather>, 
 fn particles(
     time: Res<Time>,
     env: Res<Environment>,
+    built: Res<BuiltScene>,
     mut st: ResMut<State>,
     cam: Query<&GlobalTransform, With<GameCamera>>,
     assets: Option<Res<GladeAssets>>,
@@ -401,6 +414,7 @@ fn particles(
     let fogw = wn(WeatherKind::Fog);
     let wind = env.wind;
     let mut ps: Vec<Particle> = Vec::new();
+    let ground = |x: f32, z: f32| built.0.as_ref().map_or(0.0, |s| s.terrain.height(Vec2::new(x, z)));
 
     if rain > 0.01 {
         let (speed, hgt) = (18.0 + 4.0 * rain, 24.0);
@@ -411,11 +425,12 @@ fn particles(
             let (y, fall) = (hgt * (1.0 - s), s * hgt / speed);
             let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.8 * fall, focus.x, 40.0);
             let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.8 * fall, focus.z, 40.0);
+            let g = ground(x, z);
             if y < 0.6 {
                 // Splash.
-                ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, 0.08, z), 0.16, col.extend(0.7)));
+                ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, g + 0.08, z), 0.16, col.extend(0.7)));
             } else {
-                let mut p = Particle::new(ParticleKind::Streak, Vec3::new(x, y, z), 1.0, col.extend(0.75));
+                let mut p = Particle::new(ParticleKind::Streak, Vec3::new(x, g + y, z), 1.0, col.extend(0.75));
                 p.dir = dir;
                 ps.push(p);
             }
@@ -428,14 +443,14 @@ fn particles(
             let sway = Vec2::new((t * 0.8 + i as f32).sin(), (t * 0.6 + i as f32 * 1.7).cos()) * 0.35;
             let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.35 * t + sway.x, focus.x, 40.0);
             let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.35 * t + sway.y, focus.z, 40.0);
-            ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, y, z), 0.14, Vec4::ONE));
+            ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, ground(x, z) + y, z), 0.14, Vec4::ONE));
         }
     }
     if fogw > 0.01 {
         for i in 0..(14.0 * fogw).ceil() as u32 {
             let x = wrap(focus.x + hash(i, 1) * 50.0 - 25.0 + wind.x * 0.6 * t, focus.x, 50.0);
             let z = wrap(focus.z + hash(i, 2) * 50.0 - 25.0 + wind.y * 0.6 * t, focus.z, 50.0);
-            ps.push(Particle::new(ParticleKind::Puff, Vec3::new(x, 0.8 + 1.8 * hash(i, 3), z), 5.0 + 4.0 * hash(i, 4), (env.fog_color * 1.05).extend(0.35 * fogw)));
+            ps.push(Particle::new(ParticleKind::Puff, Vec3::new(x, ground(x, z) + 0.8 + 1.8 * hash(i, 3), z), 5.0 + 4.0 * hash(i, 4), (env.fog_color * 1.05).extend(0.35 * fogw)));
         }
     }
     if st.flash_age < 0.15 {
@@ -443,7 +458,7 @@ fn particles(
             let mut p = focus + Vec3::new(st.rand() * 14.0 - 7.0, 45.0, st.rand() * 8.0 - 4.0);
             let mut pts = vec![p];
             for k in 1..=14 {
-                p = Vec3::new(p.x + (st.rand() - 0.5) * 3.0, 45.0 * (1.0 - k as f32 / 14.0), p.z + (st.rand() - 0.5) * 2.0);
+                p = Vec3::new(p.x + (st.rand() - 0.5) * 3.0, ground(p.x, p.z) + 45.0 * (1.0 - k as f32 / 14.0), p.z + (st.rand() - 0.5) * 2.0);
                 pts.push(p);
             }
             st.bolt = pts;
@@ -498,6 +513,25 @@ mod tests {
         }
         assert_eq!(w, [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
         assert_eq!(approach(1.0, 0.0, 20.0, 60.0, 30.0), 0.5);
+    }
+
+    #[test]
+    fn env_finite_for_every_kind_and_hour() {
+        for k in 0..6 {
+            let mut w = [0.0; 6];
+            w[k] = 1.0;
+            for half in 0..48 {
+                let e = make_env(half as f32 * 0.5, &blend_look(&w), 1.0, 1.0, 0.08, 123.0);
+                let vecs = [e.sun_color, e.ambient_sky, e.ambient_ground, e.shadow_tint, e.sky_top, e.sky_horizon, e.fog_color];
+                assert!(vecs.iter().all(|v| v.is_finite() && v.min_element() >= 0.0), "{k} {half}");
+                assert!(e.wind.is_finite());
+                assert!(e.sun_color.max_element() < 3.0 && e.fog_density.is_finite() && e.fog_density < 0.2);
+                assert!((e.sun_dir.length() - 1.0).abs() < 1e-3 && e.sun_dir.y > 0.1);
+                assert!((0.0..=1.0).contains(&e.night));
+            }
+        }
+        // Mid-blend weights stay normalised.
+        assert!(blend_look(&[0.3, 0.0, 0.2, 0.0, 0.0, 0.0])[SUN].is_finite());
     }
 
     #[test]
