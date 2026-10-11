@@ -16,6 +16,16 @@ pub enum Structure {
 }
 
 impl Structure {
+    /// True if every coordinate is finite.
+    pub fn is_finite(&self) -> bool {
+        let f2 = |p: &[f32; 2]| p[0].is_finite() && p[1].is_finite();
+        match self {
+            Structure::Wall { path, .. } | Structure::Path { path } => path.iter().all(f2),
+            Structure::Block { min, max, .. } | Structure::Field { min, max } => f2(min) && f2(max),
+            Structure::Spire { at, .. } => f2(at),
+        }
+    }
+
     /// True if ground point `p` (world x/z) is within `radius` of the structure's
     /// footprint. For the Raze tool.
     pub fn touches(&self, p: [f32; 2], radius: f32) -> bool {
@@ -63,6 +73,11 @@ pub struct Document {
 }
 
 impl Document {
+    /// Copy without structures that have non-finite coordinates.
+    pub fn sanitized(&self) -> Document {
+        Document { seed: self.seed, structures: self.structures.iter().filter(|s| s.is_finite()).cloned().collect() }
+    }
+
     pub fn new(seed: u64) -> Self {
         Self { seed, structures: Vec::new() }
     }
@@ -87,8 +102,9 @@ impl History {
         &self.current
     }
 
-    /// Commits `new_doc` as the current document (no-op if identical). Clears redo.
+    /// Commits `new_doc` as the current document (no-op if identical; structures with non-finite coordinates are dropped). Clears redo.
     pub fn push(&mut self, new_doc: Document) {
+        let new_doc = new_doc.sanitized();
         if new_doc == self.current {
             return;
         }

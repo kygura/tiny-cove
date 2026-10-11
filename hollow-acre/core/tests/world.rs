@@ -311,3 +311,57 @@ fn generate_perf_sanity() {
     eprintln!("generate (20 structures): {per:?}");
     assert!(per.as_millis() < if cfg!(debug_assertions) { 2000 } else { 100 });
 }
+
+#[test]
+fn path_does_not_wipe_spire_tree() {
+    let tree = Structure::Spire { at: [0.0, 0.0], kind: 2 };
+    let p = Structure::Path { path: vec![[-10.0, 2.0], [10.0, 2.0]] };
+    let a = generate(&doc(vec![tree.clone()]));
+    let b = generate(&doc(vec![tree, p]));
+    assert_eq!(count(&a, Voxel::Blossom), count(&b, Voxel::Blossom));
+    assert_eq!(count(&a, Voxel::Leaves), count(&b, Voxel::Leaves));
+}
+
+#[test]
+fn huge_block_is_fast() {
+    let t = std::time::Instant::now();
+    let _ = generate(&doc(vec![Structure::Block { min: [-1e9, -1e9], max: [1e9, 1e9], floors: 12 }]));
+    assert!(t.elapsed().as_millis() < if cfg!(debug_assertions) { 1500 } else { 60 }, "{:?}", t.elapsed());
+}
+
+#[test]
+fn history_ignores_non_finite_duplicates() {
+    let mut h = History::new(Document::new(1));
+    let bad = Document { seed: 1, structures: vec![Structure::Spire { at: [f32::NAN, 0.0], kind: 0 }] };
+    h.push(bad.clone());
+    h.push(bad);
+    assert!(!h.can_undo());
+}
+
+#[test]
+fn spire_tree_trunk_has_no_floating_wood() {
+    for at in [[-30.0, 30.0], [30.0, 20.0], [-20.0, -35.0], [35.0, -30.0]] {
+        let g = generate(&doc(vec![Structure::Spire { at, kind: 2 }]));
+        for z in 0..SIZE_Z as i32 {
+            for x in 0..SIZE_X as i32 {
+                for y in 1..SIZE_Y as i32 {
+                    if g.get(x, y, z) == Voxel::Wood {
+                        assert!(g.get(x, y - 1, z) != Voxel::Air, "floating wood {x},{y},{z}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn wall_decoration_depends_on_position() {
+    let lit = |dz: f32| {
+        let s = Structure::Wall { path: vec![[-20.0, dz], [20.0, dz]], tall: false };
+        let g = generate(&doc(vec![s]));
+        (0..SIZE_Z as i32).flat_map(|z| (0..SIZE_X as i32).map(move |x| (x, z))).filter(|&(x, z)| (0..SIZE_Y as i32).any(|y| g.get(x, y, z) == Voxel::WindowLit)).collect::<Vec<_>>()
+    };
+    let (a, b) = (lit(-20.0), lit(20.0));
+    let norm = |v: &[(i32, i32)]| v.iter().map(|p| p.0).collect::<Vec<_>>();
+    assert_ne!(norm(&a), norm(&b));
+}

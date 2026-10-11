@@ -78,6 +78,7 @@ pub fn terrain_for(seed: u64) -> Terrain {
 /// Builds the full voxel grid: terrain, then fields, walls, blocks, spires in
 /// placement order, then paths (which carve).
 pub fn generate(doc: &Document) -> VoxelGrid {
+    let doc = &doc.sanitized();
     let t = terrain_for(doc.seed);
     let mut c = Ctx { g: t.grid, h: t.heights, seed: doc.seed };
     let all = &doc.structures;
@@ -207,31 +208,39 @@ impl Poly {
         (len >= min_len).then_some(Poly { pts: out, cum, len })
     }
 
-    fn nearest(&self, p: P2) -> Hit {
-        let mut best = Hit { d: f32::INFINITY, s: 0.0, side: 0.0 };
+    pub fn point_at(&self, s: f32) -> P2 {
         for (i, w) in self.pts.windows(2).enumerate() {
-            let (d, t, side) = seg(p, w[0], w[1]);
-            if d < best.d {
-                best = Hit { d, s: self.cum[i] + t * (self.cum[i + 1] - self.cum[i]), side };
+            let l = self.cum[i + 1] - self.cum[i];
+            if s <= self.cum[i + 1] && l > 0.0 {
+                let t = ((s - self.cum[i]) / l).clamp(0.0, 1.0);
+                return [w[0][0] + (w[1][0] - w[0][0]) * t, w[0][1] + (w[1][1] - w[0][1]) * t];
             }
         }
-        best
+        *self.pts.last().unwrap()
     }
 
-    /// Visits every in-map column whose centre is within `r` of the path.
+    /// Visits every in-map column whose centre is within `r` of the path, once,
+    /// in raster order, with its nearest-point hit. Cost is per-segment bbox.
     pub fn for_columns(&self, r: f32, mut f: impl FnMut(i32, i32, &Hit)) {
-        let lo = self.pts.iter().fold([f32::INFINITY; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
-        let hi = self.pts.iter().fold([f32::NEG_INFINITY; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]);
-        let clampx = |v: f32, max: i32| (v.clamp(-1.0, max as f32 + 1.0)) as i32;
-        let (x0, z0) = (clampx((lo[0] - r).floor(), NX).max(0), clampx((lo[1] - r).floor(), NZ).max(0));
-        let (x1, z1) = (clampx((hi[0] + r).ceil(), NX).min(NX - 1), clampx((hi[1] + r).ceil(), NZ).min(NZ - 1));
-        for z in z0..=z1 {
-            for x in x0..=x1 {
-                let h = self.nearest([x as f32 + 0.5, z as f32 + 0.5]);
-                if h.d <= r {
-                    f(x, z, &h);
+        let cl = |v: f32, max: i32| v.clamp(-1.0, max as f32 + 1.0) as i32;
+        let mut cells: std::collections::BTreeMap<(i32, i32), Hit> = std::collections::BTreeMap::new();
+        for (i, w) in self.pts.windows(2).enumerate() {
+            let lo = [w[0][0].min(w[1][0]) - r, w[0][1].min(w[1][1]) - r];
+            let hi = [w[0][0].max(w[1][0]) + r, w[0][1].max(w[1][1]) + r];
+            let (x0, z0) = (cl(lo[0].floor(), NX).max(0), cl(lo[1].floor(), NZ).max(0));
+            let (x1, z1) = (cl(hi[0].ceil(), NX).min(NX - 1), cl(hi[1].ceil(), NZ).min(NZ - 1));
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    let (d, t, side) = seg([x as f32 + 0.5, z as f32 + 0.5], w[0], w[1]);
+                    if d <= r && cells.get(&(z, x)).is_none_or(|h| d < h.d) {
+                        let s = self.cum[i] + t * (self.cum[i + 1] - self.cum[i]);
+                        cells.insert((z, x), Hit { d, s, side });
+                    }
                 }
             }
+        }
+        for (&(z, x), h) in &cells {
+            f(x, z, h);
         }
     }
 }
@@ -383,8 +392,8 @@ fn spire(c: &mut Ctx, at: P2, kind: u8) {
         _ => {
             clear(c, 6);
             terrain::tree(&mut c.g, h0, cx, cz, seed, 0, 8, 5.0, true);
-            for y in h0..h0 + 4 {
-                for (dx, dz) in [(1, 0), (0, 1), (1, 1)] {
+            for (dx, dz) in [(1, 0), (0, 1), (1, 1)] {
+                for y in c.height(cx + dx, cz + dz).min(h0)..h0 + 4 {
                     c.set(cx + dx, y, cz + dz, Voxel::Wood);
                 }
             }
@@ -411,9 +420,8 @@ fn gravel_path(c: &mut Ctx, pts: &[P2]) {
             carved = true;
         }
         if hit.d <= 1.5 {
-            c.clear_column(x, z);
             for y in h..h + 3 {
-                if c.g.get(x, y, z) == Voxel::Crop {
+                if matches!(c.g.get(x, y, z), Voxel::Crop | Voxel::Meadow) {
                     c.set(x, y, z, Voxel::Air);
                 }
             }

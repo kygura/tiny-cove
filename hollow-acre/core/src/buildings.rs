@@ -18,6 +18,11 @@ pub(crate) fn wall(c: &mut Ctx, path: &[P2], tall: bool) {
     let hh = if tall { 22 } else { 12 };
     let seed = c.seed ^ S_WALL;
     let len = poly.len;
+    // Decoration is keyed on the world voxel position of the feature, not its index.
+    let key = |s: f32| {
+        let p = poly.point_at(s);
+        (p[0].floor() as i32, p[1].floor() as i32)
+    };
     poly.for_columns(3.6, |x, z, hit| {
         let (d, s) = (hit.d, hit.s);
         let batter = if !tall {
@@ -36,8 +41,9 @@ pub(crate) fn wall(c: &mut Ctx, path: &[P2], tall: bool) {
         let sk = 5.0 + 10.0 * k as f32;
         let mut butt = 0;
         if k >= 0 && sk <= len - 1.0 && (s - sk).abs() <= 1.0 && d > 1.5 {
-            let ext = 1 + (hash(seed, k, 1, 0) % 2) as i32;
-            let ok = match hash(seed, k, 2, 0) % 4 {
+            let (kx, kz) = key(sk);
+            let ext = 1 + (hash(seed, kx, kz, 1) % 2) as i32;
+            let ok = match hash(seed, kx, kz, 2) % 4 {
                 0 => hit.side > 0.0,
                 1 => hit.side < 0.0,
                 _ => true,
@@ -74,7 +80,8 @@ pub(crate) fn wall(c: &mut Ctx, path: &[P2], tall: bool) {
                 if g == 1 && !tall {
                     break;
                 }
-                let lit = hash(seed, kw, g as i32, 3) % 100 < 22;
+                let (kx, kz) = key(sw);
+                let lit = hash(seed, kx, kz, 3 + g as i32) % 100 < 22;
                 for yr in base..base + 3 {
                     c.set(x, h + yr, z, if lit { Voxel::WindowLit } else { Voxel::Glass });
                 }
@@ -92,7 +99,8 @@ pub(crate) fn wall(c: &mut Ctx, path: &[P2], tall: bool) {
         // Ivy creeping up from the ground in irregular patches.
         if d > 0.5 {
             let side = if hit.side > 0.0 { 1 } else { -1 };
-            let hv = rnd(seed ^ 1, (s / 4.0).floor() as i32, side, 0);
+            let (kx, kz) = key((s / 4.0).floor() * 4.0 + 2.0);
+            let hv = rnd(seed ^ 1, kx, kz, side);
             if hv >= 0.5 {
                 let iv = 2 + ((hv - 0.5) * 2.0 * (hh - 6) as f32) as i32 + (hash(seed, x, z, 7) % 3) as i32 - 1;
                 for yr in 0..iv.min(hh - 2) {
@@ -106,10 +114,19 @@ pub(crate) fn wall(c: &mut Ctx, path: &[P2], tall: bool) {
 }
 
 /// Evenly spaced 2-wide column starts covering [lo, hi), including both ends.
-fn starts(lo: i32, hi: i32) -> Vec<i32> {
-    let len = hi - lo;
-    let n = (((len - 2) as f32) / 6.0).round().max(1.0) as i32;
-    (0..=n).map(|k| lo + k * (len - 2) / n).collect()
+/// Returns (start, is_end) for starts that can touch the grid only.
+fn starts(lo: i32, hi: i32) -> Vec<(i32, bool)> {
+    let len = (hi - lo) as i64;
+    let n = (((len - 2) as f32) / 6.0).round().max(1.0) as i64;
+    let pos = |k: i64| lo as i64 + k * (len - 2) / n;
+    let (mut k0, mut k1) = (0, n);
+    while k0 < n && pos(k0 + 1) < -2 {
+        k0 += 1;
+    }
+    while k1 > 0 && pos(k1 - 1) > NX.max(NZ) as i64 + 1 {
+        k1 -= 1;
+    }
+    (k0..=k1).map(|k| (pos(k) as i32, k == 0 || k == n)).filter(|&(p, _)| p >= -2 && p <= NX.max(NZ) + 1).collect()
 }
 
 /// Brutalist block: pilotis, overhanging slabs, windows, balconies, stair core, roof.
@@ -150,9 +167,9 @@ pub(crate) fn block(c: &mut Ctx, min: P2, max: P2, floors: u8) {
     // Pilotis.
     let (xs, zs) = (starts(x0, x1), starts(z0, z1));
     let interior = w >= 15 && d >= 15;
-    for (i, &sx) in xs.iter().enumerate() {
-        for (j, &sz) in zs.iter().enumerate() {
-            if !interior && i != 0 && i != xs.len() - 1 && j != 0 && j != zs.len() - 1 {
+    for &(sx, ex) in &xs {
+        for &(sz, ez) in &zs {
+            if !interior && !ex && !ez {
                 continue;
             }
             for y in b..b + 6 {
@@ -170,8 +187,8 @@ pub(crate) fn block(c: &mut Ctx, min: P2, max: P2, floors: u8) {
             }
         }
     }
-    for z in z0 - 1..z1 + 1 {
-        for x in x0 - 1..x1 + 1 {
+    for z in cz0..cz1 {
+        for x in cx0..cx1 {
             if x == x0 - 1 || x == x1 || z == z0 - 1 || z == z1 {
                 c.set(x, lt + 1, z, Voxel::Concrete);
             }
@@ -199,9 +216,10 @@ pub(crate) fn block(c: &mut Ctx, min: P2, max: P2, floors: u8) {
                     .filter(|&(_, _, start)| start + 3 <= len - 5);
                 for rel in 1..=5 {
                     let mut v = Voxel::Concrete;
-                    if let Some((k, r, start)) = slot {
-                        let balcony = hash(seed, face, k, i) % 100 < 20;
-                        let lit = hash(seed, face * 4096 + start, i, 11) % 100 < 30;
+                    if let Some((_, r, start)) = slot {
+                        let ws = start + if face < 2 { z0 } else { x0 };
+                        let balcony = hash(seed, ws, face * 64 + i, 21) % 100 < 20;
+                        let lit = hash(seed, ws, face * 64 + i, 11) % 100 < 30;
                         let glass = if lit { Voxel::WindowLit } else { Voxel::Glass };
                         if balcony {
                             if layer == 0 {
@@ -215,9 +233,9 @@ pub(crate) fn block(c: &mut Ctx, min: P2, max: P2, floors: u8) {
                     }
                     c.set(x, base + rel, z, v);
                 }
-                if let Some((k, _, _)) = slot
+                if let Some((_, _, start)) = slot
                     && layer == 0
-                    && hash(seed, face, k, i) % 100 < 20
+                    && hash(seed, start + if face < 2 { z0 } else { x0 }, face * 64 + i, 21) % 100 < 20
                 {
                     let (ox, oz) = match face {
                         0 => (x0 - 1, z),
@@ -233,7 +251,8 @@ pub(crate) fn block(c: &mut Ctx, min: P2, max: P2, floors: u8) {
         }
     }
     // Stair core in one corner, sticking above the roof.
-    let corner = hash(seed, x0, z0, 3) % 4;
+    let (qx, qz) = ((x0 + x1) / 16, (z0 + z1) / 16);
+    let corner = hash(seed, qx, qz, 3) % 4;
     let (kx, kz) = (if corner & 1 == 0 { x0 } else { x1 - 3 }, if corner & 2 == 0 { z0 } else { z1 - 3 });
     for y in b..lt + 4 {
         for z in kz..kz + 3 {
@@ -261,10 +280,10 @@ pub(crate) fn block(c: &mut Ctx, min: P2, max: P2, floors: u8) {
     let (tx, tz) = (if corner & 1 == 0 { x1 - 6 } else { x0 + 1 }, if corner & 2 == 0 { z1 - 6 } else { z0 + 1 });
     let free_tank = |x: i32, z: i32| !big || !((tx - 1..tx + 6).contains(&x) && (tz - 1..tz + 6).contains(&z));
     let free = |x: i32, z: i32| in_roof(x, z) && free_core(x, z) && free_tank(x, z);
-    let kind = if big { hash(seed, x0, z0, 77) % 3 } else { 0 };
+    let kind = if big { hash(seed, qx, qz, 77) % 3 } else { 0 };
     if kind == 1 {
-        for z in z0 + 1..z1 - 1 {
-            for x in x0 + 1..x1 - 1 {
+        for z in (z0 + 1).max(0)..(z1 - 1).min(NZ) {
+            for x in (x0 + 1).max(0)..(x1 - 1).min(NX) {
                 if !in_roof(x, z) || !free_core(x, z) {
                     continue;
                 }
@@ -281,8 +300,11 @@ pub(crate) fn block(c: &mut Ctx, min: P2, max: P2, floors: u8) {
     }
     if kind != 1 && w >= 7 && d >= 7 {
         let mut z = z0 + 2;
-        while z + 1 < z1 - 1 {
-            for x in x0 + 1..x1 - 1 {
+        if z < 0 {
+            z += (-z + 3) / 4 * 4;
+        }
+        while z + 1 < (z1 - 1).min(NZ) {
+            for x in (x0 + 1).max(0)..(x1 - 1).min(NX) {
                 if free(x, z) && free(x, z + 1) {
                     if (x - x0) % 3 == 0 {
                         c.set(x, lt + 1, z, Voxel::Steel);
