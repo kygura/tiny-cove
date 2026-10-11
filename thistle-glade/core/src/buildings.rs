@@ -1766,6 +1766,42 @@ mod tests {
     }
 
     #[test]
+    fn yard_decor_stands_on_ground() {
+        use crate::model::{TerrainDab, TerrainOp};
+        let slope = [TerrainDab { center: Vec2::new(2.0, -3.0), radius: 9.0, op: TerrainOp::Sculpt { amount: 2.0 } }];
+        let t = Terrain::build(5, &slope, &[]);
+        let fp = rect(3.0, 2.2);
+        let poly = footprint_polygon(&fp);
+        let mut washing = 0;
+        for seed in 0..80 {
+            let hs = house(fp, 5.5, RoofStyle::Gable, 0.8, Material::Plaster, true);
+            let (m, _) = house_mesh(&hs, &[], &t, seed);
+            // Decor-material triangles clear of the house outline (> 0.6 m outside the walls).
+            let mut lowest = f32::INFINITY;
+            let mut any = false;
+            for tri in m.indices.chunks(3) {
+                let s = m.surfaces[tri[0] as usize];
+                if ![Surface::Fiber, Surface::Timber, Surface::Bark, Surface::Planks].iter().any(|k| *k as u8 == s) {
+                    continue;
+                }
+                let ps: Vec<Vec3> = tri.iter().map(|&i| Vec3::from_array(m.positions[i as usize])).collect();
+                let c = (ps[0] + ps[1] + ps[2]) / 3.0;
+                let c2 = Vec2::new(c.x, c.z);
+                if crate::geom::contains(&poly, c2) || crate::geom::closest_on_polyline(&crate::geom::closed(&poly), c2).1 < 0.6 {
+                    continue;
+                }
+                any = true;
+                lowest = lowest.min(ps.iter().map(|p| p.y - t.height(Vec2::new(p.x, p.z))).fold(f32::INFINITY, f32::min));
+            }
+            if any {
+                washing += 1;
+                assert!(lowest < 0.3 && lowest > -0.6, "seed {seed}: decor lowest point is {lowest} m from the ground");
+            }
+        }
+        assert!(washing > 5, "decor expected on several seeds");
+    }
+
+    #[test]
     fn deterministic() {
         let t = ground();
         let hs = house(rect(3.0, 4.0), 5.5, RoofStyle::Gable, 1.4, Material::Plaster, true);

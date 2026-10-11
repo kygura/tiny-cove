@@ -427,21 +427,38 @@ impl Terrain {
         m
     }
 
-    /// Water surface mesh (Surface::Water), one flat quad per wet cell, flat per pond.
+    /// Water surface mesh (Surface::Water): marching squares on the wet mask (threshold 0.5),
+    /// the clipped polygon of each cell at its pond level, so shorelines are smooth.
     pub fn water_mesh(&self) -> MeshData {
         let mut m = MeshData::default();
         let col = Vec3::new(0.08, 0.38, 0.45);
         for j in 0..GRID - 1 {
             for i in 0..GRID - 1 {
                 let Some(y) = self.cell_level(i, j) else { continue };
-                let (a, b) = (world(i, j), world(i + 1, j + 1));
-                let v = |x: f32, z: f32| Vec3::new(x, y, z);
-                m.quad_uv(
-                    [v(a.x, a.y), v(a.x, b.y), v(b.x, b.y), v(b.x, a.y)],
-                    [Vec2::new(a.x, a.y), Vec2::new(a.x, b.y), Vec2::new(b.x, b.y), Vec2::new(b.x, a.y)],
-                    col,
-                    Surface::Water,
-                );
+                // Corners counter-clockwise seen from below the +y axis order used by quad_uv.
+                let c = [(i, j), (i, j + 1), (i + 1, j + 1), (i + 1, j)];
+                let w = c.map(|(a, b)| self.wet[b * GRID + a]);
+                let mut poly: Vec<Vec2> = Vec::with_capacity(6);
+                for k in 0..4 {
+                    let l = (k + 1) % 4;
+                    let (pk, pl) = (world(c[k].0, c[k].1), world(c[l].0, c[l].1));
+                    if w[k] > 0.5 {
+                        poly.push(pk);
+                    }
+                    if (w[k] > 0.5) != (w[l] > 0.5) {
+                        poly.push(pk.lerp(pl, (0.5 - w[k]) / (w[l] - w[k])));
+                    }
+                }
+                for k in 1..poly.len().saturating_sub(1) {
+                    let v = |p: Vec2| Vec3::new(p.x, y, p.y);
+                    let t = [poly[0], poly[k], poly[k + 1]];
+                    let n = Vec3::Y;
+                    let b = m.positions.len() as u32;
+                    for p in t {
+                        m.vertex(v(p), n, p, col, Surface::Water);
+                    }
+                    m.indices.extend_from_slice(&[b, b + 1, b + 2]);
+                }
             }
         }
         m
@@ -498,6 +515,23 @@ mod tests {
         assert!(w.positions.iter().all(|p| (p[1] - lv).abs() < 1e-4));
         assert!(w.normals.iter().all(|n| n[1] > 0.99));
         assert!(t.ground_mesh().is_valid());
+    }
+
+    #[test]
+    fn water_mesh_hugs_wet_region() {
+        let d = [dab(0.0, 0.0, 5.0, TerrainOp::Water { depth: 1.0 }), dab(9.0, 3.0, 3.0, TerrainOp::Water { depth: 1.0 })];
+        let t = Terrain::build(7, &d, &[]);
+        let m = t.water_mesh();
+        assert!(m.is_valid() && !m.is_empty());
+        for p in &m.positions {
+            let q = Vec2::new(p[0], p[2]);
+            // On the 0.5 contour or inside it; never more than half a cell out.
+            assert!((0..8).any(|k| {
+                let a = k as f32 * 0.785;
+                t.wetness(q + Vec2::new(a.cos(), a.sin()) * 0.5 * SPACING) > 0.5
+            }) || t.wetness(q) > 0.45, "{q}");
+            assert!(m.normals[0][1] > 0.99);
+        }
     }
 
     #[test]
