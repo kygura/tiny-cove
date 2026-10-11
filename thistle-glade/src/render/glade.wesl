@@ -60,7 +60,7 @@ struct Vertex {
 }
 
 struct VertexOut {
-    @builtin(position) clip: vec4<f32>,
+    @builtin(position) @invariant clip: vec4<f32>,
     // Screen-space linear interpolation = PS1 affine texture mapping.
     @location(0) @interpolate(linear) uv: vec2<f32>,
     @location(1) color: vec4<f32>,

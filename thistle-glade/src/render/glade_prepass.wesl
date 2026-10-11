@@ -28,7 +28,7 @@ struct Vertex {
 }
 
 struct VertexOut {
-    @builtin(position) position: vec4<f32>,
+    @builtin(position) @invariant position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
     @location(1) @interpolate(flat) surface: u32,
     @location(2) unclipped_depth: f32,

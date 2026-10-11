@@ -36,6 +36,11 @@ fn dist_at(p: vec2<i32>) -> f32 {
     return s.depth.y + (1.0 - d) * s.depth.x;
 }
 
+// Still the camera clear colour (sky horizon)?
+fn is_clear(c: vec3<f32>) -> bool {
+    return all(abs(to_srgb(c) - to_srgb(s.sky_horizon.xyz)) < vec3(1.5 / 255.0));
+}
+
 fn class_of(a: f32) -> i32 {
     // 2-bit alpha: 0 none, 1 water, 2 emissive, 3 regular.
     return i32(round(a * 3.0));
@@ -54,14 +59,26 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let p = vec2<i32>(in.position.xy);
     var col = textureLoad(screen, p, 0).rgb;
     let raw = textureLoad(depth_tex, p, 0).r;
+    // Safety net: the prepass has geometry here but the main pass drew nothing (still
+    // the clear colour) -> take the colour of a drawn neighbour instead of a sky sliver.
+    if raw > 0.0 && is_clear(col) {
+        let offs = array<vec2<i32>, 4>(vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1));
+        for (var i = 0; i < 4; i++) {
+            let q = clamp(p + offs[i], vec2(0), size - 1);
+            let qc = textureLoad(screen, q, 0).rgb;
+            if textureLoad(depth_tex, q, 0).r > 0.0 && !is_clear(qc) {
+                col = qc;
+                break;
+            }
+        }
+    }
 
     if raw <= 0.0 {
         // Background: sky gradient (screen-space for the orthographic view).
         let t = clamp(1.0 - in.uv.y * 1.3, 0.0, 1.0);
         let sky = mix(s.sky_horizon.xyz, s.sky_top.xyz, t * t * (3.0 - 2.0 * t));
         // Particles have no prepass depth: keep anything already drawn over the clear colour.
-        let cleared = all(abs(to_srgb(col) - to_srgb(s.sky_horizon.xyz)) < vec3(1.5 / 255.0));
-        if cleared {
+        if is_clear(col) {
             col = sky + vec3(0.75, 0.82, 1.0) * s.sky_horizon.w * 0.5;
         }
     } else if s.flags.x > 0.5 {

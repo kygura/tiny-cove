@@ -9,10 +9,10 @@ use crate::env::Environment;
 use bevy::{
     asset::uuid_handle,
     mesh::MeshVertexBufferLayoutRef,
-    pbr::{MaterialPipeline, MaterialPipelineKey},
+    pbr::{MaterialPipeline, MaterialPipelineKey, MeshPipelineKey},
     prelude::*,
     render::{
-        render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError},
+        render_resource::{AsBindGroup, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError},
         storage::ShaderBuffer,
     },
     shader::ShaderRef,
@@ -80,8 +80,17 @@ fn specialize_solid(
     descriptor: &mut RenderPipelineDescriptor,
     layout: &MeshVertexBufferLayoutRef,
     fragment_entry: Option<&'static str>,
+    camera_prepass: bool,
 ) -> Result<(), SpecializedMeshPipelineError> {
     if is_prepass(descriptor) {
+        // Bevy's prepass pipeline does not cull, the main pass culls back faces. Back
+        // faces (single-sided parts, and the 1-px rims vertex snapping pushes past
+        // silhouettes) then win the prepass depth, the main pass fails its depth test
+        // there and the clear colour shows as white slivers. Cull the same way in the
+        // camera prepass; the shadow pass keeps culling off (double-sided casters).
+        if camera_prepass {
+            descriptor.primitive.cull_mode = Some(Face::Back);
+        }
         descriptor.vertex.buffers = vec![layout.0.get_layout(&[
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             Mesh::ATTRIBUTE_UV_1.at_shader_location(2),
@@ -130,9 +139,9 @@ impl Material for GladeMaterial {
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        specialize_solid(descriptor, layout, None)
+        specialize_solid(descriptor, layout, None, key.mesh_key.contains(MeshPipelineKey::NORMAL_PREPASS))
     }
 }
 
@@ -180,9 +189,9 @@ impl Material for WaterMaterial {
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        specialize_solid(descriptor, layout, Some("water_fragment"))
+        specialize_solid(descriptor, layout, Some("water_fragment"), key.mesh_key.contains(MeshPipelineKey::NORMAL_PREPASS))
     }
 }
 
