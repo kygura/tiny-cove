@@ -31,8 +31,8 @@ fn rng(seed: u64, salt: u64, p: Vec2) -> Rng {
 fn fin(v: f32, lo: f32, hi: f32, fallback: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { fallback }
 }
-fn rope_color() -> Vec3 {
-    palette::hay() * 0.75
+fn cable_color() -> Vec3 {
+    palette::metal() * 1.4
 }
 /// Thin square-section line centred on `a`→`b`.
 fn thin(m: &mut MeshData, a: Vec3, b: Vec3, th: f32, c: Vec3, s: Surface) {
@@ -72,24 +72,24 @@ fn chaikin(pts: &[Vec2]) -> Vec<Vec2> {
     out
 }
 
-/// Path ribbon draped on the terrain (slightly above it), with individual stones / setts /
-/// flagstones as geometry, stepping stones (a ford) where it crosses water.
+/// Path ribbon draped on the terrain (slightly above it) or, for slabs and stepping slabs,
+/// individual concrete slabs; square stepping blocks (a ford) where it crosses water.
 pub fn path_mesh(path: &Path, terrain: &Terrain, seed: u64) -> MeshData {
     build_path(path, seed, &|p| terrain.height(p), &|p| terrain.water_level(p))
 }
 
-/// Stepping stones along a wet stretch: one row every ~0.7 m, flat tops 0.1 m above water.
+/// Square concrete stepping blocks along a wet stretch: one row every ~0.7 m, flat tops 0.1 m above water.
 #[allow(clippy::too_many_arguments)]
 fn ford_stones(m: &mut MeshData, c: Vec2, s: Vec2, w: f32, level: f32, bed: f32, seed: u64) {
     let mut r = rng(seed, 11, c);
     let offs: &[f32] = if w > 1.6 { &[-0.25, 0.25] } else { &[0.0] };
     for &o in offs {
         let p = c + s * (o * w + (r.f() - 0.5) * 0.2) + Vec2::new(r.f() - 0.5, r.f() - 0.5) * 0.15;
-        let rad = 0.22 + 0.12 * r.f();
+        let rad = 0.2 + 0.08 * r.f();
         let base = bed.min(level) - 0.05;
         let top = level + 0.1;
-        let col = tint(palette::rock(), &mut r, 0.2);
-        m.cylinder(v3(p, base), rad * 1.15, rad * 0.9, top - base, 6, true, false, col, Surface::Rock, 1.0);
+        let col = tint(palette::stone(), &mut r, 0.15);
+        m.oriented_box(v3(p, (base + top) * 0.5), Vec3::new(rad, (top - base) * 0.5, rad), flat(s), col, Surface::Concrete, 1.0);
     }
 }
 
@@ -120,13 +120,15 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
         .collect();
     let side = |t: Vec2| Vec2::new(t.y, -t.x);
     let wets: Vec<Option<f32>> = cs.iter().map(|&c| wet(c)).collect();
-    let neat = path.kind == PathKind::Poured;
+    let neat = matches!(path.kind, PathKind::Poured | PathKind::Gravel);
     let (surf, base_col) = match path.kind {
-        PathKind::Gravel => (Surface::Dirt, palette::dirt()),
+        PathKind::Gravel => (Surface::Gravel, palette::sand() * 0.9),
         PathKind::Pavers => (Surface::Pavers, palette::stone()),
         PathKind::Slabs | PathKind::Stepping => (Surface::Slabs, palette::stone() * 0.95),
-        PathKind::Poured => (Surface::Poured, palette::rock()),
+        PathKind::Poured => (Surface::Poured, palette::stone() * 0.9),
     };
+    // Slabs and stepping slabs are separate quads with grass between; the rest is a ribbon.
+    let ribbon = !matches!(path.kind, PathKind::Slabs | PathKind::Stepping);
 
     // Ribbon columns (left edge, middle, right edge) per sample, edges jittered.
     let cols: Vec<[Vec3; 3]> = (0..=n)
@@ -146,7 +148,7 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
     for i in 0..=n {
         let c = cs[i];
         let dry_next = i < n && wets[i].is_none() && wets[i + 1].is_none();
-        if dry_next {
+        if dry_next && ribbon {
             let mut r = rng(seed, 2, c);
             let col = tint(base_col, &mut r, 0.12);
             for k in 0..2 {
@@ -166,53 +168,54 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
         since = 10.0;
         let s = side(ts[i]);
         let mut r = rng(seed, 3, c);
-        let x_axis = flat(ts[i]);
         match path.kind {
-            PathKind::Stepping => {}
+            PathKind::Pavers => {}
             PathKind::Gravel => {
                 if r.f() < 0.3 {
                     let p = c + s * (r.range(-0.8, 0.8) * hw);
-                    let sz = r.range(0.04, 0.09);
+                    let sz = r.range(0.03, 0.06);
                     let y = h(p) + LIFT;
                     m.aabb(v3(p, y), v3(p, y) + Vec3::new(sz, sz * 0.7, sz), tint(palette::rock(), &mut r, 0.3), Surface::Rock, 1.0);
                 }
-            }
-            PathKind::Pavers => {
+                // Thin concrete kerb along both edges.
                 if i < n && wets[i + 1].is_none() {
-                    for f in [0.0, 0.5] {
-                        let cc = cs[i].lerp(cs[i + 1], f);
-                        for sg in [-1.0, 1.0] {
-                            let mut rr = rng(seed, 4, cc + s * sg);
-                            let p = cc + s * (sg * (hw - 0.06 + (rr.f() - 0.5) * 0.06));
-                            let hy = 0.04 + rr.f() * 0.03;
-                            let col = tint(palette::stone(), &mut rr, 0.25);
-                            m.oriented_box(v3(p, h(p) + LIFT + hy), Vec3::new(0.14, hy, 0.1), x_axis, col, Surface::Pavers, 1.0);
-                        }
+                    for sg in [-1.0, 1.0] {
+                        let e = |q: Vec2, t: Vec2| {
+                            let p = q + side(t) * (sg * (hw + 0.04));
+                            v3(p, h(p) - 0.02)
+                        };
+                        m.beam(e(cs[i], ts[i]), e(cs[i + 1], ts[i + 1]), 0.08, 0.1, palette::stone() * 0.8, Surface::Concrete, 1.0);
                     }
                 }
             }
             PathKind::Slabs => {
-                if i % 2 == 0 {
-                    for o in [-0.55_f32, 0.0, 0.55] {
-                        let mut rr = rng(seed, 5, c + s * o);
-                        let p = c + s * (o * hw + (rr.f() - 0.5) * 0.2 * hw);
-                        let ang = (rr.f() - 0.5) * 0.7;
-                        let ax = Vec2::from_angle(ang).rotate(ts[i]);
-                        let half = Vec3::new(rr.range(0.25, 0.42).min(hw * 0.5 + 0.1), 0.03, rr.range(0.2, 0.35).min(hw * 0.5 + 0.1));
-                        let col = tint(palette::stone(), &mut rr, 0.3);
-                        m.oriented_box(v3(p, h(p) + LIFT + 0.02), half, flat(ax), col, Surface::Slabs, 1.0);
+                // Large rectangular slabs in a grid, ~0.9 x 0.9 m with grass gaps.
+                if i % 2 == 0 && i < n {
+                    let cols = ((w / 0.9).round() as usize).max(1);
+                    let pitch = w / cols as f32;
+                    for k in 0..cols {
+                        let o = (k as f32 + 0.5) * pitch - hw;
+                        let p = c + s * o;
+                        let mut rr = rng(seed, 5, p);
+                        let col = tint(palette::stone(), &mut rr, 0.12);
+                        m.oriented_box(v3(p, h(p) + LIFT + 0.03), Vec3::new(pitch * 0.5 - 0.04, 0.04, 0.46), flat(s), col, Surface::Slabs, 1.0);
                     }
                 }
             }
+            PathKind::Stepping => {
+                // Separate square slabs set into the grass, ~1 m apart.
+                if i % 2 == 0 {
+                    let mut rr = rng(seed, 6, c);
+                    let p = c + s * ((rr.f() - 0.5) * 0.2 * hw);
+                    let half = (hw * 0.6).clamp(0.2, 0.4);
+                    let col = tint(palette::stone(), &mut rr, 0.15);
+                    m.oriented_box(v3(p, h(p) + LIFT + 0.03), Vec3::new(half, 0.05, half), flat(s), col, Surface::Slabs, 1.0);
+                }
+            }
             PathKind::Poured => {
-                if i < n && wets[i + 1].is_none() {
-                    for sg in [-1.0, 1.0] {
-                        let e = |q: Vec2, t: Vec2| {
-                            let p = q + side(t) * (sg * (hw - 0.07));
-                            v3(p, h(p) + LIFT - 0.01)
-                        };
-                        m.beam(e(cs[i], ts[i]), e(cs[i + 1], ts[i + 1]), 0.14, 0.08, palette::foundation() * 1.1, Surface::Poured, 1.0);
-                    }
+                // Expansion joints every ~2 m.
+                if i % 4 == 0 && i < n {
+                    m.oriented_box(v3(c, h(c) + LIFT + 0.01), Vec3::new(hw, 0.01, 0.02), flat(s), palette::foundation() * 0.5, Surface::Poured, 1.0);
                 }
             }
         }
@@ -273,7 +276,29 @@ pub fn stairs_mesh(stairs: &Stairs, terrain: &Terrain, seed: u64) -> (MeshData, 
         let len = from.distance(to);
         for k in 1..((len / 0.3).floor() as usize + 1) {
             let p = from.lerp(to, k as f32 * 0.3 / len);
-            m.beam(p - off, p + off, 0.05, 0.05, palette::wood(), Surface::Steel, 1.0);
+            m.beam(p - off, p + off, 0.05, 0.05, trim, Surface::Steel, 1.0);
+        }
+        // Safety cage: hoops every 0.8 m above 2.2 m, opening toward the climber, joined by bars.
+        let back = if run > 0.05 { -dir } else { -Vec3::X };
+        let u = if run > 0.05 { side } else { Vec3::Z };
+        let rad = w * 0.5 + 0.15;
+        let ring = |p: Vec3, a: f32| p + u * (rad * a.sin()) + back * (rad * a.cos());
+        let steps = 6;
+        let mut k = 0;
+        while 2.2 + 0.8 * k as f32 <= len {
+            let p = from.lerp(to, (2.2 + 0.8 * k as f32) / len);
+            for j in 0..steps {
+                let a0 = -1.5 + 3.0 * j as f32 / steps as f32;
+                let a1 = -1.5 + 3.0 * (j + 1) as f32 / steps as f32;
+                thin(&mut m, ring(p, a0), ring(p, a1), 0.03, trim, Surface::Steel);
+            }
+            k += 1;
+        }
+        if k > 0 {
+            let (p0, p1) = (from.lerp(to, 2.2 / len), from.lerp(to, (2.2 + 0.8 * (k - 1) as f32) / len));
+            for a in [-0.9, 0.0, 0.9] {
+                thin(&mut m, ring(p0, a), ring(p1, a), 0.03, trim, Surface::Steel);
+            }
         }
         return (m, mk);
     }
@@ -289,6 +314,20 @@ pub fn stairs_mesh(stairs: &Stairs, terrain: &Terrain, seed: u64) -> (MeshData, 
         let mut r = rng(seed, 21, Vec2::new(c.x, c.z));
         match stairs.kind {
             StairKind::Concrete => {
+                // Side upstand walls.
+                let ground = terrain.height(Vec2::new(c.x, c.z));
+                let wb = (ground - 0.05).min(top - 0.2);
+                for sg in [-1.0, 1.0] {
+                    let p = c + side * (sg * (w * 0.5 + 0.06));
+                    m.oriented_box(
+                        Vec3::new(p.x, (top + 0.3 + wb) * 0.5, p.z),
+                        Vec3::new(0.06, (top + 0.3 - wb) * 0.5, tr * 0.5),
+                        x_axis,
+                        palette::stone() * 0.85,
+                        Surface::Concrete,
+                        1.0,
+                    );
+                }
                 let g = [0.0, 1.0, -1.0]
                     .iter()
                     .map(|o| {
@@ -311,8 +350,8 @@ pub fn stairs_mesh(stairs: &Stairs, terrain: &Terrain, seed: u64) -> (MeshData, 
                     Vec3::new(c.x, top - 0.03, c.z),
                     Vec3::new(w * 0.5, 0.03, tr * 0.5 + 0.02),
                     x_axis,
-                    tint(palette::wood(), &mut r, 0.15),
-                    Surface::Cladding,
+                    tint(trim, &mut r, 0.1),
+                    Surface::Steel,
                     1.0,
                 );
             }
@@ -339,7 +378,7 @@ pub fn stairs_mesh(stairs: &Stairs, terrain: &Terrain, seed: u64) -> (MeshData, 
             let newel = lamp && k == np - 1;
             let top = rail_y(s) + if newel { 0.12 } else { 0.0 };
             let p = at(s) + o;
-            m.oriented_box(Vec3::new(p.x, (base + top) * 0.5, p.z), Vec3::new(0.04, (top - base) * 0.5, 0.04), x_axis, trim, Surface::Steel, 1.0);
+            m.cylinder(Vec3::new(p.x, base, p.z), 0.03, 0.03, top - base, 6, true, false, trim, Surface::Steel, 1.0);
             if newel && sg > 0.0 {
                 let c = lantern(&mut m, Vec3::new(p.x, top + 0.24, p.z), 0.0);
                 mk.push(Marker { kind: MarkerKind::Lantern, pos: c, dir: Vec3::Y });
@@ -393,26 +432,23 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
         }
     }
     let top = gmin + height;
-    let under = top - 0.1;
+    let under = top - 0.3;
     let trim = palette::trim(p.colors);
     let mut r = rng(seed, 31, p.center);
-    m.oriented_box(v3(p.center, top - 0.05), Vec3::new(hx, 0.05, hz), ax3, tint(palette::wood(), &mut r, 0.1), Surface::Cladding, 1.0);
-    // Joists along local x, rim beams along local z.
-    let nj = ((2.0 * hz / 1.0).ceil() as usize + 1).max(2);
-    for k in 0..nj {
-        let z = -hz + 2.0 * hz * k as f32 / (nj - 1) as f32;
-        m.beam(v3(world(Vec2::new(-hx, z)), under - 0.12), v3(world(Vec2::new(hx, z)), under - 0.12), 0.1, 0.12, trim, Surface::Steel, 1.0);
-    }
-    for sx in [-1.0, 1.0] {
-        let x = sx * (hx - 0.06);
-        m.beam(v3(world(Vec2::new(x, -hz)), under - 0.16), v3(world(Vec2::new(x, hz)), under - 0.16), 0.12, 0.16, trim, Surface::Steel, 1.0);
-    }
-    // Posts down to the terrain at each post.
-    for l in perimeter((hx - 0.15).max(0.1), (hz - 0.15).max(0.1), 2.0) {
+    let round = r.f() < 0.5;
+    // Cast slab: 0.3 m thick, top flush with `top`.
+    let col = tint(palette::stone(), &mut r, 0.1);
+    m.oriented_box(v3(p.center, top - 0.15), Vec3::new(hx, 0.15, hz), ax3, col, Surface::Concrete, 1.0);
+    // Pilotis down to the terrain, round or square.
+    for l in perimeter((hx - 0.4).max(0.1), (hz - 0.4).max(0.1), 2.5) {
         let q = world(l);
         let base = terrain.height(q) - 0.15;
         if under - base > 0.1 {
-            m.oriented_box(v3(q, (base + under) * 0.5), Vec3::new(0.09, (under - base) * 0.5, 0.09), ax3, trim, Surface::Steel, 1.0);
+            if round {
+                m.cylinder(v3(q, base), 0.16, 0.16, under - base, 8, false, false, palette::stone() * 0.85, Surface::Concrete, 1.0);
+            } else {
+                m.oriented_box(v3(q, (base + under) * 0.5), Vec3::new(0.15, (under - base) * 0.5, 0.15), ax3, palette::stone() * 0.85, Surface::Concrete, 1.0);
+            }
         }
     }
     let railing = height > 1.2;
@@ -422,10 +458,10 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
         let per = perimeter(hx - 0.06, hz - 0.06, 1.5);
         for (i, l) in per.iter().enumerate() {
             let q = world(*l);
-            m.oriented_box(v3(q, top + 0.45), Vec3::new(0.04, 0.45, 0.04), ax3, trim, Surface::Steel, 1.0);
+            m.cylinder(v3(q, top), 0.025, 0.025, 0.9, 6, true, false, trim, Surface::Steel, 1.0);
             let q2 = world(per[(i + 1) % per.len()]);
             for hgt in [0.9, 0.45] {
-                m.beam(v3(q, top + hgt - 0.05), v3(q2, top + hgt - 0.05), 0.06, 0.05, trim, Surface::Steel, 1.0);
+                m.beam(v3(q, top + hgt - 0.05), v3(q2, top + hgt - 0.05), 0.04, 0.04, trim, Surface::Steel, 1.0);
             }
         }
     }
