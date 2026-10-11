@@ -409,8 +409,7 @@ fn wall(g: &mut VoxelGrid, points: &[Vec2], height: i32, dam: bool, seed: u64) {
         let k = d - t;
         if k > 0.0 {
             // Outside the wall body: footing and buttresses.
-            let phase = s.rem_euclid(10.0) - 5.0;
-            if phase.abs() < 1.0 && s > 3.0 && s < len - 3.0 && k <= out {
+            if matches!((s.floor() as i32).rem_euclid(10), 4 | 5) && s > 3.0 && s < len - 3.0 && k <= out {
                 let step = k.ceil();
                 let bh = ((h as f32) * (out + 1.0 - step) / (out + 1.0)) as i32;
                 fill_column(g, x, z, GROUND_Y, GROUND_Y + bh - 1, Voxel::Concrete);
@@ -421,8 +420,8 @@ fn wall(g: &mut VoxelGrid, points: &[Vec2], height: i32, dam: bool, seed: u64) {
             return;
         }
         let outer = d > t - 1.0;
-        let hc = hash(seed, x, z, 0);
-        let streak = if dam && unit(hc) < 0.3 { 3 + (hc % (h as u64 / 2)) as i32 } else { 0 };
+        let r = |salt| rnd(seed, x, z, salt);
+        let streak = if dam && r(0) < 0.3 { 3 + (r(1) * (h / 2) as f32) as i32 } else { 0 };
         for y in GROUND_Y..top {
             let yy = y - GROUND_Y;
             let band = yy < 2 || yy == h - 2 || (dam && yy % 6 == 5) || (y >= top - streak && outer);
@@ -430,11 +429,10 @@ fn wall(g: &mut VoxelGrid, points: &[Vec2], height: i32, dam: bool, seed: u64) {
         }
         if outer {
             // Slit windows at mid height on the faces; dams get a second row.
-            let si = (s / 6.0).floor() as i32;
-            if (s - 6.0 * si as f32 - 3.0).abs() < 0.5 && s > 2.0 && s < len - 2.0 {
+            if (s.floor() as i32).rem_euclid(6) == 3 && s > 2.0 && s < len - 2.0 {
                 let rows = if dam { [win_y - 8, win_y] } else { [win_y, win_y] };
                 for wy in rows {
-                    let lit = rnd(seed, si, wy, (d * 4.0) as i32) < 0.15;
+                    let lit = rnd(seed, x, z, wy) < 0.15;
                     let v = if lit { Voxel::WindowLit } else { Voxel::WindowDark };
                     fill_column(g, x, z, wy, wy + 3, v);
                 }
@@ -442,10 +440,10 @@ fn wall(g: &mut VoxelGrid, points: &[Vec2], height: i32, dam: bool, seed: u64) {
             // Parapet lips with crenel gaps; posts and rebar now and then.
             if (s.floor() as i32).rem_euclid(4) != 0 {
                 fill_column(g, x, z, top, top + lip_h, Voxel::Concrete);
-                if unit(hc >> 3) < 0.04 {
+                if r(2) < 0.04 {
                     fill_column(g, x, z, top + lip_h, top + lip_h + 2, Voxel::Rust);
                 }
-            } else if unit(hc >> 7) < 0.3 {
+            } else if r(3) < 0.3 {
                 g.set(at(x, top, z), Voxel::Rust);
             }
         }
@@ -552,20 +550,17 @@ fn block(g: &mut VoxelGrid, min: Vec2, max: Vec2, height: i32, seed: u64) {
                 let rel = y - base;
                 let v = if !inside {
                     // Protruding slab edges.
-                    (y >= base && (rel % 3 == 0 || y == ytop)).then_some(Voxel::ConcreteDark)
+                    (y >= base && y <= ytop && (rel % 3 == 0 || y == ytop)).then_some(Voxel::ConcreteDark)
                 } else if y > ytop {
                     let ring = x == r.x0 || z == r.z0 || x == r.x1 - 1 || z == r.z1 - 1;
                     ring.then_some(Voxel::Concrete)
                 } else if y < base {
-                    let col = (x - r.x0) % 4 == 0 || (z - r.z0) % 4 == 0;
-                    let perim = x == r.x0 || z == r.z0 || x == r.x1 - 1 || z == r.z1 - 1;
-                    if !pilotis {
-                        Some(Voxel::ConcreteDark)
-                    } else if perim && col || x == r.x1 - 1 && z == r.z1 - 1 {
-                        Some(Voxel::ConcreteDark)
-                    } else {
-                        None
-                    }
+                    let on_x = (x - r.x0) % 4 == 0 || x == r.x1 - 1;
+                    let on_z = (z - r.z0) % 4 == 0 || z == r.z1 - 1;
+                    let edge_x = x == r.x0 || x == r.x1 - 1;
+                    let edge_z = z == r.z0 || z == r.z1 - 1;
+                    let column = (edge_x && on_z) || (edge_z && on_x);
+                    (!pilotis || column).then_some(Voxel::ConcreteDark)
                 } else if rel % 3 == 0 || y == ytop {
                     Some(Voxel::ConcreteDark)
                 } else {
@@ -957,6 +952,8 @@ mod tests {
         w.add(wall_s(&[(-30.0, -10.0), (-10.0, -5.0), (5.0, -15.0)]));
         w.add(block_s((5.0, 0.0), (20.0, 12.0), 24));
         w.add(road_s(&[(-35.0, 2.0), (-20.0, -8.0), (35.0, -8.0)]));
+        w.add(wall_s(&[(-35.0, -28.0), (0.0, -28.0)]));
+        w.add(road_s(&[(-20.0, -38.0), (-18.0, -20.0)]));
         let g = generate(&w);
         let ch = |v: Voxel| match v {
             Voxel::Air => ' ',
@@ -977,15 +974,19 @@ mod tests {
             let row: String = (0..SIZE_X).step_by(1).map(|x| ch(g.get(IVec3::new(x, g.top(x, z).max(0), z)))).collect();
             println!("{row}");
         }
-        println!("side slice z = 80 (block face):");
-        for y in (0..SIZE_Y).rev() {
-            let row: String = (0..SIZE_X).map(|x| ch(g.get(IVec3::new(x, y, 80)))).collect();
-            println!("{row}");
-        }
-        println!("front view x->, y^ at z = 79 (block south face is z=80):");
-        for y in (0..SIZE_Y).rev() {
-            let row: String = (85..125).map(|x| ch(g.get(IVec3::new(x, y, 80)))).collect();
-            println!("{row}");
-        }
+        // Elevation seen from -z: first solid voxel scanning z0..z1.
+        let elevation = |z0: i32, z1: i32, xs: std::ops::Range<i32>| {
+            for y in (0..SIZE_Y).rev() {
+                let row: String = xs
+                    .clone()
+                    .map(|x| (z0..z1).map(|z| g.get(IVec3::new(x, y, z))).find(|v| v.is_solid()).map_or(' ', ch))
+                    .collect();
+                println!("{row}");
+            }
+        };
+        println!("block elevation:");
+        elevation(70, 110, 85..125);
+        println!("straight wall elevation:");
+        elevation(20, 40, 5..80);
     }
 }
