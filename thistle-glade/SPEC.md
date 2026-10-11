@@ -50,8 +50,30 @@ Cargo workspace in `thistle-glade/`, sharing `../target` with sibling projects
 
 ## Primitives
 
-Final list fixed after research of the latest Tiny Glade update; see the
-"Primitives" section appended below.
+Ported from Tiny Glade as of its 1.16 "Wood, Flowers, Workshop & more" update
+(Sep 2026). Types live in `core/src/model.rs`; generators in the named module.
+
+| Tool | Tiny Glade behaviour ported | Module |
+|---|---|---|
+| Wall | drag a polyline; height + thickness; stone or wood; battlements; ruined (jagged) top; stone foundation of adjustable height; buttresses/supports on tall walls; wall walk; a path through it cuts an arched gate; a closed ring can be roofed (roof tool); spans water on arches | `walls` |
+| Fence | drag a polyline: wooden rail, picket, low dry-stone, wattle; gaps where paths cross | `walls` |
+| House | drag a rectangle, then raise; stone / plaster / wood; half-timbering; gable / hip / cone / flat roofs with adjustable pitch (low pitch → flat; very low walls → tent-like shelter); auto windows with shutters + door + chimney with smoke; window boxes, ivy, washing lines and haystacks as auto decor; stone foundation; paths through it become doors | `buildings` |
+| Tower | drag a circle (round house); tall round houses get cone roofs, arrow-slit windows, or flat roof with battlements | `buildings` |
+| Roof | click inside a closed wall ring to roof it; scroll for pitch / style on houses | `buildings` + `scene` |
+| Window / Door | click a wall or house wall to place a window; clicking an existing window upgrades it to a door, a door to a wide doorway; shift-click removes | `buildings`, `walls` |
+| Path | draw; width; dirt / cobble / flagstone / setts; cuts gates; stepping stones across water (ford) | `paths` |
+| Stairs | drag from a low point to a high point (e.g. ground → wall top): wooden stairs with railings, stone steps, ladder | `paths` |
+| Platform | drag a rectangle; wooden deck on posts | `paths` |
+| Bridge | drag across a gap: rope bridge (4 railing designs, optional hanging lanterns or flags), stone arch, wooden trestle | `paths` |
+| Terrain | raise / lower brush, flatten brush, water brush that carves ponds and rivers | `terrain` |
+| Paint | flowers, bushes, grain, dirt, and an eraser | `terrain` (layers) + `nature` (scatter) |
+| Trees | click to plant oak, pine, birch, fruit tree | `nature` |
+| Clutter | barrel, crate, haystack, well, cart, bench, lantern post, flag pole, washing line, woodpile, rock, bush, beehive, scarecrow | `nature` |
+| Colour / style | click a structure to recolour (roof / wall / trim palettes), toggle half-timber, switch material; style picker copies a structure's style to the next placements | Bevy `tools` |
+| Eraser | click or drag to remove structures | Bevy `tools` |
+| Fog + snow + time | HUD controls for weather, fog density, snow, time of day | Bevy `weather` |
+
+Not ported: group select/move/rotate, Steam Workshop/mod editor, rollercoaster mods.
 
 ## Rendering
 
