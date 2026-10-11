@@ -155,7 +155,8 @@ fn spires_add_expected_kinds() {
     let at = [10.0, -10.0];
     assert!(added(Structure::Spire { at, kind: 0 }, Voxel::Crystal) >= 10);
     let m = Structure::Spire { at, kind: 1 };
-    assert!(added(m.clone(), Voxel::Monolith) > 10 && added(m.clone(), Voxel::Rune) > 5 && added(m, Voxel::Concrete) > 20);
+    // The monolith slab itself is a bobbing entity in `life`, not grid voxels.
+    assert!(added(m.clone(), Voxel::Monolith) == 0 && added(m.clone(), Voxel::Rune) > 5 && added(m, Voxel::Concrete) > 20);
     let t = Structure::Spire { at, kind: 2 };
     assert!(added(t.clone(), Voxel::Blossom) > 10 && added(t, Voxel::Wood) > 8);
 }

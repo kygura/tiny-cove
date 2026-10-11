@@ -19,6 +19,9 @@ struct OutlineSettings {
     rain: f32,
     // 0..1 night factor (dims foam).
     night: f32,
+    // x fog density, y height fog, z fog start (view depth), w camera near.
+    fog: vec4<f32>,
+    world_from_clip: mat4x4<f32>,
 }
 
 @group(0) @binding(0) var screen: texture_2d<f32>;
@@ -124,7 +127,9 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
             let nq = qs.xyz * 2.0 - 1.0;
             // Nearer side only; on exact ties the +x/+y pixel draws.
             let nearer = dq > d + 0.02 || (abs(dq - d) <= 0.02 && i % 2 == 0);
-            if dot(n, nq) < s.crease_dot && nearer {
+            // Terrain: no creases between two upward-facing surfaces.
+            let both_up = n.y > 0.5 && nq.y > 0.5;
+            if dot(n, nq) < s.crease_dot && nearer && !both_up {
                 crease = true;
             }
         }
@@ -134,27 +139,32 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     }
 
     var col = c.rgb;
-    // c.a = 1 - fog written by the toon shader: outlines fade into fog.
-    let vis = clamp(c.a, 0.0, 1.0);
+    // Outlines fade with the same fog the toon shader applied (distance + height fog).
+    let ndc = vec2((in.uv.x * 2.0 - 1.0), (1.0 - in.uv.y * 2.0));
+    let wp = s.world_from_clip * vec4(ndc, raw, 1.0);
+    let world_y = wp.y / wp.w;
+    let view_depth = d + s.fog.w;
+    let fog = 1.0 - exp(-(s.fog.x * max(view_depth - s.fog.z, 0.0) + s.fog.y * max(6.0 - world_y, 0.0)));
+    let vis = 1.0 - fog;
     if silhouette {
         col = mix(c.rgb, outline_color(c.rgb), vis);
     } else if crease && cls != 2 && cls != 1 {
         col = mix(c.rgb, outline_color(c.rgb), s.crease_strength * vis);
     } else if shore {
         let foam = to_linear(vec3(0xe8, 0xf6, 0xf2) / 255.0);
-        col = mix(foam, c.rgb, 0.65 * s.night);
+        col = mix(c.rgb, mix(foam, c.rgb, 0.65 * s.night), vis);
     } else if cls == 1 {
         // Sparkle: ~1 per 400 water px per second, 0.15 s each.
         let slot = floor(s.time / 0.15);
         if s.sparkle > 0.5 && hash3(vec3(vec2<f32>(p), slot)) < 0.15 / 400.0 {
-            col = vec3(1.0);
+            col = mix(c.rgb, vec3(1.0), vis);
         }
         // Rain rings: 1 px plus shapes for 0.2 s.
         if s.rain > 0.0 {
             let rs = floor(s.time / 0.2);
             if ring_at(p, rs) || ring_at(p + vec2(1, 0), rs) || ring_at(p - vec2(1, 0), rs)
                 || ring_at(p + vec2(0, 1), rs) || ring_at(p - vec2(0, 1), rs) {
-                col = to_linear(vec3(0xcf, 0xe6, 0xee) / 255.0);
+                col = mix(c.rgb, to_linear(vec3(0xcf, 0xe6, 0xee) / 255.0), vis);
             }
         }
     }

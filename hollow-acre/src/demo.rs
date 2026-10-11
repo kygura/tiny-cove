@@ -32,6 +32,10 @@ impl Plugin for DemoPlugin {
     fn build(&self, app: &mut App) {
         let demo = app.world().get_resource::<CliArgs>().is_some_and(|a| a.demo_shot.is_some());
         if demo {
+            if let Some(mut a) = app.world_mut().get_resource_mut::<CliArgs>() {
+                a.weather.get_or_insert_with(|| "rain".into());
+                a.time.get_or_insert(15.5);
+            }
             app.add_systems(Startup, setup_demo).add_systems(Update, release_when_meshed);
         }
     }

@@ -8,7 +8,7 @@
 //! small square node, the superscript 3 as a smaller raised digit.
 
 use crate::game::{DisplayedGrid, Ghost, Sky, Tool, ToolPhase, ToolState, UiCommand, WeatherKind, World};
-use acre_core::{SIZE_X, SIZE_Y, SIZE_Z, Structure, Voxel, VoxelGrid};
+use acre_core::{Document, SIZE_X, SIZE_Y, SIZE_Z, Structure, Voxel, VoxelGrid};
 use bevy::picking::{Pickable, hover::Hovered};
 use bevy::prelude::*;
 use bevy::ui::Pressed;
@@ -35,6 +35,26 @@ const ACCENT_INK: u32 = 0x2f2b33;
 const HOVER: u32 = 0x4a4450;
 const DIM: f32 = 0.45;
 const DISABLED: f32 = 0.30;
+/// Legibility aids for panel-less text (not in DESIGN; added for contrast over
+/// pale sky/fog and busy terrain): a 1 px drop shadow and a faint borderless
+/// backing in the panel colour. Text positions stay where DESIGN puts them.
+const SHADOW: u32 = 0x1d1b22;
+const SHADOW_ALPHA: f32 = 0.7;
+const BACKING_ALPHA: f32 = 0.65;
+const BACKING_PAD_X: f32 = 6.0;
+const BACKING_PAD_Y: f32 = 3.0;
+
+fn shadow() -> TextShadow {
+    TextShadow { offset: Vec2::ONE, color: rgba(SHADOW, SHADOW_ALPHA) }
+}
+
+fn backing() -> BackgroundColor {
+    BackgroundColor(rgba(PANEL, BACKING_ALPHA))
+}
+
+fn backing_pad() -> UiRect {
+    UiRect::axes(px(BACKING_PAD_X), px(BACKING_PAD_Y))
+}
 
 fn rgba(hex: u32, a: f32) -> Color {
     let c = |shift: u32| ((hex >> shift) & 0xff) as f32 / 255.0;
@@ -174,6 +194,11 @@ fn text(s: &str, size: f32, alpha: f32) -> impl Bundle {
     )
 }
 
+/// Panel-less text: same as [`text`] plus a 1 px dark drop shadow.
+fn floating_text(s: &str, size: f32, alpha: f32) -> impl Bundle {
+    (text(s, size, alpha), shadow())
+}
+
 fn panel(padding: f32, gap: f32) -> impl Bundle {
     (
         Node {
@@ -199,7 +224,7 @@ fn spawn_rich(parent: &mut ChildSpawnerCommands, s: &str, size: f32, alpha: f32)
     let flush = |p: &mut ChildSpawnerCommands, run: &mut String| {
         let t = run.trim();
         if !t.is_empty() {
-            p.spawn(text(t, size, alpha));
+            p.spawn(floating_text(t, size, alpha));
         }
         run.clear();
     };
@@ -216,13 +241,14 @@ fn spawn_rich(parent: &mut ChildSpawnerCommands, s: &str, size: f32, alpha: f32)
                         ..default()
                     },
                     BackgroundColor(color),
+                    BoxShadow::new(rgba(SHADOW, SHADOW_ALPHA), px(1), px(1), px(0), px(0)),
                     Pickable::IGNORE,
                 ));
             }
             '³' => {
                 flush(parent, &mut run);
                 parent.spawn((
-                    text("3", (size * 0.65).round(), alpha),
+                    floating_text("3", (size * 0.65).round(), alpha),
                     Node { align_self: AlignSelf::FlexStart, ..default() },
                 ));
             }
@@ -234,6 +260,20 @@ fn spawn_rich(parent: &mut ChildSpawnerCommands, s: &str, size: f32, alpha: f32)
 
 fn rich_row() -> impl Bundle {
     (Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)
+}
+
+/// A rich row on a faint backing.
+fn backed_row() -> impl Bundle {
+    (
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: backing_pad(),
+            ..default()
+        },
+        backing(),
+        Pickable::IGNORE,
+    )
 }
 
 fn slot(
@@ -280,13 +320,13 @@ fn spawn_hud(mut commands: Commands) {
                 bottom: px(20),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
-                row_gap: px(10),
+                row_gap: px(10.0 - BACKING_PAD_Y),
                 ..default()
             },
             Pickable::IGNORE,
         ))
         .with_children(|root| {
-            root.spawn((HintRow, rich_row()));
+            root.spawn((HintRow, backed_row()));
             root.spawn(panel(10.0, 6.0)).with_children(|bar| {
                 for (i, t) in Tool::ALL.into_iter().enumerate() {
                     let key = (i + 1).to_string();
@@ -307,20 +347,22 @@ fn spawn_hud(mut commands: Commands) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: px(16),
-                left: px(16),
+                top: px(16.0 - BACKING_PAD_Y),
+                left: px(16.0 - BACKING_PAD_X),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
+                padding: backing_pad(),
                 ..default()
             },
+            backing(),
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            c.spawn(text("HOLLOW ACRE", 14.0, 0.6));
+            c.spawn(floating_text("HOLLOW ACRE", 14.0, 0.6));
             c.spawn((Node { flex_direction: FlexDirection::Column, ..default() }, Pickable::IGNORE))
                 .with_children(|lines| {
                     lines.spawn((PouredText, rich_row())).with_children(|r| spawn_rich(r, &poured_label(0), 11.0, DIM));
-                    lines.spawn((HarvestText, text(&harvest_label(0), 11.0, DIM)));
+                    lines.spawn((HarvestText, floating_text(&harvest_label(0), 11.0, DIM)));
                 });
         });
 
@@ -349,7 +391,7 @@ fn spawn_hud(mut commands: Commands) {
                 slot(p, Slot::Pause, (28.0, 28.0), ("II", 12.0), None);
                 p.spawn((PhaseText, text("DAY", 11.0, DIM)));
             });
-            c.spawn(rich_row()).with_children(|r| spawn_rich(r, "T pause  ·  [ ] scrub", 10.0, DIM));
+            c.spawn(backed_row()).with_children(|r| spawn_rich(r, "T pause  ·  [ ] scrub", 10.0, DIM));
         });
 }
 
@@ -475,37 +517,47 @@ fn update_clock(
 
 #[derive(Default)]
 struct TallyState {
-    counted: Option<u64>,
-    last_t: f32,
-    shown: Option<(u64, u64)>,
+    /// Committed document last seen; `None` until first observed.
+    doc: Option<Document>,
+    /// A committed change is waiting for the displayed grid to catch up:
+    /// (grid version when noticed, time noticed).
+    pending: Option<(u64, f32)>,
 }
 
-/// Recounts from `DisplayedGrid` only when its version changed, at most 4×/s.
+/// Recounts only when the committed document changes (commit / undo / redo / new
+/// world), never for ghost previews. The count runs once the displayed grid has
+/// no ghost and has been regenerated since the change (or 0.5 s passed, in case
+/// the regeneration landed before this system noticed the change).
 fn update_tally(
     mut commands: Commands,
-    grid: Res<DisplayedGrid>,
-    time: Res<Time<Real>>,
+    world: Option<Res<World>>,
+    (grid, ghost, time): (Res<DisplayedGrid>, Res<Ghost>, Res<Time<Real>>),
     poured: Single<Entity, With<PouredText>>,
     mut harvest: Single<&mut Text, With<HarvestText>>,
     mut state: Local<TallyState>,
 ) {
-    let TallyState { counted, last_t, shown } = &mut *state;
+    let Some(world) = world else { return };
     let now = time.elapsed_secs();
-    if *counted == Some(grid.version) || (counted.is_some() && now - *last_t < 0.25) {
+    let st = &mut *state;
+    if (world.is_changed() || st.doc.is_none()) && st.doc.as_ref() != Some(world.history.doc()) {
+        st.doc = Some(world.history.doc().clone());
+        st.pending = Some((grid.version, now));
+    }
+    let Some((seen_version, seen_at)) = st.pending else { return };
+    let ghost_free = *ghost == Ghost::default();
+    if !ghost_free || (grid.version == seen_version && now - seen_at < 0.5) {
         return;
     }
-    *counted = Some(grid.version);
-    *last_t = now;
-    let tally = count_tally(&grid.grid);
-    if *shown == Some(tally) {
-        return;
-    }
-    *shown = Some(tally);
+    st.pending = None;
+    let (concrete, crop) = count_tally(&grid.grid);
     commands
         .entity(*poured)
         .despawn_related::<Children>()
-        .with_children(|r| spawn_rich(r, &poured_label(tally.0), 11.0, DIM));
-    harvest.0 = harvest_label(tally.1);
+        .with_children(|r| spawn_rich(r, &poured_label(concrete), 11.0, DIM));
+    let h = harvest_label(crop);
+    if harvest.0 != h {
+        harvest.0 = h;
+    }
 }
 
 #[cfg(test)]

@@ -3,12 +3,12 @@
 //! with shared materials; the world is sampled only when `DisplayedGrid::version`
 //! changes (debounced), never per frame.
 
-use crate::game::DisplayedGrid;
+use crate::game::{DisplayedGrid, Ghost, World};
 use crate::render::{Atmosphere, ToonMaterial, toon_material};
 use crate::shot::CliArgs;
 use crate::weather::{Rng, WeatherState};
 use acre_core::voxel::{NX, NY, NZ};
-use acre_core::{ORIGIN, VOXEL_SIZE, Voxel, VoxelGrid};
+use acre_core::{ORIGIN, Structure, VOXEL_SIZE, Voxel, VoxelGrid};
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -20,6 +20,11 @@ const MOTE_CAP: usize = 160;
 const STEAM_CAP: usize = 12;
 const STEAM_LIFE: f32 = 3.0;
 const STEAM_PER_SOURCE: usize = 6;
+const MONO_W: f32 = 1.5;
+const MONO_H: f32 = 6.0;
+const MONO_D: f32 = 1.0;
+/// Gap between plinth surface and the slab's underside at rest (wu).
+const MONO_HOVER: f32 = 1.5;
 
 pub struct LifePlugin;
 
@@ -29,7 +34,8 @@ impl Plugin for LifePlugin {
             .add_systems(Startup, setup_assets)
             .add_systems(
                 Update,
-                (rescan, sheep_update, firefly_update, steam_update, mote_update).chain(),
+                (rescan, sync_monoliths, bob_monoliths, sheep_update, firefly_update, steam_update, mote_update)
+                    .chain(),
             );
     }
 }
@@ -212,6 +218,10 @@ struct LifeAssets {
     firefly: Handle<StandardMaterial>,
     mote: Handle<StandardMaterial>,
     steam: Handle<StandardMaterial>,
+    monolith: Handle<ToonMaterial>,
+    rune: Handle<ToonMaterial>,
+    slab: Handle<Mesh>,
+    inlay: Handle<Mesh>,
     cube: Handle<Mesh>,
     body: Handle<Mesh>,
     leg: Handle<Mesh>,
@@ -296,6 +306,10 @@ fn setup_assets(
             alpha_mode: AlphaMode::Blend,
             ..default()
         }),
+        monolith: toon.add(toon_material(c(0x5a, 0x56, 0x70), Color::BLACK, 0.0, 0.0)),
+        rune: toon.add(toon_material(c(0xb9, 0xa2, 0xff), c(0xa9, 0x8b, 0xff), 0.5, 1.8)),
+        slab: meshes.add(Cuboid::new(MONO_W, MONO_H, MONO_D)),
+        inlay: meshes.add(Cuboid::new(0.2, 0.8, 0.06)),
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         body: meshes.add(Cuboid::new(1.5, 1.0, 2.0)),
         leg: meshes.add(Cuboid::new(0.25, 0.3, 0.25)),
@@ -316,6 +330,7 @@ struct Prop;
 fn rescan(
     time: Res<Time>,
     grid: Res<DisplayedGrid>,
+    ghost: Res<Ghost>,
     assets: Option<Res<LifeAssets>>,
     mut state: ResMut<LifeState>,
     mut commands: Commands,
@@ -324,7 +339,8 @@ fn rescan(
 ) {
     let Some(assets) = assets else { return };
     state.time += time.delta_secs();
-    if grid.version == state.seen_version || state.time - state.last_scan < 0.5 {
+    // Skip while a drag preview is shown: only committed worlds are scanned.
+    if *ghost != Ghost::default() || grid.version == state.seen_version || state.time - state.last_scan < 0.5 {
         return;
     }
     if grid.grid.top(NX / 2, NZ / 2) < 0 {
@@ -581,6 +597,113 @@ fn sheep_update(
 }
 
 // ---------------------------------------------------------------------------
+// Floating monoliths (not part of the voxel grid so they can bob)
+// ---------------------------------------------------------------------------
+
+#[derive(Component)]
+struct Monolith {
+    /// Plinth centre column (voxel coords).
+    cell: [i32; 2],
+    phase: f32,
+}
+
+/// Plinth cells of every kind-1 spire in the committed doc plus the drag preview.
+fn monolith_cells(world: &World, ghost: &Ghost) -> Vec<[i32; 2]> {
+    let mut v: Vec<[i32; 2]> = world
+        .history
+        .doc()
+        .structures
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !ghost.remove.contains(i))
+        .map(|(_, s)| s)
+        .chain(ghost.add.iter())
+        .filter_map(|s| match s {
+            Structure::Spire { at, kind } if *kind % 3 == 1 => Some([cell(at[0]), cell(at[1])]),
+            _ => None,
+        })
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+fn sync_monoliths(
+    world: Option<Res<World>>,
+    ghost: Res<Ghost>,
+    assets: Option<Res<LifeAssets>>,
+    mut commands: Commands,
+    existing: Query<(Entity, &Monolith)>,
+) {
+    let (Some(world), Some(a)) = (world, assets) else { return };
+    if !(world.is_changed() || ghost.is_changed() || a.is_added()) {
+        return;
+    }
+    let want = monolith_cells(&world, &ghost);
+    let mut have: Vec<[i32; 2]> = Vec::new();
+    for (e, m) in &existing {
+        if want.contains(&m.cell) && !have.contains(&m.cell) {
+            have.push(m.cell);
+        } else {
+            commands.entity(e).despawn();
+        }
+    }
+    for cell in want.into_iter().filter(|c| !have.contains(c)) {
+        let phase = (cell[0] * 7 + cell[1] * 13) as f32 * 0.37;
+        commands
+            .spawn((
+                Monolith { cell, phase },
+                Transform::from_translation(Vec3::new(0.0, -100.0, 0.0)),
+                Visibility::Hidden,
+            ))
+            .with_children(|c| {
+                c.spawn((Mesh3d(a.slab.clone()), MeshMaterial3d(a.monolith.clone()), Transform::IDENTITY));
+                // Rune inlay strips on both broad faces (~20% of the face).
+                for side in [1.0f32, -1.0] {
+                    for (i, y) in [-2.2f32, -0.9, 0.4, 1.7, 2.5].into_iter().enumerate() {
+                        let x = if i % 2 == 0 { -0.25 } else { 0.25 };
+                        c.spawn((
+                            Mesh3d(a.inlay.clone()),
+                            MeshMaterial3d(a.rune.clone()),
+                            Transform::from_xyz(x, y, side * (MONO_D * 0.5 + 0.02)),
+                        ));
+                    }
+                }
+            });
+    }
+}
+
+fn bob_monoliths(
+    time: Res<Time>,
+    grid: Res<DisplayedGrid>,
+    mut mono: Query<(&Monolith, &mut Transform, &mut Visibility)>,
+) {
+    let t = time.elapsed_secs();
+    for (m, mut tf, mut vis) in &mut mono {
+        let [cx, cz] = m.cell;
+        let top = grid.grid.top(cx, cz);
+        // Wait for the plinth to be meshed in the displayed grid.
+        if top < 0 || !matches!(grid.grid.get(cx, top, cz), Voxel::Concrete | Voxel::Rune | Voxel::ConcreteDark) {
+            if *vis != Visibility::Hidden {
+                *vis = Visibility::Hidden;
+            }
+            continue;
+        }
+        if *vis != Visibility::Inherited {
+            *vis = Visibility::Inherited;
+        }
+        let surface = (top + 1) as f32 * VOXEL_SIZE;
+        let bob = 0.25 * (TAU * t / 4.0 + m.phase).sin();
+        tf.translation = Vec3::new(
+            ORIGIN + (cx as f32 + 0.5) * VOXEL_SIZE,
+            surface + MONO_HOVER + MONO_H * 0.5 + bob,
+            ORIGIN + (cz as f32 + 0.5) * VOXEL_SIZE,
+        );
+        tf.rotation = Quat::from_rotation_y((0.5f32.to_radians() * t + m.phase).rem_euclid(TAU));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Particles
 // ---------------------------------------------------------------------------
 
@@ -628,7 +751,9 @@ fn steam_update(
             }
             continue;
         }
-        *vis = Visibility::Inherited;
+        if *vis != Visibility::Inherited {
+            *vis = Visibility::Inherited;
+        }
         tf.translation = p.origin + Vec3::new(drift.x * age, 0.8 * age, drift.y * age);
         tf.scale = Vec3::splat(size);
     }

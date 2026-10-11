@@ -45,7 +45,6 @@ pub struct WeatherState {
     flash_frames: u32,
     flash_time: f32,
     rng: Rng,
-    driven: bool,
 }
 
 impl Default for WeatherState {
@@ -60,7 +59,6 @@ impl Default for WeatherState {
             flash_frames: u32::MAX,
             flash_time: 0.0,
             rng: Rng(0x9E37_79B9_7F4A_7C15),
-            driven: false,
         }
     }
 }
@@ -361,7 +359,7 @@ pub fn compose(hour: f32, w: &WParams, out: &mut Atmosphere) {
     out.ambient_brightness = t.ambient * w.ambient_mul;
     out.shadow_tint = col(t.shadow_tint);
     out.shadow_strength = w.shadow_strength;
-    out.sky_color = col(sky.lerp(hex(0x1d2347), 0.0));
+    out.sky_color = col(sky);
     out.fog_color = col(fog);
     out.fog_density = w.fog_density;
     out.height_fog = w.height_fog;
@@ -418,8 +416,11 @@ fn init_sky(
         if let Some(h) = a.time {
             sky.hour = h.rem_euclid(24.0);
         }
-        if let Some(w) = a.weather.as_deref().and_then(WeatherKind::from_name) {
-            sky.weather = w;
+        if let Some(name) = a.weather.as_deref() {
+            match WeatherKind::from_name(name) {
+                Some(w) => sky.weather = w,
+                None => warn!("unknown --weather `{name}` (clear, overcast, rain, storm, mist); using {}", sky.weather.label()),
+            }
         }
         if a.demo_shot.is_some() {
             sky.paused = true;
@@ -435,7 +436,6 @@ fn init_sky(
     if debug_atmos {
         return; // `--atmos` pins a debug preset; leave the default ticker running.
     }
-    state.driven = true;
     commands.insert_resource(AtmosphereDriven);
     compose(sky.hour, &state.params, &mut atmos);
     atmos.wetness = state.rain.max(0.0);
@@ -511,8 +511,9 @@ fn drive_atmosphere(
     sky: Res<Sky>,
     mut state: ResMut<WeatherState>,
     mut atmos: ResMut<Atmosphere>,
+    driven: Option<Res<AtmosphereDriven>>,
 ) {
-    if !state.driven {
+    if driven.is_none() {
         return;
     }
     let dt = time.delta_secs();
@@ -538,8 +539,13 @@ fn drive_atmosphere(
     atmos.cloud_offset += wind * dt;
 }
 
-fn lightning(time: Res<Time>, mut state: ResMut<WeatherState>, mut atmos: ResMut<Atmosphere>) {
-    if !state.driven {
+fn lightning(
+    time: Res<Time>,
+    mut state: ResMut<WeatherState>,
+    mut atmos: ResMut<Atmosphere>,
+    driven: Option<Res<AtmosphereDriven>>,
+) {
+    if driven.is_none() {
         return;
     }
     let dt = time.delta_secs();
@@ -574,8 +580,6 @@ fn lightning(time: Res<Time>, mut state: ResMut<WeatherState>, mut atmos: ResMut
 
 #[derive(Resource)]
 struct RainAssets {
-    streak: Handle<Mesh>,
-    splash: Handle<Mesh>,
     rain_mat: Handle<StandardMaterial>,
 }
 
@@ -628,7 +632,7 @@ fn setup_rain(
             NotShadowCaster,
         ));
     }
-    commands.insert_resource(RainAssets { streak, splash, rain_mat });
+    commands.insert_resource(RainAssets { rain_mat });
 }
 
 /// Ground height (world units) of the top surface at world (x, z), `None` off-map.
@@ -654,6 +658,7 @@ fn rain_update(
     mut drops: Query<(&mut RainDrop, &mut Transform, &mut Visibility), Without<Splash>>,
     mut splashes: Query<(&mut Splash, &mut Transform, &mut Visibility), Without<RainDrop>>,
     mut cursor: Local<usize>,
+    mut last_night: Local<i32>,
     mut frame: Local<u32>,
     mut rng: Local<Option<Rng>>,
 ) {
@@ -667,11 +672,13 @@ fn rain_update(
     let active = if amount < 0.02 { 0 } else { ((600.0 + 500.0 * storm) * amount) as usize };
 
     // Night colour for the streaks.
-    if let Some(mut m) = mats.get_mut(&assets.rain_mat) {
-        let day = hex(0xc4d4ea);
-        let nite = hex(0x7d8cc0);
-        let c = day.lerp(nite, atmos.night);
-        m.base_color = Color::srgba(c.x, c.y, c.z, 0.69);
+    let night_q = (atmos.night * 255.0) as i32;
+    if *last_night != night_q {
+        *last_night = night_q;
+        if let Some(mut m) = mats.get_mut(&assets.rain_mat) {
+            let c = hex(0xc4d4ea).lerp(hex(0x7d8cc0), atmos.night);
+            m.base_color = Color::srgba(c.x, c.y, c.z, 0.69);
+        }
     }
 
     let fall = 24.0 + 6.0 * storm;
@@ -736,28 +743,28 @@ fn rain_update(
     }
 
     // Splashes: pooled, 0.1 s.
-    let mut slots: Vec<usize> = Vec::new();
-    for (i, (mut s, mut tf, mut vis)) in splashes.iter_mut().enumerate() {
+    let mut pool: Vec<_> = splashes.iter_mut().collect();
+    let mut free: Vec<usize> = Vec::new();
+    for (i, (s, tf, vis)) in pool.iter_mut().enumerate() {
         s.age += dt;
         if s.age >= 0.12 {
-            if *vis != Visibility::Hidden {
-                *vis = Visibility::Hidden;
+            if **vis != Visibility::Hidden {
+                **vis = Visibility::Hidden;
             }
-            slots.push(i);
+            free.push(i);
         } else {
-            tf.scale = Vec3::splat(1.0);
+            tf.scale = Vec3::ONE;
         }
     }
-    for (n, pos) in spawn_splash.into_iter().enumerate() {
-        let Some(&slot) = slots.get((n + *cursor) % slots.len().max(1)) else { break };
-        if let Some((mut s, mut tf, mut vis)) = splashes.iter_mut().nth(slot) {
+    if !free.is_empty() {
+        for (n, pos) in spawn_splash.into_iter().enumerate() {
+            let (s, tf, vis) = &mut pool[free[(n + *cursor) % free.len()]];
             s.age = 0.0;
             tf.translation = pos;
-            *vis = Visibility::Inherited;
+            **vis = Visibility::Inherited;
         }
     }
     *cursor = cursor.wrapping_add(1);
-    let _ = (&assets.streak, &assets.splash);
 }
 
 #[cfg(test)]

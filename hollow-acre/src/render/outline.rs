@@ -30,12 +30,13 @@ use bevy::{
 const SHADER: &str = "embedded://hollow_acre/render/outline.wesl";
 
 /// Per-camera outline settings (uniform). Field order mirrors `outline.wesl`.
-#[derive(Component, Clone, Copy, Debug, ExtractComponent, ShaderType)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, ExtractComponent, ShaderType)]
 #[extract_app(RenderApp)]
 pub struct OutlineSettings {
     /// far - near of the orthographic projection.
     pub depth_range: f32,
-    /// Depth jump in world units that counts as a silhouette (DESIGN: 0.5).
+    /// Depth jump in world units that counts as a silhouette. 1.0 (DESIGN said 0.5) so a
+    /// 1-voxel terrain step (0.87 wu jump at 35° pitch) draws no line.
     pub silhouette: f32,
     /// Normal dot below which a same-depth edge is a crease (DESIGN: 0.8).
     pub crease_dot: f32,
@@ -46,19 +47,25 @@ pub struct OutlineSettings {
     pub rain: f32,
     /// 0..1 night factor.
     pub night: f32,
+    /// x fog density, y height fog, z fog start (view depth), w camera near.
+    pub fog: Vec4,
+    /// Inverse view-projection of the game camera (reconstructs world y for fog).
+    pub world_from_clip: Mat4,
 }
 
 impl Default for OutlineSettings {
     fn default() -> Self {
         Self {
             depth_range: 1000.0,
-            silhouette: 0.5,
+            silhouette: 1.0,
             crease_dot: 0.8,
             crease_strength: 0.4,
             time: 0.0,
             sparkle: 1.0,
             rain: 0.0,
             night: 0.0,
+            fog: Vec4::ZERO,
+            world_from_clip: Mat4::IDENTITY,
         }
     }
 }

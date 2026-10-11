@@ -5,83 +5,51 @@ use super::palette;
 use bevy::{
     asset::RenderAssetUsages,
     mesh::{Indices, PrimitiveTopology},
+    asset::uuid_handle,
     prelude::*,
-    render::render_resource::{AsBindGroup, ShaderType},
+    render::{
+        render_resource::{AsBindGroup, ShaderType},
+        storage::ShaderBuffer,
+    },
     shader::ShaderRef,
 };
 
 const SHADER: &str = "embedded://hollow_acre/render/toon.wesl";
 const PREPASS_SHADER: &str = "embedded://hollow_acre/render/toon_prepass.wesl";
 
-/// Material uniform; field order mirrors `ToonParams` in `toon.wesl` / `toon_prepass.wesl`.
-/// Atmosphere fields are rewritten every frame by the render plugin; set only the
-/// per-material ones (`base_color`, `emissive*`, `mode`).
+/// Per-material uniform; field order mirrors `ToonParams` in the toon shaders.
+/// Frame-wide lighting lives in the shared [`ToonGlobals`] buffer instead.
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct ToonParams {
     /// Linear RGBA albedo for meshes without vertex colours.
     pub base_color: Vec4,
     /// Linear RGB emissive colour for meshes without UV_1.
     pub emissive: Vec4,
-    pub sun_dir: Vec3,
     pub emissive_day: f32,
-    pub sun_color: Vec3,
     pub emissive_night: f32,
-    pub ambient: Vec3,
-    pub night: f32,
-    pub shadow_tint: Vec3,
-    pub shadow_strength: f32,
-    pub sky_color: Vec3,
-    pub fog_density: f32,
-    pub fog_color: Vec3,
-    pub height_fog: f32,
-    pub cloud_offset: Vec2,
-    pub cloud_cover: f32,
-    pub wetness: f32,
-    pub time: f32,
     /// 0 = cel-shaded solid, 1 = flat water.
     pub mode: u32,
-    /// View depth where distance fog starts.
-    pub fog_start: f32,
-    /// Number of valid entries in `lamps`.
-    pub lamp_count: u32,
-    /// Night lamp point lights: xyz world position (w unused). Filled from
-    /// [`LampLights`](super::LampLights) by the render plugin.
-    pub lamps: [Vec4; MAX_LAMPS],
+    pub _pad: f32,
+}
+
+impl Default for ToonParams {
+    fn default() -> Self {
+        Self {
+            base_color: Vec4::ONE,
+            emissive: Vec4::ZERO,
+            emissive_day: 0.0,
+            emissive_night: 0.0,
+            mode: 0,
+            _pad: 0.0,
+        }
+    }
 }
 
 /// Lamp point lights shaded per frame (nearest to the view centre).
 pub const MAX_LAMPS: usize = 32;
 
-impl Default for ToonParams {
-    fn default() -> Self {
-        let mut p = Self {
-            base_color: Vec4::ONE,
-            emissive: Vec4::ZERO,
-            sun_dir: Vec3::Y,
-            emissive_day: 0.0,
-            sun_color: Vec3::ONE,
-            emissive_night: 0.0,
-            ambient: Vec3::splat(0.3),
-            night: 0.0,
-            shadow_tint: Vec3::splat(0.3),
-            shadow_strength: 1.0,
-            sky_color: Vec3::ONE,
-            fog_density: 0.0,
-            fog_color: Vec3::ONE,
-            height_fog: 0.0,
-            cloud_offset: Vec2::ZERO,
-            cloud_cover: 0.0,
-            wetness: 0.0,
-            time: 0.0,
-            mode: 0,
-            fog_start: 0.0,
-            lamp_count: 0,
-            lamps: [Vec4::ZERO; MAX_LAMPS],
-        };
-        p.apply_atmosphere(&Atmosphere::default(), 0.0);
-        p
-    }
-}
+/// The one storage buffer holding [`ToonGlobals`], shared by every [`ToonMaterial`].
+pub const TOON_GLOBALS: Handle<ShaderBuffer> = uuid_handle!("6b1f2c7e-4d0a-4e57-9a3c-2f5d8e1b7a90");
 
 fn lin(c: Color) -> Vec3 {
     let l = c.to_linear();
@@ -91,34 +59,95 @@ fn lin(c: Color) -> Vec3 {
 /// Lightning flash colour `#c9a8ff`.
 const FLASH: Color = Color::srgb(0xc9 as f32 / 255.0, 0xa8 as f32 / 255.0, 1.0);
 
-impl ToonParams {
-    /// Copies the frame's atmosphere into the uniform.
-    pub fn apply_atmosphere(&mut self, a: &Atmosphere, fog_start: f32) {
-        self.sun_dir = a.sun_dir.normalize_or(Vec3::Y);
-        self.sun_color = lin(a.sun_color) * a.sun_illuminance.max(0.0);
+/// Frame-wide toon lighting, uploaded once per frame (only when it changed) into
+/// [`TOON_GLOBALS`]. Layout mirrors `ToonGlobals` in `toon.wesl`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToonGlobals {
+    pub sun_dir: Vec3,
+    pub night: f32,
+    /// Linear sun colour × relative intensity.
+    pub sun_color: Vec3,
+    pub shadow_strength: f32,
+    /// Linear ambient × brightness, flash mixed in.
+    pub ambient: Vec3,
+    pub wetness: f32,
+    pub shadow_tint: Vec3,
+    pub fog_density: f32,
+    pub sky_color: Vec3,
+    pub height_fog: f32,
+    pub fog_color: Vec3,
+    pub fog_start: f32,
+    pub cloud_offset: Vec2,
+    pub cloud_cover: f32,
+    pub time: f32,
+    /// Overall multiplier on lit (non-emissive) colour: overcast/storm darken.
+    pub dim: f32,
+    pub lamps: Vec<Vec3>,
+}
+
+impl ToonGlobals {
+    pub fn from_atmosphere(a: &Atmosphere, fog_start: f32, lamps: &[Vec3]) -> Self {
         let flash = a.flash.clamp(0.0, 1.0);
-        self.ambient = (lin(a.ambient_color) * a.ambient_brightness).lerp(lin(FLASH) * 1.6, flash);
-        self.night = a.night.clamp(0.0, 1.0);
-        self.shadow_tint = lin(a.shadow_tint);
-        self.shadow_strength = a.shadow_strength.clamp(0.0, 1.0);
-        self.sky_color = lin(a.sky_color);
-        self.fog_density = a.fog_density.max(0.0);
-        self.fog_color = lin(a.fog_color);
-        self.height_fog = a.height_fog.max(0.0);
-        self.cloud_offset = a.cloud_offset;
-        self.cloud_cover = a.cloud_cover.clamp(0.0, 1.0);
-        self.wetness = a.wetness.clamp(0.0, 1.0);
-        self.time = a.time_secs;
-        self.fog_start = fog_start;
+        let night = a.night.clamp(0.0, 1.0);
+        let sun = a.sun_illuminance.max(0.0);
+        let cover = a.cloud_cover.clamp(0.0, 1.0);
+        // Daytime dim from weather: storm (sun 0.35) ~0.74, overcast (0.55) ~0.82.
+        let weather_dim = (0.6 + 0.4 * sun).clamp(0.6, 1.0) * (1.0 - 0.12 * cover);
+        Self {
+            sun_dir: a.sun_dir.normalize_or(Vec3::Y),
+            night,
+            sun_color: lin(a.sun_color) * sun,
+            shadow_strength: a.shadow_strength.clamp(0.0, 1.0),
+            ambient: (lin(a.ambient_color) * a.ambient_brightness.max(0.0)).lerp(lin(FLASH) * 1.6, flash),
+            wetness: a.wetness.clamp(0.0, 1.0),
+            shadow_tint: lin(a.shadow_tint),
+            fog_density: a.fog_density.max(0.0),
+            sky_color: lin(a.sky_color),
+            height_fog: a.height_fog.max(0.0),
+            fog_color: lin(a.fog_color),
+            fog_start,
+            cloud_offset: a.cloud_offset,
+            cloud_cover: cover,
+            time: a.time_secs,
+            dim: 1.0 + (weather_dim - 1.0) * (1.0 - night),
+            lamps: lamps.iter().take(MAX_LAMPS).copied().collect(),
+        }
+    }
+
+    /// Packed std430 layout: 8 header vec4s + `MAX_LAMPS` lamp vec4s (fixed size, so
+    /// the GPU buffer is rewritten in place).
+    pub fn to_vec4s(&self) -> Vec<[f32; 4]> {
+        let v = |a: Vec3, w: f32| [a.x, a.y, a.z, w];
+        let mut out = vec![
+            v(self.sun_dir, self.night),
+            v(self.sun_color, self.shadow_strength),
+            v(self.ambient, self.wetness),
+            v(self.shadow_tint, self.fog_density),
+            v(self.sky_color, self.height_fog),
+            v(self.fog_color, self.fog_start),
+            [self.cloud_offset.x, self.cloud_offset.y, self.cloud_cover, self.time],
+            [self.lamps.len().min(MAX_LAMPS) as f32, self.dim, 0.0, 0.0],
+        ];
+        out.extend((0..MAX_LAMPS).map(|i| self.lamps.get(i).map_or([0.0; 4], |p| v(*p, 1.0))));
+        out
     }
 }
 
 /// Cel-shaded material for voxel chunks and props. Lit by the (single) shadow-casting
-/// [`DirectionalLight`] spawned by the render plugin.
+/// [`DirectionalLight`] spawned by the render plugin; frame-wide lighting comes from the
+/// shared [`TOON_GLOBALS`] buffer (always set `globals: TOON_GLOBALS`).
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct ToonMaterial {
     #[uniform(0)]
     pub params: ToonParams,
+    #[storage(1, read_only)]
+    pub globals: Handle<ShaderBuffer>,
+}
+
+impl ToonMaterial {
+    pub fn new(params: ToonParams) -> Self {
+        Self { params, globals: TOON_GLOBALS }
+    }
 }
 
 impl Material for ToonMaterial {
@@ -145,15 +174,13 @@ pub struct VoxelMaterials {
 /// Meshes need POSITION and NORMAL only.
 pub fn toon_material(color: Color, emissive: Color, day: f32, night: f32) -> ToonMaterial {
     let c = color.to_linear();
-    ToonMaterial {
-        params: ToonParams {
-            base_color: Vec4::new(c.red, c.green, c.blue, 1.0),
-            emissive: lin(emissive).extend(1.0),
-            emissive_day: day,
-            emissive_night: night,
-            ..default()
-        },
-    }
+    ToonMaterial::new(ToonParams {
+        base_color: Vec4::new(c.red, c.green, c.blue, 1.0),
+        emissive: lin(emissive).extend(1.0),
+        emissive_day: day,
+        emissive_night: night,
+        ..default()
+    })
 }
 
 /// Flag value in UV_1.y marking water vertices.
@@ -219,28 +246,26 @@ pub fn voxel_mesh(
         .with_inserted_indices(Indices::U32(idx))
 }
 
-/// Keeps every [`ToonMaterial`]'s atmosphere fields in sync with [`Atmosphere`].
-pub(super) fn sync_materials(
+/// Uploads [`ToonGlobals`] into the shared buffer when anything changed.
+pub(super) fn sync_globals(
     atmos: Res<Atmosphere>,
-    mut materials: ResMut<Assets<ToonMaterial>>,
     fog_start: Res<super::FogStart>,
     lamps: Res<super::ActiveLamps>,
+    mut last: Local<Option<ToonGlobals>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
-    let ids: Vec<_> = materials.ids().collect();
-    for id in ids {
-        let Some(m) = materials.get(id) else { continue };
-        let mut p = m.params;
-        p.apply_atmosphere(&atmos, fog_start.0);
-        p.lamp_count = lamps.0.len().min(MAX_LAMPS) as u32;
-        for (dst, src) in p.lamps.iter_mut().zip(&lamps.0) {
-            *dst = src.extend(1.0);
-        }
-        if p != m.params
-            && let Some(mut m) = materials.get_mut(id)
-        {
-            m.params = p;
-        }
+    let g = ToonGlobals::from_atmosphere(&atmos, fog_start.0, &lamps.0);
+    if last.as_ref() == Some(&g) && buffers.contains(&TOON_GLOBALS) {
+        return;
     }
+    let data = g.to_vec4s();
+    if let Some(mut buf) = buffers.get_mut(&TOON_GLOBALS) {
+        buf.clear();
+        buf.extend(data);
+    } else {
+        let _ = buffers.insert(&TOON_GLOBALS, ShaderBuffer::from(data));
+    }
+    *last = Some(g);
 }
 
 #[cfg(test)]
@@ -260,6 +285,18 @@ mod tests {
         assert_eq!(uv1[0][0] as u32, 0x5cf0e0);
         assert_eq!(uv1[1][1], WATER_FLAG);
         assert_eq!(uv1[2], [0.0, 0.0]);
+    }
+
+    #[test]
+    fn globals_layout_is_fixed_size() {
+        let a = Atmosphere::default();
+        let g = ToonGlobals::from_atmosphere(&a, 10.0, &vec![Vec3::ONE; 50]);
+        let v = g.to_vec4s();
+        assert_eq!(v.len(), 8 + MAX_LAMPS);
+        assert_eq!(v[7][0], MAX_LAMPS as f32);
+        assert_eq!(v[5][3], 10.0);
+        assert_eq!(ToonGlobals::from_atmosphere(&a, 0.0, &[]).to_vec4s().len(), 8 + MAX_LAMPS);
+        assert!((g.dim - (0.6 + 0.4) * (1.0 - 0.12 * a.cloud_cover)).abs() < 1e-5);
     }
 
     #[test]

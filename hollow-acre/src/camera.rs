@@ -32,7 +32,14 @@ impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CameraRig>()
             .init_resource::<CursorRay>()
-            .add_systems(Update, (rig_input, apply_rig, update_cursor_ray).chain());
+            .add_systems(Update, (rig_input, apply_rig).chain())
+            // After propagation, so the ray matches the frame actually rendered.
+            .add_systems(
+                PostUpdate,
+                update_cursor_ray
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
+            );
     }
 }
 
@@ -114,7 +121,8 @@ impl CameraRig {
 }
 
 /// World-space ray from the mouse through the low-res camera, `None` when the cursor is
-/// outside the window. Updated every `Update`.
+/// outside the window. Updated in `PostUpdate` after transform propagation (read it in
+/// `Update`: it matches the last rendered frame).
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub struct CursorRay(pub Option<Ray3d>);
 
@@ -154,7 +162,8 @@ fn rig_input(
     if r.panning {
         // Window px -> world units on the view plane; screen-up maps to ground-forward
         // stretched by 1/sin(pitch).
-        let px_scale = low.as_deref().map_or(1.0, |l| l.scale.max(1e-3));
+        // Mouse motion is in physical px; one low-res px = `pixel_scale` physical px.
+        let px_scale = low.as_deref().map_or(1.0, |l| l.pixel_scale.max(1) as f32);
         let wu = t.view_height / target_height(low.as_deref()) / px_scale;
         let up_k = 1.0 / PITCH_DEG.to_radians().sin();
         t.focus += (-right * motion.delta.x + fwd * motion.delta.y * up_k) * wu;
@@ -243,7 +252,8 @@ fn apply_rig(
 
 /// World-space ray under `cursor` (window logical px) for the low-res game camera.
 pub fn cursor_ray(cursor: Vec2, low: &LowRes, camera: &Camera, cam_gt: &GlobalTransform) -> Option<Ray3d> {
-    let p = low.window_to_low_res(cursor)?;
+    // Ray through the centre of the low-res pixel under the cursor.
+    let p = low.window_to_low_res(cursor)?.floor() + 0.5;
     camera.viewport_to_world(cam_gt, p).ok()
 }
 

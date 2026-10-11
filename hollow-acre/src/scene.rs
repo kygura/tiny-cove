@@ -2,9 +2,9 @@
 //! committed document + ghost: regenerate, diff, remesh only dirty chunks.
 
 use crate::game::{DisplayedGrid, Ghost, MeshingDone, World};
-use crate::render::{VoxelMaterials, voxel_mesh};
+use crate::render::{LampLights, VoxelMaterials, voxel_mesh};
 use crate::shot::CliArgs;
-use acre_core::{CHUNKS_X, CHUNKS_Y, CHUNKS_Z, Document, History, generate, mesh_chunk};
+use acre_core::{CHUNKS_X, CHUNKS_Y, CHUNKS_Z, Document, History, SIZE_X, SIZE_Y, SIZE_Z, Voxel, VoxelGrid, generate, mesh_chunk, voxel_center};
 use bevy::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 
@@ -14,8 +14,15 @@ const REMESH_BUDGET: usize = 48;
 #[derive(Component)]
 pub struct ChunkMesh;
 
+/// The committed document's voxels (no ghost). Writer: `scene`. Used for picking.
+#[derive(Resource, Default)]
+pub struct CommittedGrid {
+    pub grid: VoxelGrid,
+}
+
 #[derive(Resource, Default)]
 struct SceneState {
+    committed: Option<Document>,
     /// Document currently shown in `DisplayedGrid`.
     shown: Option<Document>,
     pending: BTreeSet<[usize; 3]>,
@@ -33,21 +40,15 @@ impl Plugin for ScenePlugin {
             .unwrap_or_else(random_seed);
         app.insert_resource(World { history: History::new(Document::new(seed)) })
             .init_resource::<SceneState>()
-            .add_systems(Update, (new_world_key, sync_display, remesh).chain());
+            .init_resource::<CommittedGrid>()
+            .add_systems(Update, (sync_display, remesh).chain());
     }
 }
 
-fn random_seed() -> u64 {
+pub fn random_seed() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(1, |d| d.as_nanos() as u64 & 0xffff_ffff)
-}
-
-fn new_world_key(keys: Res<ButtonInput<KeyCode>>, mut world: ResMut<World>, mut ghost: ResMut<Ghost>) {
-    if keys.just_pressed(KeyCode::KeyN) && !keys.pressed(KeyCode::ControlLeft) {
-        world.history = History::new(Document::new(random_seed()));
-        *ghost = Ghost::default();
-    }
 }
 
 /// Committed doc plus the ghost edit.
@@ -71,6 +72,8 @@ fn sync_display(
     ghost: Res<Ghost>,
     mut state: ResMut<SceneState>,
     mut displayed: ResMut<DisplayedGrid>,
+    mut committed: ResMut<CommittedGrid>,
+    mut lamps: ResMut<LampLights>,
     mut done: ResMut<MeshingDone>,
 ) {
     if state.shown.is_some() && !world.is_changed() && !ghost.is_changed() {
@@ -80,7 +83,12 @@ fn sync_display(
     if state.shown.as_ref() == Some(&doc) {
         return;
     }
-    let grid = generate(&doc);
+    if state.committed.as_ref() != Some(world.history.doc()) {
+        committed.grid = generate(world.history.doc());
+        state.committed = Some(world.history.doc().clone());
+        lamps.0 = find_lamps(&committed.grid);
+    }
+    let grid = if ghost.add.is_none() && ghost.remove.is_empty() { committed.grid.clone() } else { generate(&doc) };
     let dirty = if state.shown.is_none() {
         all_chunks()
     } else {
@@ -91,6 +99,21 @@ fn sync_display(
     displayed.version += 1;
     state.shown = Some(doc);
     done.0 = false;
+}
+
+fn find_lamps(grid: &VoxelGrid) -> Vec<Vec3> {
+    let mut out = Vec::new();
+    for y in 0..SIZE_Y as i32 {
+        for z in 0..SIZE_Z as i32 {
+            for x in 0..SIZE_X as i32 {
+                if grid.get(x, y, z) == Voxel::Lamp {
+                    let c = voxel_center([x, y, z]);
+                    out.push(Vec3::new(c[0], c[1] + 0.25, c[2]));
+                }
+            }
+        }
+    }
+    out
 }
 
 fn all_chunks() -> Vec<[usize; 3]> {
@@ -120,7 +143,9 @@ fn remesh(
         }
         return;
     }
-    let batch: Vec<_> = state.pending.iter().take(REMESH_BUDGET).copied().collect();
+    // A full rebuild (new world) is meshed in one go; drags stay under the budget anyway.
+    let take = if state.pending.len() > 3 * REMESH_BUDGET { usize::MAX } else { REMESH_BUDGET };
+    let batch: Vec<_> = state.pending.iter().take(take).copied().collect();
     for c in batch {
         state.pending.remove(&c);
         if let Some(e) = state.entities.remove(&c) {

@@ -1,10 +1,12 @@
 //! Tool input: keys, picking, drag gestures, ghost preview, commit/undo/redo.
 //! The gesture state machine ([`Gesture`]) is pure so it can be tested without a window.
 
-use crate::camera::{CursorRay, pointer_over_ui};
+use crate::camera::{CursorRay, cursor_ray, pointer_over_ui};
+use crate::render::{GameCamera, LowRes};
+use crate::scene::{CommittedGrid, random_seed};
 use crate::game::{Ghost, Tool, ToolPhase, ToolState, UiCommand, World};
 use crate::render::{ToonMaterial, toon_material};
-use acre_core::{Document, Structure, VoxelGrid, generate, ground_height};
+use acre_core::{Document, History, Structure, VoxelGrid, ground_height};
 use bevy::light::NotShadowCaster;
 use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
@@ -18,6 +20,8 @@ pub const SIMPLIFY_EPS: f32 = 0.35;
 pub const RAZE_RADIUS: f32 = 1.5;
 /// Screen pixels of vertical mouse travel per extra floor.
 pub const PX_PER_FLOOR: f32 = 18.0;
+/// Max recorded stroke points before the stroke is thinned.
+const MAX_POINTS: usize = 256;
 const MIN_STROKE_LEN: f32 = 2.0;
 const MIN_RECT_SIDE: f32 = 2.0;
 const MAP_HALF: f32 = 48.0;
@@ -144,6 +148,8 @@ pub struct Gesture {
     floors: u8,
     rect: Option<(P2, P2)>,
     y0: f32,
+    /// Bumped on every visible change, so callers can skip recomputing the ghost.
+    rev: u64,
 }
 
 impl Gesture {
@@ -151,8 +157,22 @@ impl Gesture {
         self.phase
     }
 
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
     pub fn cancel(&mut self) {
-        *self = Gesture::default();
+        let rev = self.rev + 1;
+        *self = Gesture { rev, ..Gesture::default() };
+    }
+
+    /// Sets the rectangle of a Field/Block drag directly (screen-rect projected to the ground).
+    pub fn set_rect(&mut self, min: P2, max: P2) {
+        if self.phase == ToolPhase::Dragging && (self.pts[0] != min || self.cur != max) {
+            self.pts = vec![min];
+            self.cur = max;
+            self.rev += 1;
+        }
     }
 
     /// Left button pressed on ground point `p` at screen height `y_px`. May commit at once (Spire, Block confirm).
@@ -171,6 +191,7 @@ impl Gesture {
                 self.pts = vec![p];
                 self.cur = p;
                 self.y0 = y_px;
+                self.rev += 1;
                 if c.tool == Tool::Raze {
                     self.raze_at(c, p);
                 }
@@ -185,11 +206,23 @@ impl Gesture {
             return;
         }
         let p = clamp_pt(p);
+        if p == self.cur && c.tool != Tool::Raze {
+            return;
+        }
         self.cur = p;
+        self.rev += 1;
         match c.tool {
             Tool::Wall | Tool::Path => {
                 if self.pts.last().is_none_or(|&l| dist(l, p) >= POINT_SPACING) {
                     self.pts.push(p);
+                    if self.pts.len() >= MAX_POINTS {
+                        self.pts = simplify(&self.pts, SIMPLIFY_EPS);
+                        if self.pts.len() >= MAX_POINTS * 3 / 4 {
+                            let last = self.pts[self.pts.len() - 1];
+                            self.pts = self.pts.iter().step_by(2).copied().collect();
+                            self.pts.push(last);
+                        }
+                    }
                 }
             }
             Tool::Raze => {
@@ -211,6 +244,7 @@ impl Gesture {
         for (i, s) in c.doc.structures.iter().enumerate() {
             if !self.hits.contains(&i) && s.touches(p, RAZE_RADIUS) {
                 self.hits.push(i);
+                self.rev += 1;
             }
         }
     }
@@ -222,7 +256,7 @@ impl Gesture {
         }
         let out = match c.tool {
             Tool::Wall | Tool::Path => self.stroke_structure(c).map(Commit::Add),
-            Tool::Field => self.rect_structure(c).map(Commit::Add),
+            Tool::Field => self.rect_structure().map(Commit::Add),
             Tool::Raze => (!self.hits.is_empty()).then(|| Commit::Remove(std::mem::take(&mut self.hits))),
             Tool::Block => {
                 if let Some(r) = rect_from_drag(self.pts[0], self.cur, MIN_RECT_SIDE * 1.5) {
@@ -243,7 +277,11 @@ impl Gesture {
     /// Mouse y (screen px) while raising.
     pub fn raise(&mut self, y_px: f32) {
         if self.phase == ToolPhase::Raising {
-            self.floors = floors_from_drag(y_px - self.y0);
+            let f = floors_from_drag(y_px - self.y0);
+            if f != self.floors {
+                self.floors = f;
+                self.rev += 1;
+            }
         }
     }
 
@@ -267,7 +305,7 @@ impl Gesture {
         Some(if c.tool == Tool::Wall { Structure::Wall { path, tall: c.tall } } else { Structure::Path { path } })
     }
 
-    fn rect_structure(&self, _c: &Ctx) -> Option<Structure> {
+    fn rect_structure(&self) -> Option<Structure> {
         rect_from_drag(self.pts[0], self.cur, MIN_RECT_SIDE).map(|(min, max)| Structure::Field { min, max })
     }
 
@@ -281,7 +319,7 @@ impl Gesture {
             (ToolPhase::Idle, _) => Ghost::default(),
             (ToolPhase::Raising, _) => Ghost { add: self.block_structure(), remove: vec![] },
             (_, Tool::Wall | Tool::Path) => Ghost { add: self.stroke_structure(c), remove: vec![] },
-            (_, Tool::Field) => Ghost { add: self.rect_structure(c), remove: vec![] },
+            (_, Tool::Field) => Ghost { add: self.rect_structure(), remove: vec![] },
             (_, Tool::Block) => Ghost {
                 add: rect_from_drag(self.pts[0], self.cur, MIN_RECT_SIDE * 1.5)
                     .map(|(min, max)| Structure::Block { min, max, floors: 1 }),
@@ -316,13 +354,6 @@ pub fn apply_commit(world: &mut World, commit: Commit) {
 
 // ------------------------------------------------------------------ Bevy systems
 
-/// Committed-world voxels for picking (the displayed grid contains the ghost).
-#[derive(Resource, Default)]
-struct PickGrid {
-    doc: Option<Document>,
-    grid: VoxelGrid,
-}
-
 #[derive(Component)]
 struct CursorMarker;
 
@@ -338,9 +369,8 @@ impl Plugin for ToolsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Gesture>()
             .init_resource::<GroundCursor>()
-            .init_resource::<PickGrid>()
             .add_systems(Startup, spawn_marker)
-            .add_systems(Update, (keys_and_commands, refresh_pick_grid, pointer, update_marker).chain());
+            .add_systems(Update, (keys_and_commands, pointer, update_marker).chain());
     }
 }
 
@@ -372,7 +402,7 @@ fn keys_and_commands(
     mut gesture: ResMut<Gesture>,
     mut ghost: ResMut<Ghost>,
 ) {
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     state.tall = shift;
     let mut select = None;
@@ -407,6 +437,10 @@ fn keys_and_commands(
         }
     }
     let mut cancel = keys.just_pressed(KeyCode::Escape);
+    if !ctrl && keys.just_pressed(KeyCode::KeyN) {
+        world.history = History::new(Document::new(random_seed()));
+        cancel = true;
+    }
     if let Some(t) = select {
         state.tool = t;
         cancel = true;
@@ -428,75 +462,103 @@ fn keys_and_commands(
     }
 }
 
-fn refresh_pick_grid(world: Res<World>, mut pick: ResMut<PickGrid>) {
-    if pick.doc.as_ref() != Some(world.history.doc()) {
-        pick.grid = generate(world.history.doc());
-        pick.doc = Some(world.history.doc().clone());
-    }
-}
-
 /// Ground point under the cursor, `None` over UI or off-map.
 #[derive(Resource, Default)]
 pub struct GroundCursor(pub Option<Vec3>);
+
+type GameCam<'w, 's> = Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<GameCamera>>;
 
 #[allow(clippy::too_many_arguments)]
 fn pointer(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     ray: Res<CursorRay>,
-    pick: Res<PickGrid>,
+    pick: Res<CommittedGrid>,
     window: Query<&Window, With<PrimaryWindow>>,
-    hover: Option<Res<HoverMap>>,
-    nodes: Query<(), With<Node>>,
+    (hover, nodes): (Option<Res<HoverMap>>, Query<(), With<Node>>),
+    (low, cam): (Option<Res<LowRes>>, GameCam),
     mut state: ResMut<ToolState>,
     mut world: ResMut<World>,
     mut gesture: ResMut<Gesture>,
     mut ghost: ResMut<Ghost>,
     mut cursor: ResMut<GroundCursor>,
+    (mut last_y, mut right_down, mut screen0, mut last_rev): (Local<f32>, Local<Option<Vec2>>, Local<Vec2>, Local<u64>),
 ) {
     let over_ui = pointer_over_ui(hover.as_deref(), &nodes);
     let ground = if over_ui { None } else { ray.0.and_then(|r| pick_ground(&pick.grid, r)) };
     cursor.0 = ground;
-    let y_px = window.single().ok().and_then(|w| w.cursor_position()).map_or(0.0, |c| c.y);
-    let doc = world.history.doc().clone();
-    let ctx = Ctx { tool: state.tool, tall: state.tall, spire_kind: state.spire_kind, doc: &doc };
-    let mut commit = None;
+    let cursor_px = window.single().ok().and_then(|w| w.cursor_position());
+    if let Some(c) = cursor_px {
+        *last_y = c.y;
+    }
+    let y_px = *last_y;
 
-    if gesture.phase() != ToolPhase::Idle && mouse.just_pressed(MouseButton::Right) {
-        gesture.cancel();
-    } else if gesture.phase() == ToolPhase::Raising {
-        gesture.raise(y_px);
-        if mouse.just_pressed(MouseButton::Left) && !over_ui {
-            commit = gesture.press(&ctx, [0.0, 0.0], y_px);
-        }
-    } else {
-        let p = ground.map(|g| [g.x, g.z]);
-        if mouse.just_pressed(MouseButton::Left)
-            && !keys.pressed(KeyCode::AltLeft)
-            && let Some(p) = p
-        {
-            commit = gesture.press(&ctx, p, y_px);
-        } else if gesture.phase() == ToolPhase::Dragging {
-            if mouse.pressed(MouseButton::Left)
+    // Right click cancels only when released without moving (otherwise it was an orbit).
+    if mouse.just_pressed(MouseButton::Right) {
+        *right_down = cursor_px;
+    }
+    let right_click = mouse.just_released(MouseButton::Right)
+        && matches!((*right_down, cursor_px), (Some(a), Some(b)) if a.distance(b) < 6.0);
+
+    let (mut commit, new_ghost) = {
+        let doc = world.history.doc();
+        let ctx = Ctx { tool: state.tool, tall: state.tall, spire_kind: state.spire_kind, doc };
+        let mut commit = None;
+        if gesture.phase() != ToolPhase::Idle && right_click {
+            gesture.cancel();
+        } else if gesture.phase() == ToolPhase::Raising {
+            gesture.raise(y_px);
+            if mouse.just_pressed(MouseButton::Left) && !over_ui {
+                commit = gesture.press(&ctx, [0.0, 0.0], y_px);
+            }
+        } else {
+            let p = ground.map(|g| [g.x, g.z]);
+            if mouse.just_pressed(MouseButton::Left)
+                && !keys.pressed(KeyCode::AltLeft)
                 && let Some(p) = p
             {
-                gesture.drag(&ctx, p);
+                commit = gesture.press(&ctx, p, y_px);
+                *screen0 = cursor_px.unwrap_or_default();
             }
-            if mouse.just_released(MouseButton::Left) {
-                commit = gesture.release(&ctx, y_px);
+            if gesture.phase() == ToolPhase::Dragging && commit.is_none() {
+                if mouse.pressed(MouseButton::Left) {
+                    let rect_tool = matches!(ctx.tool, Tool::Field | Tool::Block);
+                    let corners = (|| {
+                        let (low, (camera, gt), now) = (low.as_deref()?, cam.single().ok()?, cursor_px?);
+                        let at = |c: Vec2| cursor_ray(c, low, camera, gt).and_then(|r| pick_ground(&pick.grid, r));
+                        let s = *screen0;
+                        let pts = [at(s)?, at(now)?, at(Vec2::new(s.x, now.y))?, at(Vec2::new(now.x, s.y))?];
+                        let lo = pts.iter().fold([f32::MAX; 2], |m, p| [m[0].min(p.x), m[1].min(p.z)]);
+                        let hi = pts.iter().fold([f32::MIN; 2], |m, p| [m[0].max(p.x), m[1].max(p.z)]);
+                        Some((clamp_pt(lo), clamp_pt(hi)))
+                    })();
+                    match (rect_tool, corners, p) {
+                        (true, Some((lo, hi)), _) => gesture.set_rect(lo, hi),
+                        (_, _, Some(p)) => gesture.drag(&ctx, p),
+                        _ => {}
+                    }
+                }
+                if !mouse.pressed(MouseButton::Left) {
+                    commit = gesture.release(&ctx, y_px);
+                }
             }
         }
-    }
+        let g = (gesture.rev() != *last_rev).then(|| gesture.ghost(&ctx));
+        *last_rev = gesture.rev();
+        (commit, g)
+    };
 
-    let new_ghost = gesture.ghost(&ctx);
-    if let Some(c) = commit {
+    if let Some(c) = commit.take() {
         apply_commit(&mut world, c);
         gesture.cancel();
+        *last_rev = gesture.rev();
         if *ghost != Ghost::default() {
             *ghost = Ghost::default();
         }
-    } else if *ghost != new_ghost {
-        *ghost = new_ghost;
+    } else if let Some(g) = new_ghost
+        && *ghost != g
+    {
+        *ghost = g;
     }
     if state.phase != gesture.phase() {
         state.phase = gesture.phase();
@@ -506,7 +568,7 @@ fn pointer(
 fn update_marker(
     ground: Res<GroundCursor>,
     state: Res<ToolState>,
-    pick: Res<PickGrid>,
+    pick: Res<CommittedGrid>,
     mats: Option<Res<MarkerMats>>,
     mut q: Query<(&mut Transform, &mut Visibility, &mut MeshMaterial3d<ToonMaterial>), With<CursorMarker>>,
 ) {
@@ -530,6 +592,7 @@ fn update_marker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acre_core::generate;
 
     fn ctx<'a>(tool: Tool, doc: &'a Document) -> Ctx<'a> {
         Ctx { tool, tall: false, spire_kind: 1, doc }
@@ -641,6 +704,28 @@ mod tests {
         let mut world = World { history: acre_core::History::new(doc) };
         apply_commit(&mut world, Commit::Remove(vec![0, 2]));
         assert_eq!(world.history.doc().structures.len(), 1);
+    }
+
+    #[test]
+    fn raze_click_commits_same_frame() {
+        let doc = Document { seed: 1, structures: vec![Structure::Spire { at: [0.0, 0.0], kind: 0 }] };
+        let c = ctx(Tool::Raze, &doc);
+        let mut g = Gesture::default();
+        assert!(g.press(&c, [0.5, 0.0], 0.0).is_none());
+        assert_eq!(g.release(&c, 0.0), Some(Commit::Remove(vec![0])));
+    }
+
+    #[test]
+    fn stroke_points_are_capped() {
+        let doc = Document::new(1);
+        let c = ctx(Tool::Wall, &doc);
+        let mut g = Gesture::default();
+        g.press(&c, [-40.0, 0.0], 0.0);
+        for i in 0..2000 {
+            let t = i as f32 * 0.8;
+            g.drag(&c, [-40.0 + (t * 0.05).cos() * 3.0 + t * 0.02, (t * 0.7).sin() * 30.0]);
+        }
+        assert!(g.pts.len() <= MAX_POINTS);
     }
 
     #[test]

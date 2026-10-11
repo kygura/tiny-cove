@@ -19,7 +19,7 @@ pub mod toon;
 
 pub use atmosphere::{AtmosPreset, Atmosphere, AtmosphereDriven};
 pub use outline::OutlineSettings;
-pub use toon::{MAX_LAMPS, ToonMaterial, ToonParams, VoxelMaterials, toon_material, voxel_mesh};
+pub use toon::{MAX_LAMPS, TOON_GLOBALS, ToonGlobals, ToonMaterial, ToonParams, VoxelMaterials, toon_material, voxel_mesh};
 
 use bevy::{
     camera::{Hdr, RenderTarget, ScalingMode},
@@ -31,6 +31,7 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::{Extent3d, TextureFormat},
+        storage::ShaderBuffer,
         view::{DebandDither, Tonemapping},
     },
     window::PrimaryWindow,
@@ -57,6 +58,8 @@ pub struct LowRes {
     pub offset: Vec2,
     /// Logical window px per low-res pixel (integer in physical px).
     pub scale: f32,
+    /// Physical window px per low-res pixel.
+    pub pixel_scale: u32,
 }
 
 impl LowRes {
@@ -97,22 +100,34 @@ pub struct LampLights(pub Vec<Vec3>);
 #[derive(Resource, Clone, Default, PartialEq)]
 pub struct ActiveLamps(pub Vec<Vec3>);
 
+/// Picks the [`MAX_LAMPS`] lamps nearest the view axis; recomputed only when the lamp
+/// list, the camera or day/night changes.
 fn pick_lamps(
     lamps: Res<LampLights>,
     atmos: Res<Atmosphere>,
     cam: Query<&GlobalTransform, With<GameCamera>>,
     mut active: ResMut<ActiveLamps>,
+    mut last: Local<Option<(Vec3, Vec3, bool)>>,
+    mut scratch: Local<Vec<(f32, Vec3)>>,
 ) {
+    let night = atmos.night > 0.0;
+    let Ok(gt) = cam.single() else { return };
+    let (origin, fwd) = (gt.translation(), gt.forward().as_vec3());
+    let key = Some((origin, fwd, night));
+    if !lamps.is_changed() && *last == key {
+        return;
+    }
+    *last = key;
     let mut pick = Vec::new();
-    if atmos.night > 0.0
-        && let Ok(gt) = cam.single()
-    {
+    if night {
         // Distance to the camera's view axis = distance from the view centre on screen.
-        let (origin, fwd) = (gt.translation(), gt.forward().as_vec3());
-        let off_axis = |p: &Vec3| (*p - origin).reject_from_normalized(fwd).length_squared();
-        pick = lamps.0.clone();
-        pick.sort_by(|a, b| off_axis(a).total_cmp(&off_axis(b)));
-        pick.truncate(MAX_LAMPS);
+        scratch.clear();
+        scratch.extend(lamps.0.iter().map(|&p| ((p - origin).reject_from_normalized(fwd).length_squared(), p)));
+        if scratch.len() > MAX_LAMPS {
+            scratch.select_nth_unstable_by(MAX_LAMPS - 1, |a, b| a.0.total_cmp(&b.0));
+            scratch.truncate(MAX_LAMPS);
+        }
+        pick.extend(scratch.iter().map(|&(_, p)| p));
     }
     if active.0 != pick {
         active.0 = pick;
@@ -152,7 +167,14 @@ impl Plugin for ToonRenderPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (fit_to_window, apply_atmosphere, pick_lamps, toon::sync_materials).chain(),
+                (fit_to_window, apply_atmosphere, pick_lamps, toon::sync_globals).chain(),
+            )
+            .add_systems(
+                PostUpdate,
+                update_outline_settings
+                    .after(apply_atmosphere)
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
             );
     }
 }
@@ -173,13 +195,14 @@ fn window_layout(window: Option<&Window>) -> LowRes {
         (w.physical_size().as_vec2(), w.scale_factor())
     });
     let (size, scale) = fill_layout(phys);
-    LowRes { size, offset: Vec2::ZERO, scale: scale as f32 / sf }
+    LowRes { size, offset: Vec2::ZERO, scale: scale as f32 / sf, pixel_scale: scale }
 }
 
 fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<ToonMaterial>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
     let low = window_layout(window.single().ok());
@@ -188,8 +211,10 @@ fn setup(
     let target = images.add(target);
 
     let atmos = Atmosphere::default();
-    let opaque = materials.add(ToonMaterial { params: ToonParams::default() });
-    let water = materials.add(ToonMaterial { params: ToonParams { mode: 1, ..default() } });
+    let globals = ToonGlobals::from_atmosphere(&atmos, fog_start_for(36.0), &[]);
+    let _ = buffers.insert(&TOON_GLOBALS, ShaderBuffer::from(globals.to_vec4s()));
+    let opaque = materials.add(ToonMaterial::new(ToonParams::default()));
+    let water = materials.add(ToonMaterial::new(ToonParams { mode: 1, ..default() }));
     commands.insert_resource(VoxelMaterials { opaque, water });
     commands.insert_resource(low);
     commands.insert_resource(LowResTarget(target.clone()));
@@ -211,7 +236,7 @@ fn setup(
         DebandDither::Disabled,
         (DepthPrepass, NormalPrepass, ShadowFilteringMethod::Hardware2x2),
         Bloom {
-            intensity: 0.22,
+            intensity: 0.5,
             low_frequency_boost: 0.4,
             prefilter: BloomPrefilter { threshold: 1.0, threshold_softness: 0.2 },
             composite_mode: BloomCompositeMode::Additive,
@@ -282,6 +307,10 @@ fn fit_to_window(
     mut display: Query<&mut Node, With<LowResDisplay>>,
 ) {
     let Ok(window) = window.single() else { return };
+    // Minimised / zero-size window: keep the last layout.
+    if window.physical_width() == 0 || window.physical_height() == 0 {
+        return;
+    }
     let new = window_layout(Some(window));
     if new == *low {
         return;
@@ -301,7 +330,7 @@ fn apply_atmosphere(
     atmos: Res<Atmosphere>,
     mut fog_start: ResMut<FogStart>,
     mut sun: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
-    mut cam: Query<(&mut Camera, &Projection, &mut OutlineSettings), With<GameCamera>>,
+    mut cam: Query<(&mut Camera, &Projection), With<GameCamera>>,
 ) {
     for (mut light, mut tf) in &mut sun {
         let dir = atmos.sun_dir.normalize_or(Vec3::Y);
@@ -312,7 +341,7 @@ fn apply_atmosphere(
         light.color = atmos.sun_color;
         light.illuminance = atmos.sun_illuminance.max(0.0) * light_consts::lux::AMBIENT_DAYLIGHT;
     }
-    for (mut camera, projection, mut outline) in &mut cam {
+    for (mut camera, projection) in &mut cam {
         let flash = atmos.flash.clamp(0.0, 1.0);
         let sky = atmos.sky_color.mix(&FLASH_SKY, flash);
         camera.clear_color = ClearColorConfig::Custom(sky);
@@ -323,11 +352,34 @@ fn apply_atmosphere(
             },
             _ => 36.0,
         };
-        fog_start.0 = CAMERA_DISTANCE - view_height * 0.3;
-        outline.time = atmos.time_secs;
-        outline.sparkle = if atmos.sun_illuminance > 0.5 && atmos.night < 0.5 { 1.0 } else { 0.0 };
-        outline.rain = atmos.wetness.clamp(0.0, 1.0);
-        outline.night = atmos.night.clamp(0.0, 1.0);
+        fog_start.0 = fog_start_for(view_height);
+    }
+}
+
+/// Fog starts at the front of the visible scene: ground at the bottom screen edge sits
+/// `0.71 × view height` nearer than the focus at 35° pitch, plus a margin for height.
+pub fn fog_start_for(view_height: f32) -> f32 {
+    CAMERA_DISTANCE - view_height * 0.71 - 6.0
+}
+
+/// Outline settings need the final camera matrices, so this runs after transform
+/// propagation and camera updates.
+fn update_outline_settings(
+    atmos: Res<Atmosphere>,
+    fog_start: Res<FogStart>,
+    mut cam: Query<(&Camera, &GlobalTransform, &mut OutlineSettings), With<GameCamera>>,
+) {
+    for (camera, gt, mut outline) in &mut cam {
+        let mut o = *outline;
+        o.time = atmos.time_secs;
+        o.sparkle = if atmos.sun_illuminance > 0.5 && atmos.night < 0.5 { 1.0 } else { 0.0 };
+        o.rain = atmos.wetness.clamp(0.0, 1.0);
+        o.night = atmos.night.clamp(0.0, 1.0);
+        o.fog = Vec4::new(atmos.fog_density.max(0.0), atmos.height_fog.max(0.0), fog_start.0, CAMERA_NEAR);
+        o.world_from_clip = gt.to_matrix() * camera.clip_from_view().inverse();
+        if o != *outline {
+            *outline = o;
+        }
     }
 }
 
@@ -350,7 +402,7 @@ mod tests {
 
     #[test]
     fn cursor_mapping_follows_scale() {
-        let low = LowRes { size: UVec2::new(427, 240), offset: Vec2::ZERO, scale: 3.0 };
+        let low = LowRes { size: UVec2::new(427, 240), offset: Vec2::ZERO, scale: 3.0, pixel_scale: 3 };
         assert_eq!(low.window_to_low_res(Vec2::new(-1.0, 10.0)), None);
         assert_eq!(low.window_to_low_res(Vec2::ZERO), Some(Vec2::ZERO));
         assert_eq!(low.window_to_low_res(Vec2::new(6.0, 9.0)), Some(Vec2::new(2.0, 3.0)));

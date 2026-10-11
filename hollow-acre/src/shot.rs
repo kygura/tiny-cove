@@ -26,7 +26,7 @@ impl CliArgs {
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> (Self, Vec<String>) {
         let mut out = Self::default();
         let mut warnings = Vec::new();
-        let mut it = args.into_iter();
+        let mut it = args.into_iter().peekable();
         while let Some(arg) = it.next() {
             let (key, inline) = match arg.split_once('=') {
                 Some((k, v)) if k.starts_with("--") => (k.to_string(), Some(v.to_string())),
@@ -37,13 +37,15 @@ impl CliArgs {
                 warnings.push(format!("unknown argument `{arg}`"));
                 continue;
             }
-            let Some(value) = inline.or_else(|| it.next()) else {
+            // A following `--option` is never taken as this option's value.
+            let next_is_value = it.peek().is_some_and(|v| !v.starts_with("--"));
+            let Some(value) = inline.or_else(|| if next_is_value { it.next() } else { None }) else {
                 warnings.push(format!("`{key}` needs a value"));
                 continue;
             };
             match key.as_str() {
                 "--demo-shot" => {
-                    if value.trim().is_empty() || value.starts_with("--") {
+                    if value.trim().is_empty() {
                         warnings.push(format!("`--demo-shot` needs a file path, got `{value}`"));
                     } else {
                         out.demo_shot = Some(PathBuf::from(value));
@@ -93,6 +95,7 @@ pub struct DemoShot {
     pub settle_frames: u32,
     pub hold: bool,
     frames: u32,
+    held: u32,
     requested: bool,
 }
 
@@ -100,6 +103,8 @@ pub struct DemoShot {
 pub const DEMO_SETTLE_FRAMES: u32 = 90;
 /// Exit with an error if the capture hasn't been written this many frames after settling.
 const DEMO_TIMEOUT_FRAMES: u32 = 600;
+/// Capture anyway (with a warning) after `hold` has been set this many frames.
+const DEMO_HOLD_TIMEOUT_FRAMES: u32 = 600;
 
 pub struct ShotPlugin;
 
@@ -115,6 +120,7 @@ impl Plugin for ShotPlugin {
                 settle_frames: DEMO_SETTLE_FRAMES,
                 hold: false,
                 frames: 0,
+                held: 0,
                 requested: false,
             })
             .add_systems(Last, demo_shot);
@@ -162,13 +168,18 @@ fn screenshot_on_f12(mut commands: Commands, keys: Res<ButtonInput<KeyCode>>) {
 }
 
 fn demo_shot(mut commands: Commands, mut shot: ResMut<DemoShot>, mut exit: MessageWriter<AppExit>) {
-    if shot.hold {
+    if shot.hold && shot.held < DEMO_HOLD_TIMEOUT_FRAMES {
+        shot.held += 1;
+        if shot.held == DEMO_HOLD_TIMEOUT_FRAMES {
+            warn!("demo shot: scene still holding after {DEMO_HOLD_TIMEOUT_FRAMES} frames; capturing anyway");
+        }
         return;
     }
     shot.frames += 1;
-    if shot.frames == shot.settle_frames + DEMO_TIMEOUT_FRAMES {
+    if shot.frames >= shot.settle_frames + DEMO_TIMEOUT_FRAMES {
         error!("demo shot: screenshot never arrived");
         exit.write(AppExit::error());
+        return;
     }
     if shot.frames >= shot.settle_frames && !shot.requested {
         shot.requested = true;
@@ -215,6 +226,14 @@ mod tests {
         let (a, w) = parse("--time 25 --seed -1 --bogus --atmos x --demo-shot");
         assert_eq!(a, CliArgs::default());
         assert_eq!(w.len(), 5, "{w:?}");
+    }
+
+    #[test]
+    fn option_is_not_a_value() {
+        let (a, w) = parse("--demo-shot --seed 3");
+        assert_eq!(a.demo_shot, None);
+        assert_eq!(a.seed, Some(3));
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 
     #[test]
