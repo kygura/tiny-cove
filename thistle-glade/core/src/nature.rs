@@ -251,7 +251,7 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
             let (e, r) = (0.75, 2.95);
             let (a0, a1, b0, b1) = (V(-1.1, 2.3, -e), V(1.1, 2.3, -e), V(-1.1, r, 0.0), V(1.1, r, 0.0));
             m.quad(a1, a0, b0, b1, rc, Surface::RoofTile, 1.0);
-            m.quad(V(-1.1, 2.3, e), V(-1.1, r, 0.0), V(1.1, r, 0.0), V(1.1, 2.3, e), rc, Surface::RoofTile, 1.0);
+            m.quad(V(1.1, 2.3, e), V(1.1, r, 0.0), V(-1.1, r, 0.0), V(-1.1, 2.3, e), rc, Surface::RoofTile, 1.0);
             tri2(&mut m, V(-1.1, 2.3, -e), V(-1.1, r, 0.0), V(-1.1, 2.3, e), trim, Surface::Timber);
             tri2(&mut m, V(1.1, 2.3, -e), V(1.1, 2.3, e), V(1.1, r, 0.0), trim, Surface::Timber);
             m.aabb(V(-0.01, 1.7, -0.01), V(0.01, 2.2, 0.01), palette::white() * 0.7, Surface::Fiber, 1.0);
@@ -630,6 +630,18 @@ mod tests {
             };
             let top = m.bounds().unwrap().1.y - terrain().height(Vec2::new(3.0, -2.0));
             assert!(top > lo && top < hi, "{k:?} height {top}");
+        }
+    }
+
+    #[test]
+    fn well_roof_slopes_face_up_and_out() {
+        let (m, _) = put(PropKind::Clutter(ClutterKind::Well), 1.0);
+        let at = Vec2::new(3.0, -2.0);
+        let base = terrain().height(at);
+        for (p, n) in m.positions.iter().zip(&m.normals).zip(&m.surfaces).filter(|(_, s)| **s == Surface::RoofTile as u8).map(|(pn, _)| pn) {
+            let local_z = p[2] - at.y;
+            assert!(n[1] > 0.3, "roof normal points down: {n:?} at {p:?}");
+            assert!(n[2] * local_z >= -1e-3, "roof normal points inward: {n:?} at {p:?} (base {base})");
         }
     }
 
