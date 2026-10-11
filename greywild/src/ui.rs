@@ -36,12 +36,15 @@ const SODIUM: Color = hex(0xE8A33C);
 const DIS_TXT: Color = hex(0x6E6F69);
 const DIS_BG: Color = hex(0x3A3B37);
 
-/// Swatch palettes (DESIGN 2.3): hex plus name, by slot (0 roof, 1 concrete, 2 accent).
-const PALETTES: [&[(u32, &str)]; 3] = [
-    &[(0x6A8A3E, "Sedum"), (0x9A8F4E, "Dry sedum"), (0x5FA08C, "Verdigris"), (0x8C9499, "Zinc"), (0xA3A29C, "Concrete"), (0x3E403F, "Bitumen")],
-    &[(0xC9C6BD, "Pale board-form"), (0xA09F99, "Mid grey"), (0xC4B396, "Sand"), (0x5A5B57, "Charcoal"), (0xE4E1D8, "Lime white")],
-    &[(0x9C4A26, "Corten rust"), (0x4F8F7E, "Oxidised copper"), (0x2B2D2E, "Black steel"), (0xE2B227, "Safety yellow"), (0xB9603F, "Terracotta")],
-];
+/// Swatch palettes (DESIGN 2.3), by slot (0 roof, 1 concrete, 2 accent); tables live in core.
+fn palette(slot: u8) -> &'static [(&'static str, u32)] {
+    use greywild_core::palette::{ACCENT_SWATCHES, CONCRETE_SWATCHES, ROOF_SWATCHES};
+    match slot {
+        0 => &ROOF_SWATCHES,
+        1 => &CONCRETE_SWATCHES,
+        _ => &ACCENT_SWATCHES,
+    }
+}
 
 fn color_get(c: &Colors, slot: u8) -> u8 {
     [c.roof, c.wall, c.trim][slot as usize]
@@ -436,7 +439,7 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
         C::Sw(slot, label, en) => {
             r.spawn(row(0)).with_children(|g| {
                 g.spawn((txt(*label, 10.0, DIM), Node { margin: UiRect::right(px(4)), ..default() }));
-                for (i, (h, name)) in PALETTES[*slot as usize].iter().enumerate() {
+                for (i, (name, h)) in palette(*slot).iter().enumerate() {
                     g.spawn((
                         button(Node { width: px(32), height: px(32), padding: UiRect::all(px(4)), border: UiRect::all(px(2)), ..default() }, Action::Color(*slot, i as u8)),
                         Cond { sel: yes, en: *en },
@@ -474,15 +477,16 @@ fn rebuild_strip(mut commands: Commands, s: Res<ToolSettings>, ids: Res<Ids>, mu
     commands.entity(ids.strip_body).despawn_children().with_children(|p| fill_strip(p, tool));
 }
 
-fn rebuild_hints(mut commands: Commands, s: Res<ToolSettings>, ids: Res<Ids>, mut cur: Local<Option<Tool>>) {
-    if *cur == Some(s.tool) {
+fn rebuild_hints(mut commands: Commands, s: Res<ToolSettings>, status: Res<ToolStatus>, ids: Res<Ids>, mut cur: Local<Option<(Tool, bool)>>) {
+    let drawing = status.drawing;
+    if *cur == Some((s.tool, drawing)) {
         return;
     }
-    *cur = Some(s.tool);
+    *cur = Some((s.tool, drawing));
     let tool = s.tool;
     commands.entity(ids.hint_list).despawn_children().with_children(|p| {
         p.spawn(txt(tool.label(), 12.0, CHALK));
-        for (key, desc) in strip::hints(tool) {
+        for (key, desc) in strip::hints(tool).iter().filter(|(k, _)| !(drawing && *k == "DRAG")) {
             p.spawn(row(6)).with_children(|r| {
                 r.spawn((Node { padding: UiRect::axes(px(4), px(2)), flex_shrink: 0.0, ..default() }, BackgroundColor(DEEP))).with_children(|c| {
                     c.spawn(txt(*key, 10.0, CHALK));
@@ -619,11 +623,11 @@ fn sliders(
     }
 }
 
-fn sync_btn(s: Res<ToolSettings>, w: Res<Weather>, clock: Res<Clock>, glade: Res<Glade>, mut q: Query<(&Action, Option<&Cond>, &mut Btn)>) {
+fn sync_btn(s: Res<ToolSettings>, status: Res<ToolStatus>, w: Res<Weather>, clock: Res<Clock>, glade: Res<Glade>, mut q: Query<(&Action, Option<&Cond>, &mut Btn)>) {
     for (a, c, mut b) in &mut q {
         let (sel, en, now) = match *a {
             Action::Set(_) => c.map_or((false, true, false), |c| ((c.sel)(&s), (c.en)(&s), false)),
-            Action::Tool(t) => (s.tool == t, true, false),
+            Action::Tool(t) => (s.tool == t, !status.drawing || s.tool == t, false),
             Action::Clutter(k) => (s.clutter == k, true, false),
             Action::Color(slot, i) => (color_get(&s.colors, slot) == i, c.is_none_or(|c| (c.en)(&s)), false),
             Action::Weather(k) => (!w.auto && w.kind == k, true, w.auto && w.kind == k),
@@ -691,11 +695,16 @@ fn set_text(texts: &mut Query<&mut Text>, e: Entity, s: String) {
 }
 
 fn place(nodes: &mut Query<&mut Node>, fill: Entity, knob: Entity, f: f32) {
-    if let Ok(mut n) = nodes.get_mut(fill) {
-        n.width = percent(f * 100.0);
+    let v = percent(f * 100.0);
+    if let Ok(n) = nodes.get(fill)
+        && n.width != v
+    {
+        nodes.get_mut(fill).unwrap().width = v;
     }
-    if let Ok(mut n) = nodes.get_mut(knob) {
-        n.left = percent(f * 100.0);
+    if let Ok(n) = nodes.get(knob)
+        && n.left != v
+    {
+        nodes.get_mut(knob).unwrap().left = v;
     }
 }
 

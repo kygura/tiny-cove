@@ -90,7 +90,7 @@ pub struct Colors {
     pub roof: u8,
     /// Index into the wall/plaster palette (0..WALL_COLORS).
     pub wall: u8,
-    /// Index into the wood/trim palette (0..TRIM_COLORS), used by timber, doors, shutters, railings.
+    /// Index into the wood/trim palette (0..TRIM_COLORS), used by timber, doors, louvres, railings.
     pub trim: u8,
 }
 
@@ -143,7 +143,7 @@ pub enum Footprint {
 pub struct Wall {
     /// Centre line on the ground plane, at least 2 points. Closed if first ≈ last.
     pub points: Vec<Vec2>,
-    /// Height above the ground at each point (top of the wall walk, without battlements).
+    /// Height above the ground at each point (top of the wall, without coping or planters).
     pub height: f32,
     /// Thickness in metres (0.4 .. 2.0).
     pub thickness: f32,
@@ -152,7 +152,7 @@ pub struct Wall {
     pub planters: bool,
     /// Broken top with exposed rebar (ruins; the snip tool).
     pub ruined: bool,
-    /// Height of a darker stone plinth/foundation (0 = none).
+    /// Height of a darker concrete plinth/foundation (0 = none).
     pub foundation: f32,
     /// Closed walls only: put a roof over the enclosed area.
     pub roofed: bool,
@@ -176,9 +176,9 @@ pub struct House {
     pub material: Material,
     /// Brise-soleil: a grid of deep vertical concrete fins on the façades.
     pub fins: bool,
-    /// Stone plinth height (0 = none).
+    /// Concrete plinth height (0 = none).
     pub foundation: f32,
-    /// Green roofs only: crenellated planter boxes on the parapet.
+    /// Green roofs only: planter boxes on the parapet.
     pub planters: bool,
     /// Player-placed openings. If empty, windows and one door are generated automatically.
     pub openings: Vec<Opening>,
@@ -288,7 +288,7 @@ pub struct Bridge {
     pub b: Vec3,
     pub width: f32,
     pub kind: BridgeKind,
-    /// Things hung from rope bridges' hand ropes.
+    /// Things hung from Cable bridges' hand cables.
     pub hanging: Hanging,
     pub colors: Colors,
 }

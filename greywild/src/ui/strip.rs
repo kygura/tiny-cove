@@ -158,7 +158,7 @@ pub fn rows(tool: Tool) -> (Vec<C>, Vec<C>) {
             vec![seg("", vec![o!("STEEL", stairs = StairKind::Steel), o!("CONCRETE", stairs = StairKind::Concrete), o!("LADDER", stairs = StairKind::Ladder)])],
             vec![acc_sw(yes)],
         ),
-        Tool::Deck => (vec![plinth(), overgrowth()], vec![conc_sw(yes), acc_sw(yes)]),
+        Tool::Deck => (vec![], vec![conc_sw(yes), acc_sw(yes)]),
         Tool::Bridge => (
             vec![
                 seg(
@@ -267,11 +267,11 @@ pub fn hints(t: Tool) -> &'static [(&'static str, &'static str)] {
         Tool::Wall => &[("DRAG", "Lay a wall; click adds points"), ("CLICK", "On the last point to end"), SCROLL_H, ("SHIFT", "Snap 45 deg, close the ring"), ("ESC", "Cancel")],
         Tool::Fence => &[("DRAG", "Lay a fence; click adds points"), ("CLICK", "On the last point to end"), ("SCROLL", "Fence kind"), ("SHIFT", "Snap 45 deg, close the ring"), ("ESC", "Cancel")],
         Tool::Block => &[("DRAG", "Footprint"), ("SCROLL", "Rotate the rectangle"), ("SHIFT", "Force a square"), ("MOVE", "Height, after release"), ("CLICK", "Cast"), ("ESC", "Cancel")],
-        Tool::Tower => &[("DRAG", "Footprint"), ("SHIFT", "Force a circle"), ("MOVE", "Height, after release"), ("SCROLL", "Pitch"), ("CLICK", "Cast"), ("ESC", "Cancel")],
+        Tool::Tower => &[("DRAG", "Footprint"), ("MOVE", "Height, after release"), ("SCROLL", "Roof style"), ("CLICK", "Cast"), ("ESC", "Cancel")],
         Tool::Path => &[("DRAG", "Lay a path; click adds points"), ("CLICK", "On the last point to end"), ("SCROLL", "Path width"), ("SHIFT", "Snap 45 deg"), ("ESC", "Cancel")],
-        Tool::Stairs => &[("DRAG", "From ground to a wall top"), ("SCROLL", "Width"), ("SHIFT", "Snap to wall top or deck"), ("ESC", "Cancel")],
+        Tool::Stairs => &[("DRAG", "From ground to a wall top"), ("SCROLL", "Width"), ("ENDS", "Snap to wall tops and decks"), ("ESC", "Cancel")],
         Tool::Deck => &[("DRAG", "Footprint"), ("MOVE", "Height, after release"), ("CLICK", "Cast"), ("ESC", "Cancel")],
-        Tool::Bridge => &[("DRAG", "From anchor A to B"), ("SCROLL", "Width"), ("SHIFT", "Snap to wall top or deck"), ("ESC", "Cancel")],
+        Tool::Bridge => &[("DRAG", "From anchor A to B"), ("SCROLL", "Width"), ("ENDS", "Snap to wall tops and decks"), ("ESC", "Cancel")],
         Tool::Opening => &[("CLICK", "Place the chosen opening"), ("CLICK", "On an opening upgrades it"), ("SHIFT", "Click removes an opening")],
         Tool::Roof => &[("CLICK", "Roof the hovered wall ring"), ("SCROLL", "Pitch"), ("SHIFT", "Scroll changes roof style")],
         Tool::Tree => &[("CLICK", "Plant"), ("SCROLL", "Rotate"), ("SHIFT", "Scroll scales 0.7 to 1.3")],

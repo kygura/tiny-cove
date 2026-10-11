@@ -6,7 +6,7 @@
 
 use crate::env::Environment;
 use crate::render::{GladeAssets, Particle, ParticleKind, particle_mesh, to_bevy_mesh, write_particle_mesh};
-use crate::world::BuiltScene;
+use crate::world::{BuiltScene, Glade};
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use greywild_core::{MarkerKind, MeshData, PaintLayer, Scene, Surface, mesh::Rng, terrain::glade_dist};
 use std::{collections::HashSet, sync::Arc};
@@ -27,7 +27,7 @@ impl Plugin for LifePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LifeWorld>().add_systems(
             Update,
-            (refresh_world, spawn_life, update_deer, update_ducks, update_swifts, update_steam, update_fireflies).chain(),
+            (refresh_world, spawn_life, manage_ducks, update_deer, update_ducks, update_swifts, update_steam, update_fireflies).chain(),
         );
     }
 }
@@ -146,7 +146,11 @@ impl LifeWorld {
     }
 }
 
-fn refresh_world(built: Res<BuiltScene>, mut world: ResMut<LifeWorld>) {
+fn refresh_world(built: Res<BuiltScene>, glade: Res<Glade>, mut world: ResMut<LifeWorld>) {
+    // Only the committed document drives life; previews would rebuild every frame of a drag.
+    if glade.has_preview() && world.scene.is_some() {
+        return;
+    }
     let Some(scene) = &built.0 else { return };
     if world.scene.as_ref().is_some_and(|s| Arc::ptr_eq(s, scene)) {
         return;
@@ -341,18 +345,6 @@ fn spawn_life(
                 }
             });
     }
-    let duck = meshes.add(to_bevy_mesh(&duck_mesh()));
-    if world.water.len() >= 6 {
-        for i in 0..DUCKS {
-            let pos = world.water[(rng.next_u64() % world.water.len() as u64) as usize];
-            commands.spawn((
-                Mesh3d(duck.clone()),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_translation(Vec3::new(pos.x, 0.0, pos.y)).with_scale(Vec3::splat(1.6)),
-                Duck { rng: Rng(rng.next_u64()), pos, target: pos, yaw: i as f32 * 2.1, pause: 0.0, seed: i as f32 * 1.7, generation: world.generation },
-            ));
-        }
-    }
     let cloud = |commands: &mut Commands, meshes: &mut Assets<Mesh>| {
         commands.spawn((Mesh3d(meshes.add(particle_mesh(&[]))), MeshMaterial3d(assets.particle.clone()), NoFrustumCulling)).id()
     };
@@ -445,6 +437,38 @@ fn update_deer(
 }
 
 // ---------------------------------------------------------------- ducks
+
+/// Ducks live only while there is a pond: spawned lazily when enough water exists, removed when it is gone.
+fn manage_ducks(
+    mut commands: Commands,
+    assets: Option<Res<GladeAssets>>,
+    world: Res<LifeWorld>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    ducks: Query<Entity, With<Duck>>,
+    mut mesh: Local<Option<Handle<Mesh>>>,
+) {
+    let Some(assets) = assets else { return };
+    if !world.is_changed() {
+        return;
+    }
+    if world.water.is_empty() {
+        for e in &ducks {
+            commands.entity(e).despawn();
+        }
+    } else if world.water.len() >= 6 && ducks.is_empty() {
+        let handle = mesh.get_or_insert_with(|| meshes.add(to_bevy_mesh(&duck_mesh()))).clone();
+        let mut rng = Rng::at(53, world.water.len() as f32, 2.0);
+        for i in 0..DUCKS {
+            let pos = world.water[(rng.next_u64() % world.water.len() as u64) as usize];
+            commands.spawn((
+                Mesh3d(handle.clone()),
+                MeshMaterial3d(assets.opaque.clone()),
+                Transform::from_translation(Vec3::new(pos.x, 0.0, pos.y)).with_scale(Vec3::splat(1.6)),
+                Duck { rng: Rng(rng.next_u64()), pos, target: pos, yaw: i as f32 * 2.1, pause: 0.0, seed: i as f32 * 1.7, generation: world.generation },
+            ));
+        }
+    }
+}
 
 fn update_ducks(time: Res<Time>, world: Res<LifeWorld>, mut ducks: Query<(&mut Transform, &mut Duck)>) {
     let Some(scene) = &world.scene else { return };

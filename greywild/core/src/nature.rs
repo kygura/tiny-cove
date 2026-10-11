@@ -383,12 +383,12 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
                 m.aabb(V(sx * 0.28 - 0.03, 0.0, sz * 0.28 - 0.03), V(sx * 0.28 + 0.03, 0.45, sz * 0.28 + 0.03), trim, Surface::Steel, 1.0);
             }
             m.aabb(V(-0.34, 0.45, -0.34), V(0.34, 0.5, 0.34), wood, Surface::Cladding, 1.0);
-            let straw = tint(palette::hay(), rng, 0.15);
-            cyl(&mut m, V(0.0, 0.5, 0.0), 0.3, 0.33, 0.18, 8, (false, false), straw * 0.95, Surface::Fiber);
-            cyl(&mut m, V(0.0, 0.68, 0.0), 0.33, 0.25, 0.18, 8, (false, false), straw, Surface::Fiber);
-            cyl(&mut m, V(0.0, 0.86, 0.0), 0.25, 0.12, 0.16, 8, (false, false), straw * 1.05, Surface::Fiber);
-            cyl(&mut m, V(0.0, 1.02, 0.0), 0.12, 0.0, 0.1, 8, (false, false), straw * 1.1, Surface::Fiber);
-        }
+            // Stacked timber hive boxes under a small overhanging lid.
+            for k in 0..3 {
+                let y = 0.5 + k as f32 * 0.17;
+                m.aabb(V(-0.26, y, -0.26), V(0.26, y + 0.16, 0.26), wood * (1.0 - 0.06 * k as f32), Surface::Cladding, 1.0);
+            }
+            m.aabb(V(-0.31, 1.01, -0.31), V(0.31, 1.06, 0.31), trim, Surface::Cladding, 1.0);
         ClutterKind::Solar => {
             let panel = V(0.04, 0.08, 0.2);
             // Steel A-frame: tall back legs, short front legs, rail along the panel underside.
@@ -465,7 +465,7 @@ struct Probe<'a> {
 }
 
 /// Vegetation scattered over the glade from the terrain's paint layers and a little everywhere
-/// on grass (tufts, a few wild flowers): flowers, bushes, grain, grass tufts.
+/// on grass (tufts, a few wild flowers): flowers, bushes, reeds, grass tufts.
 /// Nothing is scattered inside `blockers` (structure footprints / path ribbons) or on water.
 pub fn scatter_mesh(terrain: &Terrain, seed: u64, blockers: &[Vec<Vec2>]) -> MeshData {
     scatter_with(

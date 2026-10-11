@@ -37,6 +37,22 @@ const FIN: f32 = 0.6;
 const SLAB_LO: f32 = 0.12;
 const SLAB_HI: f32 = 0.13;
 
+// Salts of the independent decision streams (see [`pick`]).
+const SALT_CANT: u64 = 0x4805_E000;
+const SALT_DOOR: u64 = 0x4805_E100;
+const SALT_RIBBON: u64 = 0x4805_E200;
+const SALT_SOLAR: u64 = 0x4805_E300;
+const SALT_CHAIN: u64 = 0xDEC0_0100;
+const SALT_TROUGH: u64 = 0xDEC0_0200;
+const SALT_BALCONY: u64 = 0xDEC0_0300;
+
+/// One RNG stream per decision, seeded from `(seed ^ salt, footprint centre)`, so a change
+/// that consumes randomness elsewhere (a new door, crossing a height threshold) never re-rolls
+/// unrelated choices.
+fn pick(seed: u64, salt: u64, at: Vec2) -> Rng {
+    Rng::at(seed ^ salt, at.x, at.y)
+}
+
 /// Block / silo mesh (walls, openings, roof, vent stack, details) plus markers
 /// (vent steam, lit windows, door spots, entry lights, roof perches).
 /// `cuts` are passages through the block walls (paths) and become doors / portals.
@@ -61,14 +77,10 @@ pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> 
     if pitch < 0.05 {
         style = RoofStyle::Green;
     }
-    if round && matches!(style, RoofStyle::Pitched | RoofStyle::Sawtooth) {
-        style = RoofStyle::Shell;
-    }
     let mut b = B::default();
-    let mut rng = Rng::at(seed ^ 0x4805_E000, center.x, center.y);
 
     if h < 1.5 {
-        pavilion(&mut b, &poly, y0, h, style, pitch, colors, terrain, seed, center);
+        pavilion(&mut b, house, &poly, y0, h, style, pitch, terrain, seed, center);
         return (b.m, b.mk);
     }
 
@@ -76,8 +88,8 @@ pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> 
     let has_plinth = foundation > 0.02;
     let n = poly.len();
     let lens: Vec<f32> = (0..n).map(|i| poly[i].distance(poly[(i + 1) % n])).collect();
-    let cant = if !round && h >= 6.0 { rng.range(0.3, 0.6) } else { 0.0 };
-    let holes = plan_openings(house, cuts, &lens, h, round, tower, &mut rng);
+    let cant = if !round && h >= 6.0 { pick(seed, SALT_CANT, center).range(0.3, 0.6) } else { 0.0 };
+    let holes = plan_openings(house, cuts, &lens, h, round, tower, seed, center);
     let fins_on = house.fins && !round;
 
     // ---- wall bands: plinth, one band per storey, slab bands between them --------------
@@ -135,6 +147,16 @@ pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> 
     }
 
     // ---- openings: windows, doors ------------------------------------------------------
+    // Planters asked for on a non-green roof hang as troughs under every window instead.
+    let box_chance = if tower {
+        0.0
+    } else if house.planters && style != RoofStyle::Green {
+        1.0
+    } else if fins_on {
+        0.0
+    } else {
+        0.2 + 0.3 * og
+    };
     for hole in &holes {
         let vm = (hole.v0 + hole.v1) * 0.5;
         let band = bands.iter().find(|bd| vm >= bd.lo && vm < bd.hi).or(bands.last()).copied().unwrap_or(Band::new(0.0, h, 0.0, msurf, mcol));
@@ -142,7 +164,7 @@ pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> 
         if hole.kind.is_door() {
             door_details(&mut b, &wf, hole, h, slab, terrain);
         } else {
-            window_details(&mut b, &wf, hole, &band, slab, og, seed, !tower && !fins_on);
+            window_details(&mut b, &wf, hole, &band, slab, og, seed, box_chance);
         }
     }
 
@@ -159,7 +181,7 @@ pub fn house_mesh(house: &House, cuts: &[Cut], terrain: &Terrain, seed: u64) -> 
         gable: Some((msurf, mcol)),
         planters: house.planters || tower,
         parapet: true,
-        solar: style == RoofStyle::Green && !round && !house.planters && rng.f() < 0.6,
+        solar: style == RoofStyle::Green && !round && !house.planters && pick(seed, SALT_SOLAR, center).f() < 0.6,
         trim,
         seed,
     };
@@ -661,7 +683,8 @@ fn door_dims(kind: Hk, h: f32) -> (f32, f32) {
     }
 }
 
-fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool, tower: bool, rng: &mut Rng) -> Vec<Hole> {
+#[allow(clippy::too_many_arguments)]
+fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool, tower: bool, seed: u64, center: Vec2) -> Vec<Hole> {
     let mut holes: Vec<Hole> = Vec::new();
     let n = lens.len();
     let per: f32 = lens.iter().sum();
@@ -720,7 +743,7 @@ fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool,
                 best = i;
             }
         }
-        let jitter = if round { 0.0 } else { (rng.f() - 0.5) * 0.3 * lens[best] };
+        let jitter = if round { 0.0 } else { (pick(seed, SALT_DOOR, center).f() - 0.5) * 0.3 * lens[best] };
         let (w, ht) = door_dims(Hk::Door, h);
         holes.extend(place_hole(&holes, lens, best, lens[best] * 0.5 + jitter, Hk::Door, 0.0, ht, w, round));
     }
@@ -739,7 +762,7 @@ fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool,
     }
 
     // Per storey: either one ribbon window per façade or a row of deep slots.
-    let ribbon = !round && rng.f() < 0.45;
+    let ribbon = !round && pick(seed, SALT_RIBBON, center).f() < 0.45;
     let mut k = 0;
     loop {
         let (sill, wh) = if k == 0 {
@@ -783,7 +806,7 @@ fn plan_openings(house: &House, cuts: &[Cut], lens: &[f32], h: f32, round: bool,
 
 /// Mullions, drip sill, water streak and sometimes a planter under a recessed window.
 #[allow(clippy::too_many_arguments)]
-fn window_details(b: &mut B, wf: &Wf, h: &Hole, band: &Band, slab: Vec3, og: f32, seed: u64, allow_box: bool) {
+fn window_details(b: &mut B, wf: &Wf, h: &Hole, band: &Band, slab: Vec3, og: f32, seed: u64, box_chance: f32) {
     let (u0, u1, v0, v1) = (h.u0, h.u1, h.v0, h.v1);
     let w = u1 - u0;
     let mid = (u0 + u1) * 0.5;
@@ -813,7 +836,7 @@ fn window_details(b: &mut B, wf: &Wf, h: &Hole, band: &Band, slab: Vec3, og: f32
         }
     }
     // Concrete planter box with trailing greenery.
-    if allow_box && h.kind == Hk::Window && rng.f() < 0.2 + 0.3 * og {
+    if h.kind == Hk::Window && rng.f() < box_chance {
         let leaves = palette::leaves();
         b.lbox(wf, mid, v0 - 0.32, 0.25, Vec3::new(w * 0.5 + 0.05, 0.16, 0.2), slab * 0.9, Surface::Concrete);
         b.lbox(wf, mid, v0 - 0.13, 0.25, Vec3::new(w * 0.5, 0.04, 0.17), leaves, Surface::Leaves);
@@ -1091,6 +1114,14 @@ fn roof_impl(b: &mut B, poly: &[Vec2], base: f32, style: RoofStyle, pitch: f32, 
             let (surf, tv) = roof_cover(colors);
             sawtooth_roof(b, &rf, base, pitch, surf, tv, col, o)
         }
+        (None, RoofStyle::Pitched) => {
+            let (surf, tv) = roof_cover(colors);
+            cone_roof(b, &poly, c, &edges, base, (pitch.max(1.2) * dmin).min(30.0), surf, tv, col, o)
+        }
+        (None, RoofStyle::Sawtooth) => {
+            let (surf, tv) = roof_cover(colors);
+            radial_saw_roof(b, &poly, c, &edges, base, (pitch * dmin * 0.5).max(0.5).min(dmin), surf, tv, col, o)
+        }
         _ => {
             let shell = palette::stone().lerp(col, 0.15);
             shell_roof(b, &poly, c, &edges, base, (pitch * dmin).min(30.0), shell, o)
@@ -1217,6 +1248,68 @@ fn sawtooth_roof(b: &mut B, rf: &Rf, base: f32, pitch: f32, surf: Surface, tv: f
     RoofGeom::Saw { rf: *rf, base, rise, bw, tv }
 }
 
+/// Steep cone of thick slab facets (round footprints / rings with Pitched).
+#[allow(clippy::too_many_arguments)]
+fn cone_roof(b: &mut B, poly: &[Vec2], c: Vec2, edges: &[(Vec2, f32)], base: f32, rise: f32, surf: Surface, tv: f32, col: Vec3, o: &RoofOpts) -> RoofGeom {
+    let dmin = edges.iter().map(|e| e.1).fold(f32::INFINITY, f32::min).max(0.05);
+    let k = rise / dmin;
+    let oe = o.overhang.min(0.9 / k.max(1e-3));
+    let ye = base - oe * k;
+    let g = offset_poly(poly, oe);
+    let n = g.len();
+    let apex = p3(c, base + rise);
+    for i in 0..n {
+        let (a, q) = (g[i], g[(i + 1) % n]);
+        let e = p3((q - a).normalize_or(Vec2::X), 0.0);
+        let shade = if i % 2 == 0 { col } else { col * 0.93 };
+        roof_face(b, &[p3(a, ye), p3(q, ye), apex], &[Some(p3(edges[i].0, 0.0)), None, None], tv, e, shade, surf);
+    }
+    let top = apex + Vec3::Y * tv;
+    b.m.cylinder(top - Vec3::Y * 0.1, 0.08, 0.0, 0.9, 4, false, false, o.trim, Surface::Steel, 1.0);
+    b.marker(MarkerKind::Perch, top + Vec3::Y * 0.85, Vec3::Y);
+    RoofGeom::Pyramid { c, base, rise, edges: edges.to_vec(), tv }
+}
+
+/// Radial north-light roof (round footprints / rings with Sawtooth): pinwheel of sloped slab
+/// sectors, each rising sideways to a vertical glazed riser along its leading radial edge.
+#[allow(clippy::too_many_arguments)]
+fn radial_saw_roof(b: &mut B, poly: &[Vec2], c: Vec2, edges: &[(Vec2, f32)], base: f32, rise: f32, surf: Surface, tv: f32, col: Vec3, o: &RoofOpts) -> RoofGeom {
+    let ov = o.overhang.min(0.4);
+    let g = offset_poly(poly, ov);
+    let n = g.len();
+    let (lo, hub) = (base - 0.1, p3(c, base + rise * 0.5));
+    // Few, wide sectors read better than one per facet.
+    let per = (n / 6).max(1);
+    let idx: Vec<usize> = (0..n).step_by(per).collect();
+    let m = idx.len();
+    for s in 0..m {
+        let (i0, i1) = (idx[s], if s + 1 < m { idx[s + 1] } else { n });
+        // Sector outline: hub, then the eave points i0..=i1 rising linearly from low to high.
+        let span = (i1 - i0) as f32;
+        let mut pts = vec![hub];
+        for (j, i) in (i0..=i1).enumerate() {
+            pts.push(p3(g[i % n], lo + rise * j as f32 / span.max(1.0)));
+        }
+        let mut fascia: Vec<Option<Vec3>> = vec![None];
+        for i in i0..i1 {
+            fascia.push(Some(p3(edges[i % n].0, 0.0)));
+        }
+        fascia.push(None);
+        let e = p3((g[i1 % n] - g[i0]).normalize_or(Vec2::X), 0.0);
+        roof_face(b, &pts, &fascia, tv, e, col, surf);
+        // Glazed riser between this sector's high edge and the next one's low edge.
+        let r = g[i1 % n];
+        let radial = (r - c).normalize_or(Vec2::X);
+        let along = g[i1 % n] - g[(i1 + n - 1) % n];
+        let want = p3(along - radial * along.dot(radial), 0.0).normalize_or(Vec3::X);
+        b.tri(hub + Vec3::Y * tv, p3(r, lo + tv), p3(r, lo + rise), want, Vec3::ONE, Surface::Window);
+        b.m.beam(p3(c.lerp(r, 0.5), lo + rise * 0.5 + tv * 0.5), p3(r, lo + tv), 0.05, 0.05, o.trim, Surface::Steel, 1.0);
+        b.marker(MarkerKind::WindowLight, p3(c.lerp(r, 0.6), lo + rise * 0.6) - want * 0.1, want);
+    }
+    b.marker(MarkerKind::Perch, hub + Vec3::Y * (tv + 0.05), Vec3::Y);
+    RoofGeom::Pyramid { c, base, rise: rise * 0.5, edges: edges.to_vec(), tv }
+}
+
 /// Precast shell: a folded-plate pyramid (eave edges kink up at their midpoints) on polygons
 /// with up to six sides, a shallow dome with a concrete oculus ring on rounder ones.
 #[allow(clippy::too_many_arguments)]
@@ -1268,7 +1361,6 @@ fn shell_roof(b: &mut B, poly: &[Vec2], c: Vec2, edges: &[(Vec2, f32)], base: f3
 /// optionally with solar panels) or, without parapet, a thin overhanging slab.
 fn flat_roof(b: &mut B, poly: &[Vec2], base: f32, sedum: Vec3, o: &RoofOpts) -> RoofGeom {
     let stone = palette::stone();
-    let leaves = palette::leaves();
     let slab_y = base + 0.2;
     let ov = if o.parapet { 0.03 } else { o.overhang.max(0.03) };
     let top = offset_poly(poly, ov);
@@ -1282,6 +1374,9 @@ fn flat_roof(b: &mut B, poly: &[Vec2], base: f32, sedum: Vec3, o: &RoofOpts) -> 
             b.tri(p3(top[t[0]], base - 0.1), p3(top[t[1]], base - 0.1), p3(top[t[2]], base - 0.1), -Vec3::Y, stone * 0.7, Surface::Concrete);
         }
         clumps(b, poly, slab_y, sedum, o.seed, 0.3);
+        if o.planters {
+            planter_ring(b, poly, ov - 0.25, 0.22, slab_y, o.seed);
+        }
         b.marker(MarkerKind::Perch, p3(poly[0], slab_y + 0.05), Vec3::Y);
         return RoofGeom::Flat { top: slab_y };
     }
@@ -1296,27 +1391,7 @@ fn flat_roof(b: &mut B, poly: &[Vec2], base: f32, sedum: Vec3, o: &RoofOpts) -> 
     clumps(b, poly, slab_y, sedum, o.seed, 0.8);
     let mut perch_y = p_hi;
     if o.planters {
-        let offm = offset_poly(poly, (out + inn) * 0.5);
-        let hd = (out - inn) * 0.5;
-        let mut rng = Rng::at(o.seed ^ 0x9A47_0000, poly[0].x, poly[0].y);
-        for i in 0..poly.len() {
-            let wf = Wf::new(poly, &offm, i, 0.0);
-            let l = wf.u_end() - wf.u_start();
-            if l < 0.3 {
-                continue;
-            }
-            let count = ((l / 1.2).round() as usize).clamp(1, 64);
-            let seg = l / count as f32;
-            for j in 0..count {
-                let u = wf.u_start() + seg * (j as f32 + 0.5);
-                let hw = (seg * 0.3).min(0.35);
-                b.lbox(&wf, u, p_hi + 0.2, 0.0, Vec3::new(hw, 0.2, hd), stone * 0.95, Surface::Concrete);
-                b.lbox(&wf, u, p_hi + 0.43, 0.0, Vec3::new(hw * 0.9, 0.05, hd * 0.85), leaves, Surface::Leaves);
-                let sw = hw * rng.range(0.4, 0.9);
-                let drop = rng.range(0.3, 1.1);
-                b.wquad(&wf, u - sw, u + sw, p_hi + 0.35 - drop, p_hi + 0.44, hd + 0.02, false, leaves * 0.8, Surface::Fiber);
-            }
-        }
+        planter_ring(b, poly, (out + inn) * 0.5, (out - inn) * 0.5, p_hi, o.seed);
         perch_y += 0.5;
     }
     if o.solar {
@@ -1326,6 +1401,32 @@ fn flat_roof(b: &mut B, poly: &[Vec2], base: f32, sedum: Vec3, o: &RoofOpts) -> 
     let k = (rng.f() * poly.len() as f32) as usize % poly.len();
     b.marker(MarkerKind::Perch, p3(offset_poly(poly, (out + inn) * 0.5)[k], perch_y + 0.02), Vec3::Y);
     RoofGeom::Flat { top: slab_y }
+}
+
+/// Crenellated planter boxes centred on offset `mid` (half depth `hd`) standing on height `y`,
+/// with greenery spilling down their outer faces.
+fn planter_ring(b: &mut B, poly: &[Vec2], mid: f32, hd: f32, y: f32, seed: u64) {
+    let (stone, leaves) = (palette::stone(), palette::leaves());
+    let offm = offset_poly(poly, mid);
+    let mut rng = Rng::at(seed ^ 0x9A47_0000, poly[0].x, poly[0].y);
+    for i in 0..poly.len() {
+        let wf = Wf::new(poly, &offm, i, 0.0);
+        let l = wf.u_end() - wf.u_start();
+        if l < 0.3 {
+            continue;
+        }
+        let count = ((l / 1.2).round() as usize).clamp(1, 64);
+        let seg = l / count as f32;
+        for j in 0..count {
+            let u = wf.u_start() + seg * (j as f32 + 0.5);
+            let hw = (seg * 0.3).min(0.35);
+            b.lbox(&wf, u, y + 0.2, 0.0, Vec3::new(hw, 0.2, hd), stone * 0.95, Surface::Concrete);
+            b.lbox(&wf, u, y + 0.43, 0.0, Vec3::new(hw * 0.9, 0.05, hd * 0.85), leaves, Surface::Leaves);
+            let sw = hw * rng.range(0.4, 0.9);
+            let drop = rng.range(0.3, 1.1);
+            b.wquad(&wf, u - sw, u + sw, y + 0.35 - drop, y + 0.44, hd + 0.02, false, leaves * 0.8, Surface::Fiber);
+        }
+    }
 }
 
 /// Grass and shrub clumps scattered on a sedum mat, at least `margin` inside the outline.
@@ -1407,10 +1508,17 @@ fn vent_stack(b: &mut B, rf: &Rf, geom: &RoofGeom, eave: f32, slab: Vec3, trim: 
     b.marker(MarkerKind::ChimneySmoke, p3(p, top + 0.5), Vec3::Y);
 }
 
-/// Very low walls: a pavilion, i.e. a roof slab on slender concrete pilotis.
+/// Very low walls: a pavilion, i.e. a roof slab on slender pilotis. The block's material picks
+/// the columns (round concrete, rammed-earth piers, charred timber posts), `foundation` raises
+/// plinth pads under them, `overgrowth` wraps them in ivy, `fins` hangs blades along the
+/// canopy edge and `planters` lines a flat canopy with planter boxes.
 #[allow(clippy::too_many_arguments)]
-fn pavilion(b: &mut B, poly: &[Vec2], y0: f32, h: f32, style: RoofStyle, pitch: f32, colors: Colors, terrain: &Terrain, seed: u64, center: Vec2) {
-    let slab = palette::stone();
+fn pavilion(b: &mut B, house: &House, poly: &[Vec2], y0: f32, h: f32, style: RoofStyle, pitch: f32, terrain: &Terrain, seed: u64, center: Vec2) {
+    let colors = house.colors;
+    let slab = palette::wall(colors).lerp(palette::stone(), 0.6);
+    let (msurf, mcol) = material_look(house.material, colors);
+    let pad = fin(house.foundation, 0.0).clamp(0.0, 0.8);
+    let og = fin(house.overgrowth, 0.0).clamp(0.0, 1.0);
     let canopy = y0 + 2.2 + h * 0.6;
     let n = poly.len();
     let step = if n <= 4 { 1 } else { (n / 6).max(1) };
@@ -1423,12 +1531,42 @@ fn pavilion(b: &mut B, poly: &[Vec2], y0: f32, h: f32, style: RoofStyle, pitch: 
             cols.extend((1..=k).map(|j| a.lerp(q, j as f32 / (k + 1) as f32)));
         }
     }
+    let leaves = palette::leaves();
     for q in &cols {
-        let gy = fin(terrain.height(*q), y0).min(canopy - 0.3);
-        b.m.cylinder(p3(*q, gy - SINK), 0.11, 0.11, canopy - gy + SINK, 6, false, false, slab * 0.95, Surface::Concrete, 1.0);
+        let gy = fin(terrain.height(*q), y0).min(canopy - 0.3 - pad);
+        let foot = if pad > 0.02 {
+            b.m.oriented_box(p3(*q, (gy - SINK + gy + pad) * 0.5), Vec3::new(0.3, (pad + SINK) * 0.5, 0.3), Vec3::X, palette::foundation(), Surface::Plinth, 1.0);
+            gy + pad
+        } else {
+            gy - SINK
+        };
+        let ht = canopy - foot;
+        match house.material {
+            Material::Concrete => b.m.cylinder(p3(*q, foot), 0.11, 0.11, ht, 6, false, false, mcol, msurf, 1.0),
+            Material::RammedEarth => b.m.oriented_box(p3(*q, foot + ht * 0.5), Vec3::new(0.22, ht * 0.5, 0.22), Vec3::X, mcol, msurf, 1.0),
+            Material::Timber => b.m.oriented_box(p3(*q, foot + ht * 0.5), Vec3::new(0.09, ht * 0.5, 0.09), Vec3::X, mcol, msurf, 1.0),
+        }
+        let mut rng = Rng::at(seed ^ 0x1717_1000, q.x, q.y);
+        if og > 0.02 && rng.f() < 0.2 + 0.8 * og {
+            let iv = (0.6 + 1.8 * og * rng.range(0.6, 1.0)).min(ht);
+            b.m.oriented_box(p3(*q, foot + iv * 0.5), Vec3::new(0.26, iv * 0.5, 0.26), Vec3::new(1.0, 0.0, 0.4), leaves * rng.range(0.7, 1.0), Surface::Fiber, 1.0);
+        }
     }
-    let opts = RoofOpts { overhang: 0.6, gable: None, planters: false, parapet: false, solar: false, trim: palette::trim(colors), seed };
+    let opts = RoofOpts { overhang: 0.6, gable: None, planters: house.planters, parapet: false, solar: false, trim: palette::trim(colors), seed };
     roof_impl(b, poly, canopy, style, pitch, colors, &opts);
+    // Brise-soleil blades hanging along the canopy edge.
+    if house.fins {
+        let edge = offset_poly(poly, 0.45);
+        for i in 0..n {
+            let wf = Wf::new(poly, &edge, i, 0.0);
+            let l = wf.u_end() - wf.u_start();
+            let k = ((l / 0.8).round() as usize).clamp(1, 64);
+            for j in 0..=k {
+                let u = wf.u_start() + l * j as f32 / k as f32;
+                b.lbox(&wf, u, canopy - 0.4, 0.0, Vec3::new(0.05, 0.35, 0.2), slab, Surface::Concrete);
+            }
+        }
+    }
     // A cast bench under the canopy.
     let mut rng = Rng::at(seed ^ 0x7E47, center.x, center.y);
     if rng.f() < 0.6 {
@@ -1437,7 +1575,7 @@ fn pavilion(b: &mut B, poly: &[Vec2], y0: f32, h: f32, style: RoofStyle, pitch: 
         let x = Vec3::new(ang.cos(), 0.0, ang.sin());
         b.m.oriented_box(Vec3::new(center.x, gy + 0.2, center.y), Vec3::new(0.8, 0.22, 0.22), x, slab * 0.85, Surface::Concrete, 1.0);
     }
-    // Folk gather under the pavilion's front.
+    // Gathering spot in front of the pavilion's longest side.
     let mut best = 0;
     for i in 1..n {
         if poly[i].distance(poly[(i + 1) % n]) > poly[best].distance(poly[(best + 1) % n]) + 1e-3 {
@@ -1470,7 +1608,6 @@ fn decor(
 ) {
     let n = poly.len();
     let c = poly.iter().copied().sum::<Vec2>() / n as f32;
-    let mut rng = Rng::at(seed ^ 0xDEC0_0000, c.x, c.y);
     let leaves = palette::leaves();
     let metal = palette::metal();
     let door_edge = holes.iter().find(|o| o.kind.is_door()).map_or(usize::MAX, |o| o.edge);
@@ -1479,6 +1616,7 @@ fn decor(
     let ground = |p: Vec2| fin(terrain.height(p), y0);
 
     // Rain chain at a corner of a rectangular block.
+    let mut rng = pick(seed, SALT_CHAIN, c);
     if n == 4 && rng.f() < 0.75 {
         let k = ((rng.f() * n as f32) as usize).min(n - 1);
         let prev = (k + n - 1) % n;
@@ -1499,6 +1637,7 @@ fn decor(
     }
 
     // Planter trough with shrubs along a wall without a door.
+    let mut rng = pick(seed, SALT_TROUGH, c);
     let mut e = ((rng.f() * n as f32) as usize).min(n - 1);
     if e == door_edge {
         e = (e + n / 2) % n;
@@ -1528,6 +1667,7 @@ fn decor(
     }
 
     // Balcony on the first floor slab, opposite the door.
+    let mut rng = pick(seed, SALT_BALCONY, c);
     if n == 4 && h >= 5.5 && rng.f() < 0.65 {
         let e = if door_edge < n { (door_edge + 2) % n } else { e };
         let wf = Wf::at_off(poly, cant, e, y0);
@@ -1743,13 +1883,113 @@ mod tests {
                 check(&m, &mk);
                 let (_, hi) = m.bounds().unwrap();
                 assert!(hi.y > 2.4, "canopy above head height");
-                assert!(!has(&m, Surface::Cladding) && !has(&m, Surface::Door), "no walls, just pilotis");
+                assert!(!has(&m, Surface::Door), "no walls, just pilotis");
                 assert_eq!(count(&mk, MarkerKind::Door), 1);
                 if roof != RoofStyle::Sawtooth {
                     assert_eq!(count(&mk, MarkerKind::WindowLight), 0);
                 }
             }
         }
+    }
+
+    #[test]
+    fn pavilion_follows_the_block() {
+        let t = ground();
+        let fp = rect(2.0, 3.0);
+        let base = |mat: Material| {
+            let mut hs = house(fp, 0.8, RoofStyle::Green, 0.0, mat, false);
+            hs.foundation = 0.0;
+            hs.overgrowth = 0.0;
+            hs.planters = false;
+            hs
+        };
+        let fiber = |m: &MeshData| m.surfaces.iter().filter(|v| **v == Surface::Fiber as u8).count();
+        let (concrete, _) = house_mesh(&base(Material::Concrete), &[], &t, 3);
+        let (earth, _) = house_mesh(&base(Material::RammedEarth), &[], &t, 3);
+        let (timber, _) = house_mesh(&base(Material::Timber), &[], &t, 3);
+        assert!(has(&earth, Surface::Earth) && !has(&concrete, Surface::Earth));
+        assert!(has(&timber, Surface::Cladding));
+        assert!(!has(&concrete, Surface::Plinth));
+        let mut hs = base(Material::Concrete);
+        hs.foundation = 0.4;
+        assert!(has(&house_mesh(&hs, &[], &t, 3).0, Surface::Plinth), "plinth pads");
+        let mut hs = base(Material::Concrete);
+        hs.overgrowth = 1.0;
+        assert!(fiber(&house_mesh(&hs, &[], &t, 3).0) > fiber(&concrete) + 24, "ivy on pilotis");
+        let mut hs = base(Material::Concrete);
+        hs.fins = true;
+        assert!(house_mesh(&hs, &[], &t, 3).0.vertex_count() > concrete.vertex_count() + 24 * 8, "edge fins");
+        let mut hs = base(Material::Concrete);
+        hs.planters = true;
+        assert!(house_mesh(&hs, &[], &t, 3).0.vertex_count() > concrete.vertex_count() + 24 * 6, "canopy planters");
+    }
+
+    #[test]
+    fn round_roofs_are_distinct() {
+        let t = ground();
+        let fp = Footprint::Round { center: Vec2::new(1.0, 2.0), radius: 3.0 };
+        let mesh = |roof: RoofStyle| house_mesh(&house(fp, 8.0, roof, 0.8, Material::Concrete, false), &[], &t, 4);
+        let (pitched, _) = mesh(RoofStyle::Pitched);
+        let (saw, smk) = mesh(RoofStyle::Sawtooth);
+        let (shell, _) = mesh(RoofStyle::Shell);
+        assert!(pitched != saw && saw != shell && pitched != shell);
+        assert!(pitched.bounds().unwrap().1.y > shell.bounds().unwrap().1.y + 1.0, "steep cone over shallow dome");
+        assert!(has(&shell, Surface::Precast) && !has(&pitched, Surface::Precast));
+        let glazed = saw.surfaces.iter().zip(&saw.positions).filter(|(s, p)| **s == Surface::Window as u8 && p[1] > 8.0).count();
+        assert!(glazed >= 3 * 4, "radial north-light risers");
+        assert!(count(&smk, MarkerKind::WindowLight) > count(&mesh(RoofStyle::Shell).1, MarkerKind::WindowLight));
+        let blob: Vec<Vec2> = (0..12).map(|i| Vec2::from_angle(i as f32 / 12.0 * std::f32::consts::TAU) * 5.0).collect();
+        let ring = |style| roof_mesh(&blob, 4.0, style, 0.8, Colors::default(), 2).0;
+        let (a, b, c) = (ring(RoofStyle::Pitched), ring(RoofStyle::Sawtooth), ring(RoofStyle::Shell));
+        assert!(a != b && b != c && a != c);
+    }
+
+    #[test]
+    fn decisions_are_independent() {
+        // A path cut through the door façade must not re-roll anything on the opposite façade.
+        let t = ground();
+        let fp = rect(3.0, 4.0);
+        let Footprint::Rect { center, half, angle } = fp else { unreachable!() };
+        let rot = Vec2::from_angle(-angle);
+        let far_side = |m: &MeshData| {
+            let mut v: Vec<[u32; 9]> = m
+                .indices
+                .chunks(3)
+                .filter_map(|tri| {
+                    let ps: Vec<[f32; 3]> = tri.iter().map(|&i| m.positions[i as usize]).collect();
+                    let cx = ps.iter().map(|p| rot.rotate(Vec2::new(p[0], p[2]) - center).x).sum::<f32>() / 3.0;
+                    (cx < -half.x + 1.0).then(|| {
+                        let mut k = [0u32; 9];
+                        for (j, p) in ps.iter().flatten().enumerate() {
+                            k[j] = p.to_bits();
+                        }
+                        k
+                    })
+                })
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        for seed in 0..12 {
+            let hs = house(fp, 7.0, RoofStyle::Pitched, 0.8, Material::Concrete, false);
+            let (a, _) = house_mesh(&hs, &[], &t, seed);
+            let (b, _) = house_mesh(&hs, &[Cut { along: 10.0, width: 1.6, height: 2.4 }], &t, seed);
+            assert!(a != b, "the cut moves the door");
+            let (fa, fb) = (far_side(&a), far_side(&b));
+            assert!(fa.len() > 100);
+            assert!(fa == fb, "seed {seed}: opposite façade changed");
+        }
+    }
+
+    #[test]
+    fn planters_under_windows_on_slab_roofs() {
+        let t = ground();
+        let mut hs = house(rect(3.0, 4.0), 4.0, RoofStyle::Pitched, 0.8, Material::Concrete, false);
+        hs.overgrowth = 0.0;
+        let leafy = |hs: &House| house_mesh(hs, &[], &t, 7).0.surfaces.iter().filter(|v| **v == Surface::Leaves as u8).count();
+        let with = leafy(&hs);
+        hs.planters = false;
+        assert!(with > leafy(&hs) + 24 * 3, "a trough under every window");
     }
 
     #[test]

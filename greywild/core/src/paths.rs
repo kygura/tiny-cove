@@ -555,7 +555,7 @@ fn cable_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rai
     for sg in [-1.0_f32, 1.0] {
         let o = f.side * (sg * lat);
         for k in 0..nseg {
-            // Carrying rope under the deck edge, and the hand rope.
+            // Carrying cable under the deck edge, and the hand cable.
             let so = f.side * (sg * (f.w * 0.5 - 0.05));
             thin(m, deck(tt(k)) + so - Vec3::Y * 0.05, deck(tt(k + 1)) + so - Vec3::Y * 0.05, 0.06, rc, Surface::Steel);
             thin(m, hand(tt(k)) + o, hand(tt(k + 1)) + o, 0.05, trim, Surface::Steel);
@@ -784,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn cobble_budget() {
+    fn pavers_budget() {
         let m = path_mesh(&path(PathKind::Pavers, 30.0, 2.0), &t(), 1);
         assert!(tris(&m) <= 4000, "{} tris", tris(&m));
     }
@@ -836,6 +836,15 @@ mod tests {
         let s = stairs(StairKind::Concrete, 2.0);
         let r = Stairs { from: s.to, to: s.from, ..s.clone() };
         assert_eq!(stairs_mesh(&s, &t(), 1).0, stairs_mesh(&r, &t(), 1).0);
+    }
+
+    #[test]
+    fn very_steep_stairs_become_ladder() {
+        let s = Stairs { from: Vec3::ZERO, to: Vec3::new(0.5, 4.0, 0.0), width: 1.2, kind: StairKind::Concrete, colors: Colors::default() };
+        let (m, _) = stairs_mesh(&s, &t(), 1);
+        let (l, _) = stairs_mesh(&Stairs { kind: StairKind::Ladder, ..s }, &t(), 1);
+        assert!(m.is_valid() && !m.is_empty());
+        assert_eq!(m, l);
     }
 
     #[test]
@@ -905,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn long_stone_bridge_has_several_arches() {
+    fn long_arch_bridge_has_several_arches() {
         let b = Bridge { b: Vec3::new(30.0, 6.0, 0.0), ..bridge(BridgeKind::Arch, Hanging::None) };
         let (m, _) = bridge_mesh(&b, &t(), 1);
         assert!(m.is_valid() && tris(&m) > 600);

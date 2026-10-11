@@ -303,9 +303,9 @@ pub enum MarkerKind {
     Lantern,
     /// A window that glows at night (light leaking out).
     WindowLight,
-    /// Chimney top: smoke emitter.
+    /// Vent stack: steam emitter.
     ChimneySmoke,
-    /// In front of a door: where villagers / sheep may gather.
+    /// In front of a door: where deer may gather.
     Door,
     /// Roof ridge / wall top / tower top: birds land here.
     Perch,
