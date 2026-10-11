@@ -526,16 +526,16 @@ pub fn bridge_mesh(bridge: &Bridge, terrain: &Terrain, seed: u64) -> (MeshData, 
     let mut mk = Vec::new();
     let Some(f) = Fr::new(bridge) else { return (m, mk) };
     match bridge.kind {
-        BridgeKind::Cable { railing } => rope_bridge(&mut m, &mut mk, &f, bridge, railing.min(3), terrain, seed),
-        BridgeKind::Arch => stone_bridge(&mut m, &mut mk, &f, terrain, seed),
-        BridgeKind::Girder => wood_bridge(&mut m, &mut mk, &f, bridge, terrain, seed),
+        BridgeKind::Cable { railing } => cable_bridge(&mut m, &mut mk, &f, bridge, railing.min(3), terrain, seed),
+        BridgeKind::Arch => arch_bridge(&mut m, &mut mk, &f, terrain, seed),
+        BridgeKind::Girder => girder_bridge(&mut m, &mut mk, &f, bridge, terrain, seed),
     }
     (m, mk)
 }
 
-fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, railing: u8, terrain: &Terrain, seed: u64) {
+fn cable_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, railing: u8, terrain: &Terrain, seed: u64) {
     let trim = palette::trim(br.colors);
-    let rc = rope_color();
+    let rc = cable_color();
     let sag = (f.len * 0.06).clamp(0.25, 3.0);
     let bell = |t: f32| 4.0 * t * (1.0 - t);
     let deck = |t: f32| f.base(t) - Vec3::Y * (sag * bell(t));
@@ -544,42 +544,45 @@ fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rail
     let nseg = (f.len.ceil() as usize).max(2);
     let tt = |k: usize| k as f32 / nseg as f32;
 
-    // Planks across, with gaps.
+    // Steel-mesh deck plates across, with gaps.
     let pitch = 0.33;
     for k in 0..(f.len / pitch).floor() as usize {
         let (s0, s1) = (k as f32 * pitch, k as f32 * pitch + 0.25);
         let mut r = rng(seed, 41, f.xz(f.base(s0 / f.len)));
-        m.beam(deck(s0 / f.len), deck((s1 / f.len).min(1.0)), f.w, 0.05, tint(palette::wood(), &mut r, 0.2), Surface::Cladding, 1.0);
+        m.beam(deck(s0 / f.len), deck((s1 / f.len).min(1.0)), f.w, 0.04, tint(palette::metal() * 1.5, &mut r, 0.15), Surface::Steel, 1.0);
     }
     for sg in [-1.0_f32, 1.0] {
         let o = f.side * (sg * lat);
         for k in 0..nseg {
             // Carrying rope under the deck edge, and the hand rope.
             let so = f.side * (sg * (f.w * 0.5 - 0.05));
-            thin(m, deck(tt(k)) + so - Vec3::Y * 0.05, deck(tt(k + 1)) + so - Vec3::Y * 0.05, 0.07, rc, Surface::Fiber);
-            thin(m, hand(tt(k)) + o, hand(tt(k + 1)) + o, 0.06, rc, Surface::Fiber);
+            thin(m, deck(tt(k)) + so - Vec3::Y * 0.05, deck(tt(k + 1)) + so - Vec3::Y * 0.05, 0.06, rc, Surface::Steel);
+            thin(m, hand(tt(k)) + o, hand(tt(k + 1)) + o, 0.05, trim, Surface::Steel);
             let (e0, e1) = (deck(tt(k)) + o + Vec3::Y * 0.05, deck(tt(k + 1)) + o + Vec3::Y * 0.05);
             let (h0, h1) = (hand(tt(k)) + o, hand(tt(k + 1)) + o);
+            let hh = h0.y - e0.y;
             match railing {
+                // Steel tube: vertical tubes and a mid rail.
                 1 => {
-                    let hang = hand(tt(k)) + o;
-                    let base = e0;
-                    m.oriented_box((hang + base) * 0.5, Vec3::new(0.015, (hang.y - base.y) * 0.5, 0.015), f.side, rc, Surface::Fiber, 1.0);
+                    m.cylinder(e0, 0.02, 0.02, hh, 6, true, false, trim, Surface::Steel, 1.0);
+                    thin(m, e0.lerp(h0, 0.5), e1.lerp(h1, 0.5), 0.04, trim, Surface::Steel);
                 }
-                2 => {
-                    thin(m, e0, h1, 0.025, rc, Surface::Fiber);
-                    thin(m, h0, e1, 0.025, rc, Surface::Fiber);
-                }
+                // Mesh panel: thin full-height panel.
+                2 => m.beam(e0, e1, 0.02, hh, palette::metal() * 1.6, Surface::Steel, 1.0),
+                // Perforated plate: lower plate panel with a gap between plates.
                 3 => {
-                    for fr in [0.3, 0.6, 0.9] {
-                        let (a, b) = (e0.lerp(h0, fr), e1.lerp(h1, fr));
-                        m.beam(a, b, 0.03, 0.12, trim, Surface::Cladding, 1.0);
+                    if k % 3 != 2 {
+                        m.beam(e0, e1, 0.03, hh * 0.55, palette::metal(), Surface::Metal, 1.0);
                     }
                     if k % 2 == 0 {
-                        m.oriented_box((e0 + h0) * 0.5, Vec3::new(0.025, (h0.y - e0.y) * 0.5, 0.025), f.side, trim, Surface::Steel, 1.0);
+                        m.cylinder(e0, 0.025, 0.025, hh, 6, true, false, trim, Surface::Steel, 1.0);
                     }
                 }
-                _ => {}
+                // Cable net: crossing diagonals.
+                _ => {
+                    thin(m, e0, h1, 0.025, rc, Surface::Steel);
+                    thin(m, h0, e1, 0.025, rc, Surface::Steel);
+                }
             }
         }
     }
@@ -604,9 +607,11 @@ fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rail
                 let p = hand(t) + f.side * (sg * lat);
                 let q = hand((t + 0.6 / f.len).min(1.0)) + f.side * (sg * lat);
                 let tip = p.lerp(q, 0.5) - Vec3::Y * 0.45;
-                let col = palette::flower(k as u32);
-                m.tri(p, tip, q, col, Surface::Fiber, 1.0);
-                m.tri(p, q, tip, col, Surface::Fiber, 1.0);
+                let mut r = rng(seed, 42, f.xz(p));
+                let col = tint(palette::leaves(), &mut r, 0.3);
+                m.tri(p, tip, q, col, Surface::Leaves, 1.0);
+                m.tri(p, q, tip, col, Surface::Leaves, 1.0);
+                thin(m, p.lerp(q, 0.5), tip - Vec3::Y * 0.3, 0.02, col * 0.7, Surface::Fiber);
                 mk.push(Marker { kind: MarkerKind::Flag, pos: p, dir: Vec3::Y });
             }
         }
@@ -614,7 +619,7 @@ fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rail
     }
 }
 
-fn stone_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, terrain: &Terrain, seed: u64) {
+fn arch_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, terrain: &Terrain, seed: u64) {
     const TH: f32 = 0.4;
     let hump = (f.len * 0.04).clamp(0.3, 1.0);
     let n = (f.len / 0.5).ceil() as usize;
@@ -662,7 +667,7 @@ fn stone_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, terrain: &Terrai
         let (p0, p1) = (top(j), top(j + 1));
         let mut r = rng(seed, 51, Vec2::new(p0.x, p0.z));
         let col = tint(palette::stone(), &mut r, 0.15);
-        m.beam(p0 - Vec3::Y * TH, p1 - Vec3::Y * TH, f.w, TH, col, Surface::Concrete, 1.0);
+        m.beam(p0 - Vec3::Y * TH, p1 - Vec3::Y * TH, f.w, TH, col, Surface::Precast, 1.0);
         for sg in [-1.0_f32, 1.0] {
             let o = f.side * (sg * f.w * 0.5);
             let pc = f.side * (sg * (f.w * 0.5 - 0.12));
@@ -699,37 +704,28 @@ fn stone_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, terrain: &Terrai
     end_posts(m, mk, f, f.w * 0.5 - 0.12, 0.0, 0.9, 0.2, Surface::Concrete, palette::stone() * 1.1, terrain);
 }
 
-fn wood_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, terrain: &Terrain, seed: u64) {
+fn girder_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, terrain: &Terrain, seed: u64) {
     let trim = palette::trim(br.colors);
     let nb = ((f.len / 3.0).ceil() as usize).max(1);
     let at = |t: f32| f.base(t);
     let lat = f.w * 0.5 - 0.1;
+    // Deck plate over a central steel box girder, one section per ~3 m.
     for k in 0..nb {
         let (t0, t1) = (k as f32 / nb as f32, (k + 1) as f32 / nb as f32);
         let mut r = rng(seed, 61, f.xz(at(t0)));
-        m.beam(at(t0) - Vec3::Y * 0.08, at(t1) - Vec3::Y * 0.08, f.w, 0.08, tint(palette::wood(), &mut r, 0.15), Surface::Cladding, 1.0);
-        for sg in [-1.0_f32, 1.0] {
-            let o = f.side * (sg * f.w * 0.3);
-            m.beam(at(t0) + o - Vec3::Y * 0.26, at(t1) + o - Vec3::Y * 0.26, 0.15, 0.18, trim, Surface::Steel, 1.0);
-        }
+        m.beam(at(t0) - Vec3::Y * 0.1, at(t1) - Vec3::Y * 0.1, f.w, 0.1, tint(palette::stone() * 0.8, &mut r, 0.1), Surface::Concrete, 1.0);
+        m.beam(at(t0) - Vec3::Y * 0.65, at(t1) - Vec3::Y * 0.65, f.w * 0.6, 0.55, tint(trim, &mut r, 0.08), Surface::Steel, 1.0);
     }
-    // Trestle bents.
-    for k in 0..=nb {
+    // Concrete piers at every other joint (and both abutments).
+    for k in (0..=nb).filter(|k| k % 2 == 0 || *k == nb) {
         let c = at(k as f32 / nb as f32);
-        let under = c.y - 0.26;
-        let mut feet = [Vec3::ZERO; 2];
-        for (i, sg) in [-1.0_f32, 1.0].iter().enumerate() {
-            let p = c + f.side * (sg * lat);
-            let base = terrain.height(f.xz(p)) - 0.15;
-            feet[i] = Vec3::new(p.x, base, p.z);
-            if under - base > 0.1 {
-                m.oriented_box(Vec3::new(p.x, (base + under) * 0.5, p.z), Vec3::new(0.1, (under - base) * 0.5, 0.1), f.side, trim, Surface::Steel, 1.0);
-            }
-        }
-        m.beam(Vec3::new(feet[0].x, under - 0.1, feet[0].z), Vec3::new(feet[1].x, under - 0.1, feet[1].z), 0.14, 0.14, trim, Surface::Steel, 1.0);
-        let low = feet[0].y.max(feet[1].y);
-        if under - low > 0.8 {
-            m.beam(Vec3::new(feet[0].x, low + 0.3, feet[0].z), Vec3::new(feet[1].x, under - 0.3, feet[1].z), 0.07, 0.07, trim, Surface::Steel, 1.0);
+        let under = c.y - 0.65;
+        let base = terrain.height(f.xz(c)) - 0.2;
+        if under - base > 0.1 {
+            let mut r = rng(seed, 62, f.xz(c));
+            let col = tint(palette::stone() * 0.85, &mut r, 0.1);
+            m.oriented_box(Vec3::new(c.x, (base + under) * 0.5, c.z), Vec3::new(f.w * 0.3, (under - base) * 0.5, 0.25), f.side, col, Surface::Concrete, 1.0);
+            m.oriented_box(Vec3::new(c.x, under - 0.08, c.z), Vec3::new(f.w * 0.4, 0.08, 0.32), f.side, col * 1.05, Surface::Concrete, 1.0);
         }
     }
     // Railings: posts every ~1.5 m with two rails.
@@ -738,10 +734,10 @@ fn wood_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, terr
         let o = f.side * (sg * lat);
         for k in 0..=np {
             let p = at(k as f32 / np as f32) + o;
-            m.oriented_box(p + Vec3::Y * 0.5, Vec3::new(0.04, 0.5, 0.04), f.side, trim, Surface::Steel, 1.0);
+            m.cylinder(p, 0.03, 0.03, 1.0, 6, true, false, trim, Surface::Steel, 1.0);
         }
         for hgt in [0.95, 0.5] {
-            m.beam(at(0.0) + o + Vec3::Y * (hgt - 0.05), at(1.0) + o + Vec3::Y * (hgt - 0.05), 0.07, 0.06, trim, Surface::Steel, 1.0);
+            m.beam(at(0.0) + o + Vec3::Y * (hgt - 0.05), at(1.0) + o + Vec3::Y * (hgt - 0.05), 0.06, 0.05, trim, Surface::Steel, 1.0);
         }
     }
     end_posts(m, mk, f, lat, 0.12, 1.15, 0.09, Surface::Steel, trim, terrain);
@@ -774,7 +770,7 @@ mod tests {
 
     #[test]
     fn path_kinds_valid_and_deterministic() {
-        for kind in [PathKind::Gravel, PathKind::Pavers, PathKind::Slabs, PathKind::Poured] {
+        for kind in [PathKind::Gravel, PathKind::Pavers, PathKind::Slabs, PathKind::Poured, PathKind::Stepping] {
             let p = path(kind, 12.0, 2.0);
             let a = path_mesh(&p, &t(), 5);
             assert!(!a.is_empty() && a.is_valid(), "{kind:?}");
@@ -797,12 +793,12 @@ mod tests {
         let p = Path { points: vec![Vec2::new(0.0, 0.0), Vec2::new(14.0, 0.0)], width: 1.5, kind: PathKind::Pavers };
         let m = build_path(&p, 3, &|_| 0.0, &|q| (q.x > 5.0 && q.x < 10.0).then_some(0.5));
         assert!(m.is_valid());
-        let rock_top = m.positions.iter().zip(&m.surfaces).filter(|(_, s)| **s == Surface::Rock as u8).map(|(p, _)| p[1]).fold(f32::MIN, f32::max);
+        let rock_top = m.positions.iter().zip(&m.surfaces).filter(|(_, s)| **s == Surface::Concrete as u8).map(|(p, _)| p[1]).fold(f32::MIN, f32::max);
         assert!((rock_top - 0.6).abs() < 1e-4, "{rock_top}");
-        let rocks = m.surfaces.iter().filter(|s| **s == Surface::Rock as u8).count();
+        let rocks = m.surfaces.iter().filter(|s| **s == Surface::Concrete as u8).count();
         assert!(rocks > 20);
         // No ribbon over the water.
-        assert!(m.positions.iter().zip(&m.surfaces).all(|(p, s)| *s == Surface::Rock as u8 || !(p[0] > 5.6 && p[0] < 9.4)));
+        assert!(m.positions.iter().zip(&m.surfaces).all(|(p, s)| *s == Surface::Concrete as u8 || !(p[0] > 5.6 && p[0] < 9.4)));
     }
 
     #[test]
@@ -842,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn tall_wood_stairs_have_lantern() {
+    fn tall_steel_stairs_have_lantern() {
         let (m, mk) = stairs_mesh(&stairs(StairKind::Steel, 4.0), &t(), 1);
         assert!(m.is_valid());
         assert_eq!(mk.iter().filter(|k| k.kind == MarkerKind::Lantern).count(), 1);

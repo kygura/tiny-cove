@@ -124,6 +124,34 @@ fn bush_into(m: &mut MeshData, base: Vec3, scale: f32, blobs: usize, rng: &mut R
     }
 }
 
+/// Long arching leaf strip (double-sided): rises `rise`, droops `droop`, tapers to a tip.
+#[allow(clippy::too_many_arguments)]
+fn frond(m: &mut MeshData, base: Vec3, yaw: f32, len: f32, rise: f32, droop: f32, w: f32, c0: Vec3, c1: Vec3, s: Surface) {
+    const SEGS: usize = 4;
+    let dir = V(yaw.cos(), 0.0, yaw.sin());
+    let side = V(-yaw.sin(), 0.0, yaw.cos());
+    let at = |t: f32| base + dir * (len * t) + Vec3::Y * (rise * t - droop * t * t);
+    let wd = |t: f32| w * (1.0 - t * 0.92);
+    for i in 0..SEGS {
+        let (t0, t1) = (i as f32 / SEGS as f32, (i + 1) as f32 / SEGS as f32);
+        let (p0, p1) = (at(t0), at(t1));
+        let col = c0.lerp(c1, (t0 + t1) * 0.5);
+        quad2(m, p0 - side * wd(t0), p0 + side * wd(t0), p1 + side * wd(t1), p1 - side * wd(t1), col, s);
+    }
+}
+
+/// Small ground fern: a rosette of arching fronds.
+fn fern_clump(m: &mut MeshData, at: Vec3, scale: f32, rng: &mut Rng) {
+    let col = tint(palette::leaves() * V(0.75, 1.0, 0.7), rng, 0.3);
+    let n = 5 + (rng.f() * 2.0) as usize;
+    let y0 = rng.f() * std::f32::consts::TAU;
+    for k in 0..n {
+        let yaw = y0 + k as f32 / n as f32 * std::f32::consts::TAU + rng.range(-0.2, 0.2);
+        let len = rng.range(0.4, 0.6) * scale;
+        frond(m, at + Vec3::Y * 0.02, yaw, len, 0.35 * scale, 0.5 * scale, 0.07 * scale, col * 0.7, col * 1.1, Surface::Leaves);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Trees
 // ---------------------------------------------------------------------------------------------
@@ -131,7 +159,7 @@ fn bush_into(m: &mut MeshData, base: Vec3, scale: f32, blobs: usize, rng: &mut R
 fn build_tree(kind: TreeKind, rng: &mut Rng) -> (MeshData, Vec<Marker>) {
     let mut m = MeshData::default();
     match kind {
-        TreeKind::Oak | TreeKind::Fern => {
+        TreeKind::Oak => {
             let bark = tint(palette::bark(), rng, 0.3);
             cyl(&mut m, Vec3::ZERO, 0.30, 0.18, 2.4, 6, (false, false), bark, Surface::Bark);
             let spots = [(0.0, 3.7, 0.0, 1.45), (0.95, 3.1, 0.35, 1.05), (-0.85, 3.2, -0.4, 1.15), (0.2, 3.2, -1.0, 0.95), (-0.2, 4.2, 0.5, 0.95)];
@@ -140,6 +168,22 @@ fn build_tree(kind: TreeKind, rng: &mut Rng) -> (MeshData, Vec<Marker>) {
                 let col = tint(palette::leaves(), rng, 0.35);
                 blob(&mut m, V(x, y, z), V(r, r * 0.85, r), 0.18, col, Surface::Leaves, rng, None);
             }
+        }
+        TreeKind::Fern => {
+            let bark = tint(palette::bark() * V(0.9, 0.7, 0.6), rng, 0.3);
+            cyl(&mut m, Vec3::ZERO, 0.17, 0.11, 2.5, 6, (false, false), bark, Surface::Bark);
+            for y in [0.5, 1.2, 1.9] {
+                cyl(&mut m, V(0.0, y, 0.0), 0.185 - 0.03 * y, 0.17 - 0.03 * y, 0.1, 6, (false, false), bark * 0.75, Surface::Fiber);
+            }
+            let n = 8 + (rng.f() * 5.0) as usize;
+            let y0 = rng.f() * std::f32::consts::TAU;
+            for k in 0..n {
+                let yaw = y0 + k as f32 / n as f32 * std::f32::consts::TAU + rng.range(-0.15, 0.15);
+                let col = tint(palette::leaves() * V(0.8, 1.05, 0.75), rng, 0.25);
+                let (len, rise) = (rng.range(1.7, 2.2), rng.range(1.4, 1.8));
+                frond(&mut m, V(0.0, 2.45, 0.0), yaw, len, rise, 1.6, 0.17, col * 0.7, col * 1.1, Surface::Leaves);
+            }
+            cyl(&mut m, V(0.0, 2.45, 0.0), 0.1, 0.0, 0.4, 5, (false, false), palette::leaves() * 0.9, Surface::Leaves);
         }
         TreeKind::Pine => {
             let bark = tint(palette::bark(), rng, 0.3) * 0.8;
@@ -204,98 +248,108 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
     let metal = palette::metal();
     match kind {
         ClutterKind::RainBarrel => {
-            cyl(&mut m, Vec3::ZERO, 0.36, 0.43, 0.45, 8, (false, true), wood, Surface::Cladding);
-            cyl(&mut m, V(0.0, 0.45, 0.0), 0.43, 0.36, 0.45, 8, (true, false), wood, Surface::Cladding);
-            cyl(&mut m, V(0.0, 0.14, 0.0), 0.405, 0.405, 0.06, 8, (false, false), metal, Surface::Metal);
-            cyl(&mut m, V(0.0, 0.70, 0.0), 0.405, 0.405, 0.06, 8, (false, false), metal, Surface::Metal);
+            let rust = tint(V(0.34, 0.14, 0.07), rng, 0.25);
+            cyl(&mut m, Vec3::ZERO, 0.38, 0.38, 0.9, 8, (true, true), rust, Surface::Steel);
+            for y in [0.1, 0.45, 0.78] {
+                cyl(&mut m, V(0.0, y, 0.0), 0.4, 0.4, 0.05, 8, (false, false), rust * 0.7, Surface::Steel);
+            }
+            cyl(&mut m, V(0.0, 0.9, 0.0), 0.3, 0.3, 0.03, 8, (true, false), V(0.02, 0.03, 0.04), Surface::Metal);
+            // Downpipe stub dropping into the drum.
+            m.beam(V(0.0, 1.22, -0.5), V(0.0, 1.22, -0.2), 0.07, 0.07, trim, Surface::Steel, 1.0);
+            cyl(&mut m, V(0.0, 0.9, -0.2), 0.035, 0.035, 0.34, 6, (false, false), trim, Surface::Steel);
+            cyl(&mut m, V(0.0, 0.0, -0.5), 0.035, 0.035, 1.25, 6, (false, false), trim, Surface::Steel);
         }
         ClutterKind::Planter => {
-            m.aabb(V(-0.42, 0.0, -0.42), V(0.42, 0.84, 0.42), wood, Surface::Cladding, 1.0);
-            let e = 0.05;
-            for (sx, sz) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                let (cx, cz) = (sx * 0.43, sz * 0.43);
-                m.aabb(V(cx - e, 0.0, cz - e), V(cx + e, 0.86, cz + e), trim, Surface::Steel, 1.0);
+            let c = palette::wall(colors);
+            m.aabb(V(-0.5, 0.0, -0.5), V(0.5, 0.55, 0.5), c, Surface::Concrete, 1.0);
+            m.aabb(V(-0.54, 0.5, -0.54), V(0.54, 0.6, 0.54), c * 0.9, Surface::Plinth, 1.0);
+            m.aabb(V(-0.44, 0.6, -0.44), V(0.44, 0.62, 0.44), palette::dirt() * 0.45, Surface::Dirt, 1.0);
+            blob(&mut m, V(-0.05, 0.9, 0.0), V(0.42, 0.3, 0.42), 0.2, tint(palette::leaves(), rng, 0.3), Surface::Leaves, rng, None);
+            for _ in 0..4 {
+                let (x, z) = (rng.range(-0.35, 0.35), rng.range(-0.35, 0.35));
+                let h = rng.range(0.85, 1.1);
+                let col = palette::flower(rng.next_u64() as u32);
+                m.aabb(V(x - 0.012, 0.62, z - 0.012), V(x + 0.012, h, z + 0.012), palette::grass() * 0.6, Surface::Grass, 1.0);
+                m.aabb(V(x - 0.06, h, z - 0.06), V(x + 0.06, h + 0.07, z + 0.06), col, Surface::Petal, 1.0);
             }
-            m.aabb(V(-0.46, 0.82, -0.46), V(0.46, 0.88, -0.40), trim, Surface::Steel, 1.0);
-            m.aabb(V(-0.46, 0.82, 0.40), V(0.46, 0.88, 0.46), trim, Surface::Steel, 1.0);
-            m.aabb(V(-0.46, 0.82, -0.46), V(-0.40, 0.88, 0.46), trim, Surface::Steel, 1.0);
-            m.aabb(V(0.40, 0.82, -0.46), V(0.46, 0.88, 0.46), trim, Surface::Steel, 1.0);
         }
         ClutterKind::Compost => {
-            let hay = tint(palette::hay(), rng, 0.2);
-            cyl(&mut m, Vec3::ZERO, 1.2, 1.15, 0.5, 8, (false, true), hay * 0.95, Surface::Fiber);
-            cyl(&mut m, V(0.0, 0.5, 0.0), 1.15, 0.85, 0.5, 8, (false, false), hay, Surface::Fiber);
-            cyl(&mut m, V(0.0, 1.0, 0.0), 0.85, 0.4, 0.45, 8, (false, false), hay * 1.05, Surface::Fiber);
-            cyl(&mut m, V(0.0, 1.45, 0.0), 0.4, 0.0, 0.35, 8, (false, false), hay * 1.1, Surface::Fiber);
+            let slat = |m: &mut MeshData, a: Vec3, b: Vec3| {
+                for k in 0..4 {
+                    let y = 0.1 + 0.2 * k as f32;
+                    m.beam(a + Vec3::Y * y, b + Vec3::Y * y, 0.04, 0.15, wood * (0.9 + 0.05 * k as f32), Surface::Cladding, 1.0);
+                }
+            };
+            for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                m.aabb(V(sx * 0.62 - 0.05, 0.0, sz * 0.5 - 0.05), V(sx * 0.62 + 0.05, 0.9, sz * 0.5 + 0.05), wood * 0.8, Surface::Cladding, 1.0);
+            }
+            slat(&mut m, V(-0.62, 0.0, -0.5), V(0.62, 0.0, -0.5));
+            slat(&mut m, V(-0.62, 0.0, -0.5), V(-0.62, 0.0, 0.5));
+            slat(&mut m, V(0.62, 0.0, -0.5), V(0.62, 0.0, 0.5));
+            blob(&mut m, V(0.0, 0.3, 0.0), V(0.55, 0.45, 0.4), 0.2, palette::dirt() * 0.4, Surface::Dirt, rng, Some(0.05));
+            blob(&mut m, V(0.2, 0.65, 0.05), V(0.22, 0.14, 0.22), 0.3, tint(palette::leaves() * 0.8, rng, 0.3), Surface::Leaves, rng, None);
         }
         ClutterKind::Cistern => {
-            let stone = palette::stone();
-            let (ro, ri, h, hf) = (0.9, 0.6, 0.9, 0.3);
-            let n = 10u32;
-            let pt = |r: f32, y: f32, i: u32| {
-                let a = i as f32 / n as f32 * std::f32::consts::TAU;
-                V(a.cos() * r, y, a.sin() * r)
-            };
-            for i in 0..n {
-                let j = i + 1;
-                m.quad(pt(ro, 0.0, j), pt(ro, 0.0, i), pt(ro, h, i), pt(ro, h, j), stone, Surface::Concrete, 1.0);
-                m.quad(pt(ri, h, i), pt(ro, h, i), pt(ro, h, j), pt(ri, h, j), stone * 1.08, Surface::Concrete, 1.0);
-                m.quad(pt(ri, h, i), pt(ri, h, j), pt(ri, hf, j), pt(ri, hf, i), stone * 0.7, Surface::Concrete, 1.0);
-                m.tri(V(0.0, hf, 0.0), pt(ri, hf, j), pt(ri, hf, i), V(0.1, 0.15, 0.2), Surface::Rock, 1.0);
-            }
-            for sx in [-1.0, 1.0] {
-                cyl(&mut m, V(sx * 0.8, h, 0.0), 0.07, 0.07, 1.5, 6, (true, false), trim, Surface::Steel);
-            }
-            m.aabb(V(-0.85, 2.2, -0.05), V(0.85, 2.3, 0.05), trim, Surface::Steel, 1.0);
-            let rc = palette::roof(colors);
-            let (e, r) = (0.75, 2.95);
-            let (a0, a1, b0, b1) = (V(-1.1, 2.3, -e), V(1.1, 2.3, -e), V(-1.1, r, 0.0), V(1.1, r, 0.0));
-            m.quad(a0, a1, b1, b0, rc, Surface::Sedum, 1.0);
-            m.quad(V(-1.1, 2.3, e), V(-1.1, r, 0.0), V(1.1, r, 0.0), V(1.1, 2.3, e), rc, Surface::Sedum, 1.0);
-            tri2(&mut m, V(-1.1, 2.3, -e), V(-1.1, r, 0.0), V(-1.1, 2.3, e), trim, Surface::Steel);
-            tri2(&mut m, V(1.1, 2.3, -e), V(1.1, 2.3, e), V(1.1, r, 0.0), trim, Surface::Steel);
-            m.aabb(V(-0.01, 1.7, -0.01), V(0.01, 2.2, 0.01), palette::white() * 0.7, Surface::Fiber, 1.0);
-            cyl(&mut m, V(0.0, 1.5, 0.0), 0.14, 0.12, 0.2, 6, (false, false), wood, Surface::Cladding);
+            let c = palette::wall(colors);
+            cyl(&mut m, Vec3::ZERO, 0.9, 0.85, 1.1, 10, (false, true), c, Surface::Concrete);
+            cyl(&mut m, V(0.0, 1.1, 0.0), 0.95, 0.95, 0.12, 10, (true, false), c * 0.9, Surface::Plinth);
+            m.aabb(V(-0.25, 1.22, -0.25), V(0.25, 1.3, 0.25), metal, Surface::Metal, 1.0);
+            m.aabb(V(-0.1, 1.3, -0.03), V(0.1, 1.34, 0.03), trim, Surface::Steel, 1.0);
+            m.beam(V(0.0, 0.7, 0.9), V(0.0, 0.7, 1.15), 0.08, 0.08, trim, Surface::Steel, 1.0);
         }
         ClutterKind::Wheelbarrow => {
-            m.aabb(V(-0.8, 0.5, -0.5), V(0.8, 0.58, 0.5), wood, Surface::Cladding, 1.0);
+            let rust = tint(V(0.34, 0.14, 0.07), rng, 0.25);
+            m.aabb(V(-0.8, 0.5, -0.5), V(0.8, 0.58, 0.5), rust, Surface::Steel, 1.0);
             for sz in [-1.0f32, 1.0] {
-                m.aabb(V(-0.8, 0.58, sz * 0.5 - 0.02), V(0.8, 0.85, sz * 0.5 + 0.02), wood * 0.95, Surface::Cladding, 1.0);
+                m.aabb(V(-0.8, 0.58, sz * 0.5 - 0.02), V(0.8, 0.85, sz * 0.5 + 0.02), rust * 0.95, Surface::Steel, 1.0);
             }
             for sx in [-1.0f32, 1.0] {
-                m.aabb(V(sx * 0.8 - 0.02, 0.58, -0.5), V(sx * 0.8 + 0.02, 0.85, 0.5), wood * 0.95, Surface::Cladding, 1.0);
+                m.aabb(V(sx * 0.8 - 0.02, 0.58, -0.5), V(sx * 0.8 + 0.02, 0.85, 0.5), rust * 0.95, Surface::Steel, 1.0);
             }
             m.aabb(V(-0.03, 0.42, -0.6), V(0.03, 0.48, 0.6), trim, Surface::Steel, 1.0);
             for sz in [-1.0f32, 1.0] {
                 let z = sz * 0.58;
                 prism(&mut m, V(0.0, 0.45, z), V(0.0, 0.45, z + sz * 0.08), 0.45, 8, trim, trim * 0.8, Surface::Steel);
-                m.beam(V(0.8, 0.5, sz * 0.3), V(2.0, 0.35, sz * 0.3), 0.08, 0.08, trim, Surface::Steel, 1.0);
+                m.beam(V(0.8, 0.5, sz * 0.3), V(2.0, 0.35, sz * 0.3), 0.08, 0.08, wood, Surface::Cladding, 1.0);
             }
+            blob(&mut m, V(0.0, 0.62, 0.0), V(0.6, 0.2, 0.4), 0.2, palette::dirt() * 0.45, Surface::Dirt, rng, None);
         }
         ClutterKind::Bench => {
-            m.aabb(V(-0.7, 0.42, -0.2), V(0.7, 0.48, 0.2), wood, Surface::Cladding, 1.0);
-            m.aabb(V(-0.7, 0.7, 0.16), V(0.7, 0.8, 0.2), wood, Surface::Cladding, 1.0);
-            for sx in [-0.6f32, 0.6] {
-                m.aabb(V(sx - 0.04, 0.0, -0.16), V(sx + 0.04, 0.42, -0.08), trim, Surface::Steel, 1.0);
-                m.aabb(V(sx - 0.04, 0.0, 0.08), V(sx + 0.04, 0.42, 0.16), trim, Surface::Steel, 1.0);
-                m.aabb(V(sx - 0.04, 0.48, 0.14), V(sx + 0.04, 0.7, 0.2), trim, Surface::Steel, 1.0);
+            let c = palette::wall(colors);
+            for sx in [-0.55f32, 0.55] {
+                m.aabb(V(sx - 0.14, 0.0, -0.2), V(sx + 0.14, 0.38, 0.2), c * 0.9, Surface::Concrete, 1.0);
+            }
+            m.aabb(V(-0.85, 0.38, -0.25), V(0.85, 0.52, 0.25), c, Surface::Concrete, 1.0);
+            if rng.f() < 0.7 {
+                m.aabb(V(-0.5 + rng.f() * 0.5, 0.52, -0.2), V(0.1 + rng.f() * 0.6, 0.55, 0.0), palette::leaves() * 0.7, Surface::Sedum, 1.0);
             }
         }
         ClutterKind::LampPost => {
-            cyl(&mut m, Vec3::ZERO, 0.09, 0.06, 2.45, 6, (true, false), trim, Surface::Steel);
+            let c = palette::wall(colors);
+            m.aabb(V(-0.17, 0.0, -0.17), V(0.17, 0.4, 0.17), c, Surface::Concrete, 1.0);
+            cyl(&mut m, V(0.0, 0.4, 0.0), 0.08, 0.05, 2.05, 6, (true, false), trim, Surface::Steel);
             m.beam(V(0.0, 2.4, 0.0), V(0.5, 2.4, 0.0), 0.06, 0.06, trim, Surface::Steel, 1.0);
             m.aabb(V(0.49, 2.3, -0.015), V(0.51, 2.41, 0.015), metal, Surface::Metal, 1.0);
-            m.aabb(V(0.4, 2.25, -0.1), V(0.6, 2.3, 0.1), metal, Surface::Metal, 1.0);
-            m.aabb(V(0.4, 1.95, -0.1), V(0.6, 2.0, 0.1), metal, Surface::Metal, 1.0);
-            m.aabb(V(0.43, 2.0, -0.07), V(0.57, 2.25, 0.07), palette::glow(), Surface::Glow, 1.0);
+            m.aabb(V(0.38, 2.25, -0.12), V(0.62, 2.3, 0.12), metal, Surface::Metal, 1.0);
+            m.aabb(V(0.38, 1.95, -0.12), V(0.62, 2.0, 0.12), metal, Surface::Metal, 1.0);
+            m.aabb(V(0.41, 2.0, -0.09), V(0.59, 2.25, 0.09), palette::glow(), Surface::Glow, 1.0);
             markers.push(Marker { kind: MarkerKind::Lantern, pos: V(0.5, 2.12, 0.0), dir: Vec3::Y });
         }
         ClutterKind::WindTurbine => {
-            cyl(&mut m, Vec3::ZERO, 0.08, 0.05, 5.6, 6, (true, false), trim, Surface::Steel);
-            m.aabb(V(-0.08, 5.6, -0.08), V(0.08, 5.76, 0.08), metal, Surface::Metal, 1.0);
-            let rc = palette::roof(colors);
-            tri2(&mut m, V(0.05, 5.5, 0.0), V(0.05, 4.9, 0.0), V(1.3, 5.2, 0.0), rc, Surface::Fiber);
-            markers.push(Marker { kind: MarkerKind::Flag, pos: V(0.0, 5.76, 0.0), dir: Vec3::Y });
+            let c = palette::white() * 0.85;
+            cyl(&mut m, Vec3::ZERO, 0.12, 0.05, 5.3, 6, (true, false), c, Surface::Steel);
+            m.aabb(V(-0.12, 5.3, -0.1), V(0.3, 5.5, 0.1), metal, Surface::Metal, 1.0);
+            let hub = V(0.4, 5.4, 0.0);
+            m.aabb(hub - V(0.0, 0.07, 0.07), hub + V(0.12, 0.07, 0.07), c, Surface::Steel, 1.0);
+            let a0 = rng.f() * std::f32::consts::TAU;
+            for k in 0..3 {
+                let a = a0 + k as f32 * std::f32::consts::TAU / 3.0;
+                let (d, s) = (V(0.0, a.cos(), a.sin()), V(0.0, -a.sin(), a.cos()));
+                let tip = hub + d * 1.1;
+                let (r0, r1) = (hub + d * 0.1 + s * 0.12, hub + d * 0.1 - s * 0.04);
+                tri2(&mut m, r0, r1, tip, c, Surface::Steel);
+            }
+            markers.push(Marker { kind: MarkerKind::Flag, pos: hub, dir: Vec3::X });
         }
         ClutterKind::WashingLine => {
             for sx in [-1.6f32, 1.6] {
@@ -346,16 +400,19 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
             cyl(&mut m, V(0.0, 1.02, 0.0), 0.12, 0.0, 0.1, 8, (false, false), straw * 1.1, Surface::Fiber);
         }
         ClutterKind::Solar => {
-            let straw = palette::hay();
-            cyl(&mut m, Vec3::ZERO, 0.05, 0.04, 2.0, 6, (true, false), trim, Surface::Steel);
-            m.aabb(V(-0.65, 1.45, -0.04), V(0.65, 1.52, 0.04), trim, Surface::Steel, 1.0);
-            cyl(&mut m, V(0.0, 0.85, 0.0), 0.24, 0.18, 0.75, 8, (true, false), palette::roof(colors), Surface::Fiber);
-            for sx in [-1.0f32, 1.0] {
-                m.aabb(V(sx * 0.65 - 0.06, 1.38, -0.06), V(sx * 0.65 + 0.06, 1.5, 0.06), straw, Surface::Fiber, 1.0);
+            let panel = V(0.04, 0.08, 0.2);
+            // Steel A-frame: tall back legs, short front legs, rail along the panel underside.
+            for sx in [-1.1f32, 0.0, 1.1] {
+                m.beam(V(sx, 0.0, 0.5), V(sx, 0.62, 0.5), 0.06, 0.06, trim, Surface::Steel, 1.0);
+                m.beam(V(sx, 0.0, -0.55), V(sx, 1.45, -0.55), 0.06, 0.06, trim, Surface::Steel, 1.0);
             }
-            cyl(&mut m, V(0.0, 1.6, 0.0), 0.17, 0.15, 0.3, 6, (true, false), straw * 0.95, Surface::Fiber);
-            cyl(&mut m, V(0.0, 1.88, 0.0), 0.4, 0.4, 0.04, 8, (true, false), trim, Surface::Steel);
-            cyl(&mut m, V(0.0, 1.92, 0.0), 0.25, 0.0, 0.32, 8, (false, false), trim, Surface::Steel);
+            m.beam(V(-1.25, 0.6, 0.54), V(1.25, 0.6, 0.54), 0.05, 0.05, trim, Surface::Steel, 1.0);
+            m.beam(V(-1.25, 1.44, -0.58), V(1.25, 1.44, -0.58), 0.05, 0.05, trim, Surface::Steel, 1.0);
+            for k in 0..3 {
+                let (x0, x1) = (-1.2 + k as f32 * 0.82, -0.44 + k as f32 * 0.82);
+                m.quad(V(x0, 0.64, 0.56), V(x1, 0.64, 0.56), V(x1, 1.5, -0.56), V(x0, 1.5, -0.56), panel, Surface::Window, 1.0);
+            }
+            m.aabb(V(1.35, 0.0, 0.3), V(1.65, 0.45, 0.6), palette::wall(colors), Surface::Concrete, 1.0);
         }
     }
     (m, markers)
@@ -486,35 +543,47 @@ fn scatter_pass(seed: u64, blockers: &[Vec<Vec2>], probe: &Probe, keep: f32) -> 
             }
             let at = V(p.x, y, p.y);
             let flowers = (probe.paint)(PaintLayer::Flowers, p).clamp(0.0, 1.0);
-            let bush_s = (probe.paint)(PaintLayer::Ferns, p).clamp(0.0, 1.0);
-            let grain = (probe.paint)(PaintLayer::Moss, p).clamp(0.0, 1.0);
-            let dirt = (probe.paint)(PaintLayer::Gravel, p).clamp(0.0, 1.0);
+            let fern_s = (probe.paint)(PaintLayer::Ferns, p).clamp(0.0, 1.0);
+            let moss = (probe.paint)(PaintLayer::Moss, p).clamp(0.0, 1.0);
+            let gravel = (probe.paint)(PaintLayer::Gravel, p).clamp(0.0, 1.0);
 
-            // Bushes (min spacing).
-            if bush_s > 0.05 && rng.f() < 0.06 * bush_s {
+            // Fern clumps (min spacing): painted, plus the odd one hugging water.
+            let mut fern_p = 0.07 * fern_s;
+            if fern_p < 0.01 && rng.f() < 0.04 {
+                let wet = [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y].iter().any(|d| (probe.water)(p + *d * 2.5));
+                fern_p = if wet { 0.5 } else { 0.0 };
+            }
+            if fern_p > 0.0 && rng.f() < fern_p {
                 let key = ((p.x / BUSH_SPACING).floor() as i32, (p.y / BUSH_SPACING).floor() as i32);
                 let near = (-1..=1).any(|dx| {
                     (-1..=1).any(|dz| bushes.get(&(key.0 + dx, key.1 + dz)).is_some_and(|v| v.iter().any(|q| q.distance(p) < BUSH_SPACING)))
                 });
                 if !near {
                     bushes.entry(key).or_default().push(p);
-                    let k = 0.7 + 0.4 * rng.f();
-                    bush_into(&mut m, at, k, 2, &mut rng);
+                    fern_clump(&mut m, at, 0.7 + 0.6 * rng.f(), &mut rng);
                     continue;
                 }
             }
-            // Grain clusters.
-            if grain > 0.05 && rng.f() < 0.5 * grain {
-                grain_cluster(&mut m, at, &mut rng);
+            // Moss cushions.
+            if moss > 0.05 && rng.f() < 0.4 * moss {
+                moss_mound(&mut m, at, &mut rng);
                 continue;
             }
-            // Grass tufts (suppressed on dirt, grain and in dense flowers).
-            let ptuft = 0.45 * (1.0 - (dirt * 1.5).min(1.0)) * (1.0 - grain * 0.8) * (1.0 - flowers * 0.5);
+            // Gravel: a few pebbles (the terrain shader paints the ground itself).
+            if gravel > 0.05 && rng.f() < 0.05 * gravel {
+                pebble(&mut m, at, &mut rng);
+            }
+            // Grass tufts (suppressed on gravel, moss and in dense flowers).
+            let ptuft = 0.45 * (1.0 - (gravel * 1.5).min(1.0)) * (1.0 - moss * 0.8) * (1.0 - flowers * 0.5);
             if rng.f() < ptuft {
                 tuft(&mut m, at, &mut rng);
             }
-            // Flowers: sparse wild ones everywhere, dense where painted.
-            let pf = (0.03 + 0.5 * flowers) * (1.0 - dirt * 0.8);
+            // Clover patches in the wild meadow.
+            if rng.f() < 0.1 * (1.0 - gravel) {
+                clover(&mut m, at, &mut rng);
+            }
+            // Wildflowers: sparse everywhere, dense where painted.
+            let pf = (0.05 + 0.5 * flowers) * (1.0 - gravel * 0.8);
             if rng.f() < pf {
                 let patch = hash2(seed, (p.x / 3.0).floor(), (p.y / 3.0).floor());
                 let idx = if rng.f() < 0.85 { patch % 6 } else { rng.next_u64() % 6 } as u32;
@@ -550,17 +619,44 @@ fn flower(m: &mut MeshData, at: Vec3, idx: u32, rng: &mut Rng) {
     m.cylinder(top - Vec3::Y * 0.02, 0.09, 0.0, 0.06, 4, false, false, col, Surface::Petal, 1.0);
 }
 
-fn grain_cluster(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
-    let gold = palette::grain();
-    for _ in 0..2 {
-        let yaw = rng.f() * std::f32::consts::PI;
-        let dir = V(yaw.cos(), 0.0, yaw.sin());
-        let h = rng.range(0.8, 1.0);
-        let base = at + V(rng.range(-0.2, 0.2), -0.02, rng.range(-0.2, 0.2));
-        let top = base + V(rng.range(-0.08, 0.08), h, rng.range(-0.08, 0.08));
-        let k = rng.range(0.85, 1.1);
-        stalk(m, base, dir, 0.03, top, 0.015, gold * V(0.55, 0.7, 0.4), gold * k, Surface::Fiber);
-        blade(m, top, dir, 0.035, top + Vec3::Y * 0.14, gold * 0.9 * k, gold * 0.75 * k, Surface::Fiber);
+/// Triangle lying flat, normal forced upwards.
+fn up_tri(m: &mut MeshData, a: Vec3, b: Vec3, c: Vec3, col: Vec3, s: Surface) {
+    if (b - a).cross(c - a).y >= 0.0 {
+        m.tri(a, b, c, col, s, 1.0);
+    } else {
+        m.tri(a, c, b, col, s, 1.0);
+    }
+}
+
+/// Low cushion of moss: one flattened lumpy blob hugging the ground.
+fn moss_mound(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
+    let r = rng.range(0.22, 0.4);
+    let col = tint(palette::leaves() * V(0.55, 0.95, 0.45), rng, 0.3);
+    blob(m, at, V(r, r * 0.4, r), 0.2, col, Surface::Sedum, rng, Some(at.y - 0.01));
+}
+
+/// Small flattened stone: jittered octahedron.
+fn pebble(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
+    let (rx, rz, h) = (rng.range(0.04, 0.1), rng.range(0.04, 0.1), rng.range(0.03, 0.06));
+    let col = palette::rock() * rng.range(0.7, 1.1);
+    let c = at + Vec3::Y * (h * 0.4);
+    let ring = [V(rx, 0.0, 0.0), V(0.0, 0.0, rz * 1.2), V(-rx, 0.0, 0.0), V(0.0, 0.0, -rz)];
+    for i in 0..4 {
+        let (a, b) = (c + ring[i], c + ring[(i + 1) % 4]);
+        m.tri(c + Vec3::Y * h, a, b, col, Surface::Rock, 1.0);
+        m.tri(c - Vec3::Y * h * 0.4, b, a, col * 0.8, Surface::Rock, 1.0);
+    }
+}
+
+/// Three flat trefoil leaves.
+fn clover(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
+    let col = palette::grass() * V(0.7, 0.95, 0.6) * rng.range(0.85, 1.15);
+    let yaw0 = rng.f() * std::f32::consts::TAU;
+    let base = at + Vec3::Y * 0.015;
+    for k in 0..3 {
+        let a = yaw0 + k as f32 * std::f32::consts::TAU / 3.0;
+        let (d, s) = (V(a.cos(), 0.0, a.sin()), V(-a.sin(), 0.0, a.cos()));
+        up_tri(m, base, base + d * 0.14 + s * 0.06, base + d * 0.14 - s * 0.06, col, Surface::Leaves);
     }
 }
 
