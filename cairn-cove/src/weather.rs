@@ -1,13 +1,20 @@
-//! Day/night clock and weather → `Environment`, plus rain/snow/lightning effects.
+//! Day/night clock, tide, wind and weather → [`Environment`], plus rain/snow/lightning effects.
+//!
+//! The light rig is DESIGN.md A4 implemented literally: keyframes (sRGB, interpolated by the
+//! hour) 04:30 night → 06:00 dawn → 08:30 noon → 15:00 noon → 17:00 golden → 19:00 dusk →
+//! 20:30 night, each with sun/fill/tint/litRot/rim, a 3-stop sky, disc, fog, outline and the
+//! A6 sea bands. Weather modifiers are deltas on the current time row, blended over 6 s.
 //!
 //! Contract used by ui / shot: [`Clock`] and [`Weather`] resources (UI writes, this reads).
+//! Writes [`Environment`], [`Wind`] and [`Tide`] every frame.
 //!
 //! CLI (for screenshots): `--weather NAME --time H [--flash]`. With `--render-test` the clock is
 //! paused and weather snapped; without those flags the render test keeps its own preset.
 
-use crate::env::Environment;
+use crate::env::{Environment, Tide, Wind};
 use crate::render::{GameCamera, GladeAssets, Particle, ParticleKind, particle_mesh, write_particle_mesh};
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
+use cairn_cove_core::palette::{hex_to_unit, srgb};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum WeatherKind {
@@ -40,6 +47,9 @@ impl WeatherKind {
         }
         Self::ALL.into_iter().find(|w| w.name().eq_ignore_ascii_case(s))
     }
+    fn index(self) -> usize {
+        self as usize
+    }
 }
 
 /// Time of day.
@@ -59,8 +69,8 @@ impl Default for Clock {
 }
 
 /// Weather target. With `auto`, the weather system picks the next state itself every few
-/// minutes. Transitions blend smoothly over a few seconds (or instantly when `snap` is set,
-/// which the weather system clears after applying — used by `--demo-shot`).
+/// minutes. Transitions blend smoothly over 6 s (or instantly when `snap` is set, which the
+/// weather system clears after applying — used by `--demo-shot`).
 #[derive(Resource, Clone, Debug)]
 pub struct Weather {
     pub kind: WeatherKind,
@@ -78,65 +88,240 @@ impl Default for Weather {
     }
 }
 
-// ---------------------------------------------------------------- pure helpers
+// ---------------------------------------------------------------- the light rig (A4)
 
-type Pal = [Vec3; 8];
-const fn v(r: f32, g: f32, b: f32) -> Vec3 {
-    Vec3::new(r, g, b)
-}
-/// Palette slots: sun×intensity, ambient sky, ambient ground, shadow tint, sky top, horizon, fog, (night,0,0).
-const NIGHT: Pal = [v(0.13, 0.18, 0.46), v(0.06, 0.09, 0.22), v(0.04, 0.04, 0.07), v(0.62, 0.66, 1.0), v(0.006, 0.01, 0.045), v(0.03, 0.05, 0.13), v(0.03, 0.05, 0.12), v(1.0, 0.0, 0.0)];
-const KEYS: [(f32, Pal); 9] = [
-    (0.0, NIGHT),
-    (4.5, NIGHT),
-    // dawn: pale rose light over cold concrete
-    (6.0, [v(1.0, 0.6, 0.45), v(0.36, 0.34, 0.5), v(0.24, 0.19, 0.17), v(0.8, 0.72, 0.95), v(0.26, 0.34, 0.66), v(0.95, 0.66, 0.56), v(0.8, 0.6, 0.55), v(0.3, 0.0, 0.0)]),
-    // morning
-    (8.0, [v(2.05, 1.78, 1.38), v(0.38, 0.46, 0.62), v(0.27, 0.25, 0.19), v(0.78, 0.76, 0.94), v(0.24, 0.45, 0.82), v(0.78, 0.84, 0.9), v(0.78, 0.84, 0.9), v(0.0, 0.0, 0.0)]),
-    // noon: warm sun, cool blue-violet shade
-    (12.0, [v(2.3, 2.1, 1.74), v(0.4, 0.48, 0.64), v(0.29, 0.27, 0.2), v(0.76, 0.74, 0.94), v(0.2, 0.42, 0.8), v(0.7, 0.8, 0.9), v(0.72, 0.81, 0.9), v(0.0, 0.0, 0.0)]),
-    // golden hour
-    (17.5, [v(2.2, 1.55, 0.88), v(0.38, 0.38, 0.54), v(0.28, 0.22, 0.16), v(0.8, 0.72, 0.95), v(0.22, 0.38, 0.74), v(0.98, 0.76, 0.52), v(0.88, 0.7, 0.55), v(0.0, 0.0, 0.0)]),
-    // dusk: amber sun, violet sky
-    (19.0, [v(1.9, 0.98, 0.5), v(0.33, 0.3, 0.5), v(0.24, 0.17, 0.14), v(0.8, 0.7, 0.98), v(0.18, 0.2, 0.5), v(0.92, 0.5, 0.34), v(0.75, 0.46, 0.4), v(0.4, 0.0, 0.0)]),
-    // twilight: deep blue hour
-    (20.5, [v(0.36, 0.34, 0.68), v(0.16, 0.18, 0.36), v(0.08, 0.07, 0.11), v(0.68, 0.68, 1.0), v(0.03, 0.05, 0.18), v(0.3, 0.22, 0.38), v(0.22, 0.18, 0.3), v(0.9, 0.0, 0.0)]),
-    (22.0, NIGHT),
-];
-
-/// Keyframe palette at `hour`, wrapping smoothly over midnight.
-pub fn sample_palette(hour: f32) -> Pal {
-    let h = hour.rem_euclid(24.0);
-    let (a, b) = match KEYS.iter().position(|k| k.0 > h) {
-        Some(i) => (KEYS[i - 1], KEYS[i]),
-        None => (KEYS[KEYS.len() - 1], (24.0, KEYS[0].1)),
-    };
-    let t = (h - a.0) / (b.0 - a.0);
-    let t = t * t * (3.0 - 2.0 * t);
-    std::array::from_fn(|i| a.1[i].lerp(b.1[i], t))
+/// One row of the light rig. Every colour is sRGB 0..1 (interpolated in sRGB).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rig {
+    pub sun: Vec3,
+    pub sun_i: f32,
+    pub fill: Vec3,
+    pub fill_i: f32,
+    pub tint: Vec3,
+    pub lit_rot: f32,
+    pub rim: Vec3,
+    /// Zenith, mid, horizon.
+    pub sky: [Vec3; 3],
+    pub disc: Vec3,
+    pub fog: Vec3,
+    pub outline: Vec3,
+    /// Shallow, mid, deep, abyss, foam, glint.
+    pub sea: [Vec3; 6],
+    /// Sea-fog colour for this hour (A4 sea fog row).
+    pub sea_fog: Vec3,
+    /// Fog density.
+    pub fog_density: f32,
+    /// Sea-fog bank strength 0..1.
+    pub bank: f32,
 }
 
-/// True sun direction (may be below the horizon): east (-x) at 6:00, ~60° at noon, west at 19:00.
-pub fn sun_raw(hour: f32) -> Vec3 {
-    let h = hour.rem_euclid(24.0);
-    let day = (6.0..19.0).contains(&h);
-    let (a, el) = if day {
-        let a = (h - 6.0) / 13.0 * std::f32::consts::PI;
-        (a, a.sin() * 52f32.to_radians())
+fn h(hex: u32) -> Vec3 {
+    hex_to_unit(hex)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row(sun: (u32, f32), fill: (u32, f32), tint: u32, lit_rot: f32, rim: u32, sky: [u32; 3], disc: u32, fog: u32, outline: Vec3, sea: [u32; 6], sea_fog: u32) -> Rig {
+    Rig {
+        sun: h(sun.0),
+        sun_i: sun.1,
+        fill: h(fill.0),
+        fill_i: fill.1,
+        tint: h(tint),
+        lit_rot,
+        rim: h(rim),
+        sky: sky.map(h),
+        disc: h(disc),
+        fog: h(fog),
+        outline,
+        sea: sea.map(h),
+        sea_fog: h(sea_fog),
+        fog_density: 0.0035,
+        bank: 0.0,
+    }
+}
+
+const OUTLINE_DAY: u32 = 0x31217B;
+const OUTLINE_NIGHT: u32 = 0x10104A;
+
+pub fn dawn() -> Rig {
+    row((0xFFC5A5, 0.90), (0xD6BDFF, 0.85), 0x6342AD, 0.0, 0xFF9CCE, [0x5263DE, 0xC584D6, 0xFFB5A5], 0xFFD6AD, 0xEFADC5, h(OUTLINE_DAY), [0x4ADEE6, 0x3194D6, 0x2952C5, 0x3131A5, 0xFFEFF7, 0xFFCEC5], 0xFFCEDE)
+}
+pub fn noon() -> Rig {
+    row((0xFFFFFF, 1.0), (0xFFFFFF, 1.0), 0x4A3AAD, 0.0, 0xCEF7FF, [0x1973F7, 0x42ADFF, 0x8CE6FF], 0xFFFFDE, 0xB5EFFF, h(OUTLINE_DAY), [0x19DECE, 0x08ADD6, 0x1052C5, 0x1929A5, 0xFFFFFF, 0xFFFFDE], 0xCEF7EF)
+}
+pub fn golden() -> Rig {
+    row((0xFFD69C, 1.0), (0xEFB5DE, 0.90), 0x7329A5, 0.0, 0xFFD631, [0x3A5AD6, 0xEF84A5, 0xFFC55A], 0xFFE673, 0xFFBD84, h(OUTLINE_DAY), [0x3AE6B5, 0x19B5BD, 0x194AB5, 0x29299C, 0xFFF7DE, 0xFFD67B], 0xFFD6AD)
+}
+pub fn dusk() -> Rig {
+    let outline = h(OUTLINE_DAY).lerp(h(OUTLINE_NIGHT), 0.5);
+    row((0xFFADC5, 0.85), (0xB594EF, 0.78), 0x42198C, 10.0, 0xFF4AAD, [0x3A2194, 0xE63A9C, 0xFF7B42], 0xFF8C52, 0xB54AA5, outline, [0x31B5CE, 0x3A63C5, 0x2931A5, 0x29198C, 0xFFC5DE, 0xFF7BD6], 0xD68CC5)
+}
+pub fn night() -> Rig {
+    row((0xA5ADFF, 0.55), (0x7B8CFF, 0.62), 0x21197B, 30.0, 0x63DEFF, [0x081063, 0x102994, 0x2152C5], 0xDEEFFF, 0x19297B, h(OUTLINE_NIGHT), [0x1984A5, 0x105A9C, 0x10318C, 0x10196B, 0x9CBDFF, 0xCEF7FF], 0x293A9C)
+}
+
+impl Rig {
+    pub fn lerp(&self, o: &Rig, t: f32) -> Rig {
+        let l = |a: Vec3, b: Vec3| a.lerp(b, t);
+        let f = |a: f32, b: f32| a + (b - a) * t;
+        Rig {
+            sun: l(self.sun, o.sun),
+            sun_i: f(self.sun_i, o.sun_i),
+            fill: l(self.fill, o.fill),
+            fill_i: f(self.fill_i, o.fill_i),
+            tint: l(self.tint, o.tint),
+            lit_rot: f(self.lit_rot, o.lit_rot),
+            rim: l(self.rim, o.rim),
+            sky: std::array::from_fn(|i| l(self.sky[i], o.sky[i])),
+            disc: l(self.disc, o.disc),
+            fog: l(self.fog, o.fog),
+            outline: l(self.outline, o.outline),
+            sea: std::array::from_fn(|i| l(self.sea[i], o.sea[i])),
+            sea_fog: l(self.sea_fog, o.sea_fog),
+            fog_density: f(self.fog_density, o.fog_density),
+            bank: f(self.bank, o.bank),
+        }
+    }
+}
+
+/// The time-of-day rig at `hour` (A4 keyframes, interpolated in sRGB, wrapping at midnight).
+pub fn rig_at(hour: f32) -> Rig {
+    let hr = hour.rem_euclid(24.0);
+    let keys: [(f32, fn() -> Rig); 8] =
+        [(4.5, night), (6.0, dawn), (8.5, noon), (15.0, noon), (17.0, golden), (19.0, dusk), (20.5, night), (28.5, night)];
+    let x = if hr < 4.5 { hr + 24.0 } else { hr };
+    let i = keys.iter().position(|k| k.0 > x).unwrap_or(keys.len() - 1).max(1);
+    let (a, b) = (keys[i - 1], keys[i]);
+    let t = ((x - a.0) / (b.0 - a.0)).clamp(0.0, 1.0);
+    (a.1)().lerp(&(b.1)(), t)
+}
+
+/// 0 by day, 1 at night (follows the rig keys: 0 until 19:00, 1 from 20:30 to 04:30).
+pub fn night_weight(hour: f32) -> f32 {
+    let x = hour.rem_euclid(24.0);
+    if (6.0..=19.0).contains(&x) {
+        0.0
+    } else if x > 19.0 && x < 20.5 {
+        (x - 19.0) / 1.5
+    } else if x > 4.5 && x < 6.0 {
+        1.0 - (x - 4.5) / 1.5
     } else {
-        let a = (h - 19.0).rem_euclid(24.0) / 11.0 * std::f32::consts::PI;
-        (a, -a.sin() * 45f32.to_radians())
+        1.0
+    }
+}
+
+/// Emissive strength: Glow / WindowLight / Fire full from 19:30 to 06:00; lanterns from 19:00.
+pub fn emissive_weight(hour: f32) -> f32 {
+    let x = hour.rem_euclid(24.0);
+    let eve = smooth(19.0, 19.5, x);
+    let morn = 1.0 - smooth(5.5, 6.0, x);
+    if x >= 12.0 { eve } else { morn }
+}
+
+fn mix_toward(c: Vec3, target: u32, k: f32) -> Vec3 {
+    c.lerp(h(target), k)
+}
+
+/// Applies weather `kind`'s A4 modifiers to the time row `base`. `day` (0..1) fades the
+/// absolute replacements (sky, fill, fog) toward the time row at night, so a rainy night
+/// stays an ultramarine night.
+pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
+    let mut r = *base;
+    let set = |c: Vec3, hex: u32| c.lerp(h(hex), day);
+    let sky = |r: &mut Rig, s: [u32; 3]| {
+        for (c, hx) in r.sky.iter_mut().zip(s) {
+            *c = c.lerp(h(hx), day);
+        }
     };
-    let x = if day { -a.cos() } else { a.cos() };
+    match kind {
+        WeatherKind::Clear => {}
+        WeatherKind::Overcast => {
+            r.sun_i *= 0.60;
+            r.sun = mix_toward(r.sun, 0xF7EFFF, 0.5);
+            r.fill = set(r.fill, 0xC5BDFF);
+            r.fill_i *= 1.0 + 0.25 * day;
+            r.tint = set(r.tint, 0x6B63CE);
+            r.rim = Vec3::ZERO;
+            sky(&mut r, [0x7BA5EF, 0xA5BDFF, 0xCEDEFF]);
+            r.fog = set(r.fog, 0xC5CEFF);
+            r.sea[0] = set(r.sea[0], 0x21C5BD);
+            r.fog_density = 0.006;
+        }
+        WeatherKind::Rain => {
+            r.sun_i *= 0.45;
+            r.fill = set(r.fill, 0x8C9CF7);
+            r.tint = set(r.tint, 0x4A3AB5);
+            sky(&mut r, [0x4A6BD6, 0x6B94EF, 0x9CB5FF]);
+            r.fog = set(r.fog, 0x6B9CE6);
+            r.fog_density *= 2.0;
+            r.sea[1] = set(r.sea[1], 0x08A5C5);
+        }
+        WeatherKind::Storm => {
+            r.sun = set(r.sun, 0x8CEFE6);
+            r.sun_i = base.sun_i * 0.30;
+            r.fill = set(r.fill, 0x5A7BDE);
+            r.fill_i *= 0.90;
+            r.tint = set(r.tint, 0x31107B);
+            r.rim = h(0x42FFE6);
+            sky(&mut r, [0x29107B, 0x2952BD, 0x19A5AD]);
+            r.fog = set(r.fog, 0x29639C);
+            for (i, hx) in [0x10C5B5, 0x1084AD, 0x103A9C, 0x10216B].into_iter().enumerate() {
+                r.sea[i] = set(r.sea[i], hx);
+            }
+            r.fog_density = 0.009;
+        }
+        WeatherKind::Fog => {
+            r.sun_i *= 0.65;
+            r.fog = base.sea_fog;
+            r.fill = base.sea_fog;
+            r.fill_i = 0.85 + 0.15 * (1.0 - day);
+            for c in r.sky.iter_mut() {
+                *c = c.lerp(base.sea_fog, 0.4);
+            }
+            r.fog_density = 0.012;
+            r.bank = 1.0;
+        }
+        WeatherKind::Snow => {
+            r.sun = set(r.sun, 0xFFF7EF);
+            r.sun_i *= 0.90;
+            r.fill = set(r.fill, 0xADC5FF);
+            r.tint = set(r.tint, 0x5A5AE6);
+            sky(&mut r, [0x73B5FF, 0xA5D6FF, 0xDEF7FF]);
+            r.fog = set(r.fog, 0xCEE6FF);
+            // The sea moves one band deeper.
+            let s = base.sea;
+            r.sea[0] = set(s[0], 0x10A5CE);
+            r.sea[1] = s[2];
+            r.sea[2] = s[3];
+            r.fog_density = 0.006;
+        }
+    }
+    r
+}
+
+/// Wind strength (m/s) per weather, indexed like [`WeatherKind::ALL`].
+const WIND: [f32; 6] = [1.2, 2.5, 4.0, 9.0, 0.6, 1.5];
+const AUTO_ODDS: [f32; 6] = [40.0, 20.0, 15.0, 10.0, 8.0, 7.0];
+
+/// True sun direction (may be below the horizon): rises in the east (-x) at 05:00, peaks at
+/// 60° at 12:00, sets in the west at 19:00 (half-set at dusk).
+pub fn sun_raw(hour: f32) -> Vec3 {
+    let hr = hour.rem_euclid(24.0);
+    let a = (hr - 5.0) / 14.0 * std::f32::consts::PI;
+    let el = if (5.0..19.0).contains(&hr) { a.sin() * 60f32.to_radians() } else { -(a - std::f32::consts::PI).sin().abs() * 40f32.to_radians() };
+    let x = -a.cos();
     Vec3::new(x * el.cos(), el.sin(), 0.6 * el.cos()).normalize()
 }
 
-/// Direction of the light that casts shadows: sun by day, the moon (antipode) at night.
+/// Direction of the shadow-casting light: the sun by day, the moon (antipode) from 20:30 to
+/// 04:30. Kept above 12° so shadows stay sharp and readable at every hour.
 pub fn light_dir(hour: f32) -> Vec3 {
-    let h = hour.rem_euclid(24.0);
-    let w = smooth(5.5, 6.5, h) * (1.0 - smooth(19.0, 20.0, h));
-    let d = (-sun_raw(h)).lerp(sun_raw(h), w);
-    Vec3::new(d.x, d.y.max(0.12), d.z).normalize()
+    let hr = hour.rem_euclid(24.0);
+    let w = smooth(4.5, 5.5, hr) * (1.0 - smooth(19.5, 20.5, hr));
+    let s = sun_raw(hr);
+    let moon = Vec3::new(-s.x, s.y.abs().max(0.6), -s.z * 0.4 + 0.3);
+    let d = moon.normalize().lerp(Vec3::new(s.x, s.y.max(0.2), s.z), w);
+    Vec3::new(d.x, d.y.max(0.21), d.z).normalize()
 }
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -156,13 +341,6 @@ fn step_weights(w: &mut [f32; 6], target: usize, secs: f32, dt: f32) {
     }
 }
 
-/// Lightning flash intensity `t` seconds after the strike: spike to 1, 0.25 s decay, second flicker.
-pub fn flash_curve(t: f32) -> f32 {
-    let a = (1.0 - t / 0.25).clamp(0.0, 1.0);
-    let b = if t >= 0.12 { 0.8 * (1.0 - (t - 0.12) / 0.25).clamp(0.0, 1.0) } else { 0.0 };
-    a.max(b)
-}
-
 /// Where the camera looks on the ground plane (y = 0).
 pub fn ground_focus(pos: Vec3, fwd: Vec3) -> Vec3 {
     if fwd.y < -0.05 { pos + fwd * (-pos.y / fwd.y) } else { Vec3::new(pos.x, 0.0, pos.z) }
@@ -178,42 +356,102 @@ fn hash(i: u32, s: u32) -> f32 {
     (h ^ (h >> 13)) as f32 / u32::MAX as f32
 }
 
-// ---------------------------------------------------------------- weather looks
+/// Inputs to [`environment`] besides the hour.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WeatherMix {
+    /// Weights of each [`WeatherKind`] (indexed like `ALL`), summing to ~1.
+    pub w: [f32; 6],
+    pub wet: f32,
+    pub snow: f32,
+    /// Lightning on this frame.
+    pub flash: bool,
+    pub wind: Vec2,
+}
 
-const SUN: usize = 0; // sun intensity ×
-const SAT: usize = 1; // light saturation
-const GREY: usize = 2; // sky/fog → grey mix
-const SKY: usize = 3; // grey sky brightness ×
-const AMB: usize = 4; // ambient ×
-const FLAT: usize = 5; // shadow tint flattening
-const FOG: usize = 6; // fog density added
-const NIGHT_ADD: usize = 7;
-const WIND: usize = 8; // m/s
-const WET: usize = 11; // wetness target
-const COVER: usize = 12; // snow cover target
-const COLD: usize = 13; // cold light tint
-type Look = [f32; 15];
-/// Indexed like `WeatherKind::ALL`; slots 9, 10, 14 (rain, snowfall, fog wisps) are unused here:
-/// particle amounts come straight from the kind weights.
-const LOOKS: [Look; 6] = [
-    // Clear
-    [1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    // Overcast: flat slate light, soft shadows
-    [0.5, 0.45, 0.75, 0.82, 1.05, 0.6, 0.008, 0.12, 2.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    // Rain
-    [0.32, 0.4, 0.88, 0.7, 0.92, 0.7, 0.016, 0.3, 4.0, 1.0, 0.0, 1.0, 0.0, 0.3, 0.0],
-    // Storm: dark slate sky, very dim sun, lightning
-    [0.14, 0.25, 0.97, 0.3, 0.5, 0.82, 0.022, 0.6, 9.0, 1.3, 0.0, 1.0, 0.0, 0.8, 0.0],
-    // Fog: dense, soft, milky
-    [0.45, 0.55, 0.65, 1.05, 1.0, 0.7, 0.075, 0.08, 0.6, 0.0, 0.0, 0.0, 0.0, 0.2, 1.0],
-    // Snow
-    [0.8, 0.8, 0.4, 1.0, 1.05, 0.4, 0.012, 0.05, 1.5, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
-];
-const STORM: usize = 3;
-const AUTO_ODDS: [f32; 6] = [40.0, 20.0, 15.0, 10.0, 8.0, 7.0];
+impl WeatherMix {
+    /// All of `kind`, settled (wet / snow cover at their targets).
+    pub fn settled(kind: WeatherKind) -> Self {
+        let mut w = [0.0; 6];
+        w[kind.index()] = 1.0;
+        let dir = Vec2::new(0.96, 0.29);
+        Self {
+            w,
+            wet: if matches!(kind, WeatherKind::Rain | WeatherKind::Storm) { 1.0 } else { 0.0 },
+            snow: if kind == WeatherKind::Snow { 1.0 } else { 0.0 },
+            flash: false,
+            wind: dir * WIND[kind.index()],
+        }
+    }
+}
 
-fn lum(c: Vec3) -> f32 {
-    c.dot(Vec3::new(0.3, 0.59, 0.11))
+/// The full environment at `hour` under the weather mix `m`. Pure.
+pub fn environment(hour: f32, m: &WeatherMix) -> Environment {
+    let base = rig_at(hour);
+    let nw = night_weight(hour);
+    let day = 1.0 - nw;
+    let sum: f32 = m.w.iter().sum::<f32>().max(1e-4);
+    let mut rig = base;
+    let mut acc: Option<Rig> = None;
+    let mut acc_w = 0.0;
+    for k in WeatherKind::ALL {
+        let wk = m.w[k.index()] / sum;
+        if wk <= 0.0 {
+            continue;
+        }
+        let r = apply_weather(&base, k, day);
+        acc = Some(match acc {
+            None => r,
+            Some(a) => a.lerp(&r, wk / (acc_w + wk)),
+        });
+        acc_w += wk;
+    }
+    if let Some(a) = acc {
+        rig = a;
+    }
+    let wk = |k: WeatherKind| m.w[k.index()] / sum;
+    let storm = wk(WeatherKind::Storm);
+    let fog = wk(WeatherKind::Fog);
+
+    if m.flash {
+        // Lightning: the whole frame lit as if sunI = 1.6 with sun #E6DEFF, flat lilac sky.
+        rig.sun = h(0xE6DEFF);
+        rig.sun_i = 1.6;
+        rig.sky = [h(0xCEBDFF); 3];
+    }
+    let lin = |c: Vec3| srgb(cairn_cove_core::palette::unit_to_hex(c));
+    let fill = rig.fill * rig.fill_i;
+    let sun_raw_y = sun_raw(hour).y;
+    let tide = Tide::at(hour);
+    Environment {
+        sun_dir: light_dir(hour),
+        sun_color: rig.sun * rig.sun_i,
+        fill_color: fill,
+        ambient_sky: lin(fill.min(Vec3::ONE)) * 0.8 + lin(rig.sky[2]) * 0.2,
+        ambient_ground: lin((fill * 0.7).min(Vec3::ONE)),
+        shadow_tint: rig.tint,
+        rim_color: rig.rim,
+        lit_rot: rig.lit_rot,
+        sky_top: lin(rig.sky[0]),
+        sky_mid: lin(rig.sky[1]),
+        sky_horizon: lin(rig.sky[2]),
+        disc_color: lin(rig.disc),
+        outline: lin(rig.outline),
+        fog_color: lin(rig.fog),
+        fog_density: rig.fog_density,
+        sea_fog: rig.bank,
+        fog_top: 3.0,
+        sea: rig.sea.map(lin),
+        storm,
+        wetness: m.wet,
+        snow: m.snow,
+        night: emissive_weight(hour).max(0.75 * storm).max(0.6 * fog).min(1.0),
+        dark: smooth(-0.02, -0.105, sun_raw_y),
+        flash: if m.flash { 1.0 } else { 0.0 },
+        wind: m.wind,
+        tide: tide.level,
+        tide_falling: tide.falling,
+        hour: hour.rem_euclid(24.0),
+    }
 }
 
 // ---------------------------------------------------------------- systems
@@ -228,7 +466,8 @@ struct State {
     wet: f32,
     snow: f32,
     next_flash: f32,
-    flash_age: f32,
+    /// Frames of lightning left (a strike lasts 2 frames).
+    flash_frames: u32,
     bolt: Vec<Vec3>,
     freeze_flash: bool,
     mesh: Option<Handle<Mesh>>,
@@ -252,11 +491,11 @@ impl Plugin for WeatherPlugin {
         let args: Vec<String> = std::env::args().collect();
         let value = |f: &str| args.iter().position(|a| a == f).and_then(|i| args.get(i + 1)).cloned();
         let test = args.iter().any(|a| a == "--render-test");
-        let (w, h) = (value("--weather").and_then(|s| WeatherKind::parse(&s)), value("--time").and_then(|s| s.parse::<f32>().ok()));
+        let (w, hr) = (value("--weather").and_then(|s| WeatherKind::parse(&s)), value("--time").and_then(|s| s.parse::<f32>().ok()));
         let mut clock = Clock::default();
         let mut weather = Weather::default();
-        if let Some(h) = h {
-            clock.hour = h;
+        if let Some(hr) = hr.filter(|h| h.is_finite()) {
+            clock.hour = hr.rem_euclid(24.0);
         }
         if let Some(k) = w {
             weather.kind = k;
@@ -275,14 +514,19 @@ impl Plugin for WeatherPlugin {
             auto_timer: 0.0,
             wet: 0.0,
             snow: 0.0,
-            next_flash: 3.0,
-            flash_age: 99.0,
+            next_flash: 2.0,
+            flash_frames: 0,
             bolt: Vec::new(),
             freeze_flash: args.iter().any(|a| a == "--flash"),
             mesh: None,
-            drive: !test || w.is_some() || h.is_some(),
+            drive: !test || w.is_some() || hr.is_some(),
         };
-        app.insert_resource(clock).insert_resource(weather).insert_resource(state).add_systems(Update, (tick_clock, update_env, particles).chain());
+        app.insert_resource(clock)
+            .insert_resource(weather)
+            .insert_resource(state)
+            .init_resource::<Wind>()
+            .init_resource::<Tide>()
+            .add_systems(Update, (tick_clock, update_env, particles).chain());
     }
 }
 
@@ -299,10 +543,22 @@ fn tick_clock(time: Res<Time>, keys: Res<ButtonInput<KeyCode>>, mut clock: ResMu
     if !clock.paused {
         clock.hour += clock.speed * time.delta_secs();
     }
+    if !clock.hour.is_finite() {
+        clock.hour = 12.0;
+    }
     clock.hour = clock.hour.rem_euclid(24.0);
 }
 
-fn update_env(time: Res<Time>, clock: Res<Clock>, mut weather: ResMut<Weather>, mut st: ResMut<State>, mut env: ResMut<Environment>) {
+fn update_env(
+    time: Res<Time>,
+    clock: Res<Clock>,
+    mut weather: ResMut<Weather>,
+    mut st: ResMut<State>,
+    mut env: ResMut<Environment>,
+    mut wind: ResMut<Wind>,
+    mut tide: ResMut<Tide>,
+) {
+    *tide = Tide::at(clock.hour);
     if !st.drive {
         return;
     }
@@ -315,67 +571,54 @@ fn update_env(time: Res<Time>, clock: Res<Clock>, mut weather: ResMut<Weather>, 
         if st.auto_timer <= 0.0 {
             if !st.first {
                 let mut r = st.rand() * AUTO_ODDS.iter().sum::<f32>();
-                weather.kind = WeatherKind::ALL[AUTO_ODDS.iter().position(|o| { r -= o; r < 0.0 }).unwrap_or(0)];
+                weather.kind = WeatherKind::ALL[AUTO_ODDS.iter().position(|o| {
+                    r -= o;
+                    r < 0.0
+                })
+                .unwrap_or(0)];
             }
             st.auto_timer = 120.0 + 180.0 * st.rand();
         }
     }
     st.first = false;
-    let target = WeatherKind::ALL.iter().position(|k| *k == weather.kind).unwrap_or(0);
+    let target = weather.kind.index();
     if snap {
         st.w = [0.0; 6];
         st.w[target] = 1.0;
     } else {
         step_weights(&mut st.w, target, 6.0, dt);
     }
-    let sum: f32 = st.w.iter().sum();
-    let mut look: Look = [0.0; 15];
-    for (i, l) in LOOKS.iter().enumerate() {
-        for (o, x) in look.iter_mut().zip(l) {
-            *o += x * st.w[i] / sum;
-        }
-    }
-    let storm = st.w[STORM] / sum;
+    let sum: f32 = st.w.iter().sum::<f32>().max(1e-4);
+    let wk = |k: WeatherKind| st.w[k.index()] / sum;
+    let wet_target = wk(WeatherKind::Rain) + wk(WeatherKind::Storm);
+    let snow_target = wk(WeatherKind::Snow);
+    st.wet = if snap { wet_target.round() } else { approach(st.wet, wet_target, 20.0, 60.0, dt) };
+    st.snow = if snap { snow_target.round() } else { approach(st.snow, snow_target, 30.0, 120.0, dt) };
+    let storm = wk(WeatherKind::Storm);
 
-    // Wetness and snow cover lag behind the weather.
-    st.wet = if snap { look[WET].round() } else { approach(st.wet, look[WET], 20.0, 60.0, dt) };
-    st.snow = if snap { look[COVER].round() } else { approach(st.snow, look[COVER], 30.0, 120.0, dt) };
+    // Wind: strength from the weather mix, direction wandering slowly.
+    let strength: f32 = WIND.iter().zip(st.w.iter()).map(|(s, w)| s * w / sum).sum::<f32>() * (0.85 + 0.15 * (st.t * 0.13).sin());
+    let ang = 0.3 + 0.5 * (st.t * 0.021).sin() + 0.2 * (st.t * 0.057).sin();
+    *wind = Wind { dir: Vec2::from_angle(ang), strength };
 
-    // Palette → environment.
-    let p = sample_palette(clock.hour);
-    let desat = |c: Vec3, k: f32| Vec3::splat(lum(c)).lerp(c, k);
-    let grey = |c: Vec3| c.lerp(Vec3::splat(lum(c) * look[SKY]) * Vec3::new(0.94, 0.99, 1.08), look[GREY]);
-    let cold = Vec3::ONE.lerp(Vec3::new(0.88, 0.96, 1.1), look[COLD]);
-    let wind_dir = 0.4 + 0.8 * (st.t * 0.021).sin() + 0.3 * (st.t * 0.057).sin();
-    *env = Environment {
-        sun_dir: light_dir(clock.hour),
-        sun_color: desat(p[0], look[SAT]) * look[SUN] * cold,
-        ambient_sky: desat(p[1], 0.5 + 0.5 * look[SAT]) * look[AMB],
-        ambient_ground: desat(p[2], 0.5 + 0.5 * look[SAT]) * look[AMB],
-        shadow_tint: p[3].lerp(Vec3::new(0.78, 0.8, 0.9), look[FLAT]),
-        sky_top: grey(p[4]),
-        sky_horizon: grey(p[5]),
-        fog_color: grey(p[6]),
-        fog_density: 0.006 + look[FOG] + weather.fog_extra,
-        wetness: st.wet,
-        snow: weather.snow_override.unwrap_or(st.snow),
-        night: (p[7].x + look[NIGHT_ADD]).min(1.0),
-        flash: 0.0,
-        wind: Vec2::new(wind_dir.cos(), wind_dir.sin()) * look[WIND] * (0.8 + 0.2 * (st.t * 0.13).sin()),
-        hour: clock.hour,
-    };
-
-    // Lightning.
+    // Lightning: every 6–14 s in a storm, 2 frames, no fade.
     if storm > 0.6 {
         st.next_flash -= dt;
-        if st.next_flash <= 0.0 || (st.freeze_flash && st.bolt.is_empty()) {
-            st.next_flash = 4.0 + 11.0 * st.rand();
-            st.flash_age = 0.0;
+        if st.next_flash <= 0.0 || (st.freeze_flash && st.flash_frames == 0) {
+            st.next_flash = 6.0 + 8.0 * st.rand();
+            st.flash_frames = 2;
             st.bolt.clear();
         }
     }
-    st.flash_age = if st.freeze_flash && storm > 0.6 { 0.0 } else { st.flash_age + dt };
-    env.flash = flash_curve(st.flash_age) * storm.min(1.0);
+    let flash = st.flash_frames > 0 && storm > 0.0;
+    if !st.freeze_flash {
+        st.flash_frames = st.flash_frames.saturating_sub(1);
+    }
+
+    let mix = WeatherMix { w: st.w, wet: st.wet, snow: weather.snow_override.unwrap_or(st.snow), flash, wind: wind.vector() };
+    let mut e = environment(clock.hour, &mix);
+    e.fog_density += weather.fog_extra.clamp(0.0, 0.08);
+    *env = e;
 }
 
 fn particles(
@@ -399,7 +642,7 @@ fn particles(
     let focus = ground_focus(cam.translation(), cam.forward().as_vec3());
     let t = time.elapsed_secs() + 1000.0;
     let sum: f32 = st.w.iter().sum::<f32>().max(1e-3);
-    let wn = |k: WeatherKind| st.w[WeatherKind::ALL.iter().position(|x| *x == k).unwrap_or(0)] / sum;
+    let wn = |k: WeatherKind| st.w[k.index()] / sum;
     let rain = wn(WeatherKind::Rain) + 1.3 * wn(WeatherKind::Storm);
     let snow = wn(WeatherKind::Snow);
     let fogw = wn(WeatherKind::Fog);
@@ -407,42 +650,43 @@ fn particles(
     let mut ps: Vec<Particle> = Vec::new();
 
     if rain > 0.01 {
+        // Pale cyan streaks, slanted by the wind.
         let (speed, hgt) = (18.0 + 4.0 * rain, 24.0);
-        let dir = Vec3::new(wind.x * 0.8, -speed, wind.y * 0.8).normalize();
-        let col = Vec3::new(0.75, 0.8, 0.92) * (1.0 - 0.65 * env.night);
+        let dir = Vec3::new(wind.x * 0.9, -speed, wind.y * 0.9).normalize();
+        let col = cairn_cove_core::palette::rain() * (1.0 - 0.55 * env.dark);
         for i in 0..(1100.0 * rain) as u32 {
             let s = (hash(i, 3) + t * speed / hgt).fract();
             let (y, fall) = (hgt * (1.0 - s), s * hgt / speed);
-            let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.8 * fall, focus.x, 40.0);
-            let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.8 * fall, focus.z, 40.0);
+            let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.9 * fall, focus.x, 40.0);
+            let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.9 * fall, focus.z, 40.0);
             if y < 0.6 {
-                // Splash.
-                ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, 0.08, z), 0.16, col.extend(0.7)));
+                ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, env.tide.max(0.0) + 0.08, z), 0.12, col.extend(0.6)));
             } else {
-                let mut p = Particle::new(ParticleKind::Streak, Vec3::new(x, y, z), 0.8, col.extend(0.6));
+                let mut p = Particle::new(ParticleKind::Streak, Vec3::new(x, y, z), 0.3, col.extend(0.6));
                 p.dir = dir;
                 ps.push(p);
             }
         }
     }
     if snow > 0.01 {
+        // 1-px white flakes with a lilac pixel below, drifting with the wind.
         for i in 0..(800.0 * snow) as u32 {
             let speed = 1.1 + 0.8 * hash(i, 4);
             let y = 20.0 * (1.0 - (hash(i, 3) + t * speed / 20.0).fract());
             let sway = Vec2::new((t * 0.8 + i as f32).sin(), (t * 0.6 + i as f32 * 1.7).cos()) * 0.35;
-            let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.35 * t + sway.x, focus.x, 40.0);
-            let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.35 * t + sway.y, focus.z, 40.0);
-            ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, y, z), 0.14, Vec4::ONE));
+            let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.6 * t + sway.x, focus.x, 40.0);
+            let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.6 * t + sway.y, focus.z, 40.0);
+            ps.push(Particle::new(ParticleKind::Snow, Vec3::new(x, y, z), 0.1, Vec4::ONE));
         }
     }
     if fogw > 0.01 {
-        for i in 0..(14.0 * fogw).ceil() as u32 {
+        for i in 0..(10.0 * fogw).ceil() as u32 {
             let x = wrap(focus.x + hash(i, 1) * 50.0 - 25.0 + wind.x * 0.6 * t, focus.x, 50.0);
             let z = wrap(focus.z + hash(i, 2) * 50.0 - 25.0 + wind.y * 0.6 * t, focus.z, 50.0);
-            ps.push(Particle::new(ParticleKind::Puff, Vec3::new(x, 0.8 + 1.8 * hash(i, 3), z), 5.0 + 4.0 * hash(i, 4), (env.fog_color * 1.05).extend(0.35 * fogw)));
+            ps.push(Particle::new(ParticleKind::Puff, Vec3::new(x, 1.0 + 1.6 * hash(i, 3), z), 5.0 + 4.0 * hash(i, 4), (env.fog_color * 1.05).extend(0.3 * fogw)));
         }
     }
-    if st.flash_age < 0.15 {
+    if env.flash > 0.0 {
         if st.bolt.is_empty() {
             let mut p = focus + Vec3::new(st.rand() * 14.0 - 7.0, 45.0, st.rand() * 8.0 - 4.0);
             let mut pts = vec![p];
@@ -454,12 +698,10 @@ fn particles(
         }
         for pair in st.bolt.windows(2) {
             let d = pair[1] - pair[0];
-            let mut p = Particle::new(ParticleKind::Streak, (pair[0] + pair[1]) * 0.5, d.length(), Vec4::new(0.95, 0.96, 1.0, 1.0));
+            let mut p = Particle::new(ParticleKind::Streak, (pair[0] + pair[1]) * 0.5, d.length(), Vec4::ONE);
             p.dir = d.normalize();
             ps.push(p);
         }
-    } else {
-        st.bolt.clear();
     }
     if let Some(mut m) = st.mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
         write_particle_mesh(&mut m, &ps);
@@ -469,34 +711,108 @@ fn particles(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cairn_cove_core::palette::{rgb_to_hsv, unit_to_hex};
 
     #[test]
     fn weather_names_parse() {
         for k in WeatherKind::ALL {
             assert_eq!(WeatherKind::parse(k.name()), Some(k));
+            assert_eq!(WeatherKind::ALL[k.index()], k);
         }
         assert_eq!(WeatherKind::parse("SeaFog"), Some(WeatherKind::Fog));
         assert_eq!(WeatherKind::parse("drizzle"), None);
     }
 
+    /// The rig hits the A4 keyframes exactly at their hours.
     #[test]
-    fn palette_continuous_over_midnight() {
-        let (a, b, c) = (sample_palette(23.999), sample_palette(0.0), sample_palette(0.001));
-        for i in 0..8 {
-            assert!(a[i].distance(b[i]) < 1e-3 && b[i].distance(c[i]) < 1e-3);
+    fn rig_keyframes() {
+        assert_eq!(rig_at(12.0), noon());
+        assert_eq!(rig_at(10.0), noon());
+        assert_eq!(rig_at(6.0), dawn());
+        assert_eq!(rig_at(17.0), golden());
+        assert_eq!(rig_at(19.0), dusk());
+        assert_eq!(rig_at(23.0), night());
+        assert_eq!(rig_at(2.0), night());
+        assert_eq!(unit_to_hex(rig_at(12.0).tint), 0x4A3AAD);
+        assert_eq!(unit_to_hex(rig_at(23.0).sky[0]), 0x081063);
+    }
+
+    #[test]
+    fn rig_continuous_over_midnight_and_keys() {
+        for hr in [0.0f32, 4.5, 6.0, 8.5, 15.0, 17.0, 19.0, 20.5] {
+            let (a, b) = (rig_at(hr - 0.001), rig_at(hr + 0.001));
+            assert!(a.sun.distance(b.sun) < 0.01 && a.sky[1].distance(b.sky[1]) < 0.01, "jump at {hr}");
         }
-        assert_eq!(sample_palette(12.0)[7].x, 0.0);
-        assert_eq!(sample_palette(-1.0)[7].x, 1.0);
+        assert!(rig_at(23.999).sky[0].distance(rig_at(0.0).sky[0]) < 1e-3);
+    }
+
+    /// Never grey: every sky, fog and tint stop at every hour and weather keeps chroma.
+    #[test]
+    fn rig_never_grey() {
+        for k in WeatherKind::ALL {
+            for i in 0..48 {
+                let hr = i as f32 * 0.5;
+                let env = environment(hr, &WeatherMix::settled(k));
+                let lin_s = |c: Vec3| rgb_to_hsv(Vec3::new(c.x.powf(1.0 / 2.2), c.y.powf(1.0 / 2.2), c.z.powf(1.0 / 2.2))).y;
+                for (name, c) in [("tint", rgb_to_hsv(env.shadow_tint).y), ("fog", lin_s(env.fog_color)), ("sky", lin_s(env.sky_top))] {
+                    assert!(c > 0.15, "{} {hr}: {name} grey ({c})", k.name());
+                }
+                assert!(env.sun_color.is_finite() && env.fill_color.max_element() > 0.2);
+            }
+        }
     }
 
     #[test]
     fn sun_arc() {
-        assert!(sun_raw(12.5).y > 0.8);
-        assert!(sun_raw(0.0).y < -0.5);
-        assert!(sun_raw(6.0).x < -0.8 && sun_raw(19.0).x > 0.8);
-        assert!(light_dir(0.0).y > 0.5, "moon lights the night");
-        assert!(light_dir(12.0).y > 0.8);
-        assert!((light_dir(19.5).length() - 1.0).abs() < 1e-4 && light_dir(19.5).y > 0.1);
+        assert!((sun_raw(12.0).y - 60f32.to_radians().sin()).abs() < 0.05, "60° at noon");
+        assert!(sun_raw(0.0).y < -0.3);
+        assert!(sun_raw(6.0).x < -0.8 && sun_raw(18.5).x > 0.8);
+        assert!(sun_raw(6.0).y > 0.0 && sun_raw(6.0).y < 0.4, "low at dawn");
+        for i in 0..96 {
+            let d = light_dir(i as f32 * 0.25);
+            assert!((d.length() - 1.0).abs() < 1e-4 && d.y > 0.2, "light always above the horizon");
+        }
+    }
+
+    #[test]
+    fn emissive_hours() {
+        assert_eq!(emissive_weight(12.0), 0.0);
+        assert_eq!(emissive_weight(19.5), 1.0);
+        assert_eq!(emissive_weight(2.0), 1.0);
+        assert_eq!(emissive_weight(6.0), 0.0);
+        assert!(emissive_weight(19.2) > 0.0 && emissive_weight(19.2) < 1.0, "lanterns from 19:00");
+        let fog = environment(12.0, &WeatherMix::settled(WeatherKind::Fog));
+        let storm = environment(12.0, &WeatherMix::settled(WeatherKind::Storm));
+        assert!(fog.night > 0.5 && storm.night > 0.5, "beacons burn in fog and storms");
+        assert_eq!(environment(12.0, &WeatherMix::settled(WeatherKind::Clear)).night, 0.0);
+    }
+
+    #[test]
+    fn weather_modifiers() {
+        let clear = environment(12.0, &WeatherMix::settled(WeatherKind::Clear));
+        assert_eq!(clear.sun_color, Vec3::ONE);
+        assert_eq!(unit_to_hex(clear.shadow_tint), 0x4A3AAD);
+        let storm = environment(12.0, &WeatherMix::settled(WeatherKind::Storm));
+        assert!(storm.storm > 0.99 && storm.sun_color.max_element() < 0.35);
+        assert_eq!(unit_to_hex(storm.rim_color), 0x42FFE6);
+        let fog = environment(12.0, &WeatherMix::settled(WeatherKind::Fog));
+        assert!(fog.sea_fog > 0.99);
+        assert_eq!(unit_to_hex(fog_unit(fog.fog_color)), 0xCEF7EF);
+        let over = environment(12.0, &WeatherMix::settled(WeatherKind::Overcast));
+        assert_eq!(over.rim_color, Vec3::ZERO);
+        // Lightning lights the frame lilac-white.
+        let mut m = WeatherMix::settled(WeatherKind::Storm);
+        m.flash = true;
+        let f = environment(12.0, &m);
+        assert!(f.flash == 1.0 && f.sun_color.max_element() > 1.5);
+        // Night rain stays a night.
+        let nr = environment(23.0, &WeatherMix::settled(WeatherKind::Rain));
+        assert_eq!(nr.sky_top, environment(23.0, &WeatherMix::settled(WeatherKind::Clear)).sky_top);
+    }
+
+    fn fog_unit(lin: Vec3) -> Vec3 {
+        let e = |v: f32| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        Vec3::new(e(lin.x), e(lin.y), e(lin.z))
     }
 
     #[test]
@@ -511,12 +827,15 @@ mod tests {
         }
         assert_eq!(w, [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
         assert_eq!(approach(1.0, 0.0, 20.0, 60.0, 30.0), 0.5);
+        // A half-blended environment is finite and between the two.
+        let mut m = WeatherMix::settled(WeatherKind::Clear);
+        m.w = [0.5, 0.0, 0.5, 0.0, 0.0, 0.0];
+        let e = environment(12.0, &m);
+        assert!(e.sun_color.x < 1.0 && e.sun_color.x > 0.45);
     }
 
     #[test]
-    fn flash_and_focus() {
-        assert_eq!(flash_curve(0.0), 1.0);
-        assert!(flash_curve(0.2) > 0.2 && flash_curve(0.5) == 0.0);
+    fn focus_on_ground() {
         let f = ground_focus(Vec3::new(10.0, 10.0, 10.0), Vec3::new(-1.0, -1.0, -1.0).normalize());
         assert!(f.distance(Vec3::ZERO) < 1e-3);
     }

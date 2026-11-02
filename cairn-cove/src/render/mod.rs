@@ -5,9 +5,11 @@
 //!   as a fullscreen `ImageNode` on the [`WindowCamera`] (`Camera2d`, `IsDefaultUiCamera`),
 //!   so bevy_ui draws at full resolution on top.
 //! - Materials ([`GladeAssets`]): [`GladeMaterial`] (everything opaque, from
-//!   [`to_bevy_mesh`]), [`WaterMaterial`], [`ParticleMaterial`] (see [`particles`]).
-//!   All read one shared globals buffer filled from [`Environment`] every frame.
-//! - Post pass ([`post`]): sky gradient, outlines, shore foam, 15-bit Bayer dither.
+//!   [`to_bevy_mesh`]), [`WaterMaterial`] (lagoons), [`SeaMaterial`] (the open sea, see
+//!   [`sea`]), [`ParticleMaterial`] (see [`particles`]). All read one shared globals buffer
+//!   filled from [`Environment`] every frame.
+//! - Post pass ([`post`]): sky gradient with sun/moon discs and stars, outlines, shore foam,
+//!   15-bit Bayer dither.
 //! - Sun = shadow-casting `DirectionalLight` ([`Sun`]) driven by `Environment`.
 //! - Lanterns: spawn a `PointLight` from [`lantern_light`]; the cel shader reads Bevy's
 //!   clustered point lights (2 hard bands).
@@ -21,9 +23,10 @@ pub mod atlas;
 mod material;
 pub mod particles;
 pub mod post;
+pub mod sea;
 pub mod test_scene;
 
-pub use material::{GLOBALS, GladeMaterial, ParticleMaterial, VertexSnap, WaterMaterial, WaterParams};
+pub use material::{GLOBALS, GladeMaterial, ParticleMaterial, SeaField, SeaMaterial, VertexSnap, WaterMaterial, WaterParams};
 pub use particles::{Particle, ParticleKind, particle_mesh, particle_quad_mesh, write_particle_mesh};
 pub use post::PostSettings;
 pub use test_scene::RenderTest;
@@ -96,8 +99,11 @@ pub struct LowResDisplay;
 pub struct GladeAssets {
     pub opaque: Handle<GladeMaterial>,
     pub water: Handle<WaterMaterial>,
+    pub sea: Handle<SeaMaterial>,
     pub particle: Handle<ParticleMaterial>,
     pub atlas: Handle<Image>,
+    /// Sea-bed heights (R32Float), rebuilt from the scene terrain.
+    pub heightfield: Handle<Image>,
 }
 
 /// Runs in `PreStartup`; afterwards [`LowRes`], [`LowResTarget`], [`GladeAssets`],
@@ -112,15 +118,18 @@ impl Plugin for RenderPlugin {
         app.add_plugins((
             MaterialPlugin::<GladeMaterial>::default(),
             MaterialPlugin::<WaterMaterial>::default(),
+            MaterialPlugin::<SeaMaterial>::default(),
             MaterialPlugin::<ParticleMaterial>::default(),
             post::PostPlugin,
         ))
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .init_resource::<Environment>()
         .init_resource::<VertexSnap>()
+        .init_resource::<SeaField>()
         .add_systems(PreStartup, setup.in_set(RenderSetup))
+        .add_systems(Startup, sea::spawn_sea.run_if(not(resource_exists::<RenderTest>)))
         .add_systems(Update, screenshot_on_f12)
-        .add_systems(PostUpdate, (fit_to_window, apply_environment, material::sync_globals).chain())
+        .add_systems(PostUpdate, (fit_to_window, apply_environment, sea::update_heightfield, sea::fire_lights, material::sync_globals).chain())
         .add_systems(
             PostUpdate,
             update_post_settings
@@ -154,9 +163,11 @@ fn setup(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut opaque: ResMut<Assets<GladeMaterial>>,
     mut water: ResMut<Assets<WaterMaterial>>,
+    mut sea_mat: ResMut<Assets<SeaMaterial>>,
     mut particle: ResMut<Assets<ParticleMaterial>>,
     env: Res<Environment>,
     snap: Res<VertexSnap>,
+    field: Res<SeaField>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
     let size = low_res_for(window.single().ok());
@@ -164,13 +175,16 @@ fn setup(
     target.sampler = ImageSampler::nearest();
     let target = images.add(target);
 
-    let _ = buffers.insert(&GLOBALS, ShaderBuffer::from(material::globals_from_env(&env, 0.0, snap.0)));
+    let _ = buffers.insert(&GLOBALS, ShaderBuffer::from(material::globals_from_env(&env, 0.0, snap.0, field.0)));
     let atlas = images.add(atlas::atlas_image());
+    let heightfield = images.add(sea::heightfield_image(&[], field.0.w as u32));
     commands.insert_resource(GladeAssets {
         opaque: opaque.add(GladeMaterial { globals: GLOBALS, atlas: atlas.clone() }),
-        water: water.add(WaterMaterial { globals: GLOBALS, params: WaterParams::default() }),
+        water: water.add(WaterMaterial { globals: GLOBALS, atlas: atlas.clone(), params: WaterParams::default(), heightfield: heightfield.clone() }),
+        sea: sea_mat.add(SeaMaterial { globals: GLOBALS, atlas: atlas.clone(), heightfield: heightfield.clone() }),
         particle: particle.add(ParticleMaterial { globals: GLOBALS }),
         atlas,
+        heightfield,
     });
     commands.insert_resource(LowRes { size });
     commands.insert_resource(LowResTarget(target.clone()));
@@ -278,25 +292,52 @@ fn apply_environment(
 fn update_post_settings(
     env: Res<Environment>,
     time: Res<Time>,
-    mut cam: Query<(&Projection, &mut PostSettings), With<GameCamera>>,
+    mut cam: Query<(&Projection, &GlobalTransform, &mut PostSettings), With<GameCamera>>,
 ) {
-    for (projection, mut post) in &mut cam {
-        let (near, far) = match projection {
-            Projection::Orthographic(o) => (o.near, o.far),
-            _ => (CAMERA_NEAR, CAMERA_FAR),
+    for (projection, tf, mut post) in &mut cam {
+        let (near, far, half) = match projection {
+            Projection::Orthographic(o) => (o.near, o.far, o.area.max.max(-o.area.min)),
+            _ => (CAMERA_NEAR, CAMERA_FAR, Vec2::new(VIEW_HEIGHT * 0.89, VIEW_HEIGHT * 0.5)),
         };
-        let mut p = *post;
-        p.depth.x = far - near;
-        p.depth.y = near;
-        p.fog = env.fog_color.extend(env.fog_density.max(0.0));
-        p.sky_top = env.sky_top.extend(material::FOG_START);
-        p.sky_horizon = env.sky_horizon.extend(env.flash.clamp(0.0, 1.0));
-        p.flags.z = env.night.clamp(0.0, 1.0);
-        p.flags.w = time.elapsed_secs_wrapped();
+        let p = post_settings(&env, tf, near, far, half, time.elapsed_secs_wrapped(), *post);
         if p != *post {
             *post = p;
         }
     }
+}
+
+/// Post settings for the camera at `tf` (orthographic, `half` = half view size in metres).
+pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f32, half: Vec2, time: f32, prev: PostSettings) -> PostSettings {
+    let mut p = prev;
+    let (right, up, fwd) = (tf.right().as_vec3(), tf.up().as_vec3(), tf.forward().as_vec3());
+    let pos = tf.translation();
+    p.depth.x = far - near;
+    p.depth.y = near;
+    p.fog = env.fog_color.extend(env.fog_density.max(0.0));
+    p.sky_top = env.sky_top.extend(material::FOG_START);
+    p.sky_horizon = env.sky_horizon.extend(env.flash.clamp(0.0, 1.0));
+    p.flags.z = env.dark.clamp(0.0, 1.0);
+    p.flags.w = time;
+    // Sea line: where the sea plane's far edge sits on screen (uv y, 0 = top).
+    let fwd_h = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
+    let focus = crate::weather::ground_focus(pos, fwd);
+    let edge = focus + fwd_h * (sea::SEA_HALF - focus.xz().length()).max(20.0);
+    let horizon = (0.5 - (edge - pos).dot(up) / half.y.max(1e-3) * 0.5).clamp(-4.0, 1.0);
+    p.sky_mid = env.sky_mid.extend(horizon);
+    p.outline = env.outline.extend(env.storm.clamp(0.0, 1.0));
+    p.foam = env.sea[4].extend(env.wetness.clamp(0.0, 1.0));
+    // Sun or moon disc above the sea line, placed by azimuth and altitude.
+    let moon = env.dark > 0.5;
+    let d = if moon { env.sun_dir } else { crate::weather::sun_raw(env.hour) };
+    let alt = d.y.clamp(-1.0, 1.0).asin();
+    let x = 0.5 + 0.5 * Vec3::new(d.x, 0.0, d.z).normalize_or_zero().dot(right) * 0.8;
+    let y = horizon - (alt / std::f32::consts::FRAC_PI_2) * (horizon.max(0.0) + 0.2) * 1.4;
+    let kind = if moon { 2.0 } else if alt > -0.05 { 1.0 } else { 0.0 };
+    p.disc = env.disc_color.extend(kind);
+    p.disc_pos = Vec4::new(x, y, if moon { 2.5 } else { 3.0 }, env.night.clamp(0.0, 1.0));
+    p.ycoef = Vec4::new(pos.y, right.y * half.x, up.y * half.y, fwd.y);
+    p.bank = Vec4::new(env.sea_fog.clamp(0.0, 1.0), env.fog_top, 0.0, 0.0);
+    p
 }
 
 /// Converts cairn_cove_core mesh buffers to a Bevy mesh with POSITION, NORMAL, UV_0, COLOR
@@ -331,7 +372,7 @@ pub fn to_bevy_mesh(m: &MeshData) -> Mesh {
 /// `Environment::night` (0 by day) to fade lanterns.
 pub fn lantern_light(intensity_lm: f32, range: f32) -> PointLight {
     PointLight {
-        color: Color::srgb(1.0, 0.66, 0.3),
+        color: Color::srgb_u8(0xFF, 0xA5, 0x42),
         intensity: intensity_lm,
         range,
         radius: 0.1,

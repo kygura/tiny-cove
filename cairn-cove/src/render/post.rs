@@ -1,6 +1,7 @@
-//! Post pass on the low-res camera: 1 px outlines from depth/normal discontinuities
-//! (faded with fog), shore foam on water, sky gradient behind everything, then 15-bit
-//! quantise with 4×4 Bayer dither. Runs in `Core3dSystems::PostProcess`. Requires
+//! Post pass on the low-res camera: 3-stop posterised sky with sun/moon discs and stars
+//! behind everything, 1 px indigo keylines from depth/normal discontinuities (faded into the
+//! fog colour), 2 px contact foam where anything meets the sea, then 15-bit quantise with a
+//! 4×4 Bayer dither (stronger at night). Runs in `Core3dSystems::PostProcess`. Requires
 //! `DepthPrepass` + `NormalPrepass` and `Msaa::Off` on the camera (spawned that way).
 
 use bevy::{
@@ -37,12 +38,26 @@ pub struct PostSettings {
     pub depth: Vec4,
     /// xyz fog colour, w fog density.
     pub fog: Vec4,
-    /// xyz sky top, w fog start (view depth).
+    /// xyz sky zenith, w fog start (view depth).
     pub sky_top: Vec4,
     /// xyz sky horizon, w lightning flash.
     pub sky_horizon: Vec4,
-    /// x outline on (1/0), y dither on (1/0), z night, w time.
+    /// x outline on (1/0), y dither on (1/0), z sky darkness (stars), w time.
     pub flags: Vec4,
+    /// xyz sky mid stop, w sea line (screen uv y, 0 = top).
+    pub sky_mid: Vec4,
+    /// xyz keyline colour, w storm (doubles the foam bands).
+    pub outline: Vec4,
+    /// xyz foam colour, w wetness (rain widens the foam by 1 px).
+    pub foam: Vec4,
+    /// xyz sun/moon disc colour, w kind (0 none, 1 sun, 2 moon).
+    pub disc: Vec4,
+    /// xy disc centre (screen uv), z radius (low-res px), w night (dither amplitude).
+    pub disc_pos: Vec4,
+    /// World y of a pixel = x + y·ndc_x + z·ndc_y + w·view distance (height fog in post).
+    pub ycoef: Vec4,
+    /// x sea-fog bank strength, y bank top (m).
+    pub bank: Vec4,
 }
 
 impl Default for PostSettings {
@@ -53,6 +68,13 @@ impl Default for PostSettings {
             sky_top: Vec4::ZERO,
             sky_horizon: Vec4::ZERO,
             flags: Vec4::new(1.0, 1.0, 0.0, 0.0),
+            sky_mid: Vec4::new(0.0, 0.0, 0.0, 1.0),
+            outline: Vec4::ZERO,
+            foam: Vec4::ONE,
+            disc: Vec4::ZERO,
+            disc_pos: Vec4::ZERO,
+            ycoef: Vec4::ZERO,
+            bank: Vec4::ZERO,
         }
     }
 }
