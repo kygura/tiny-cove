@@ -1,4 +1,4 @@
-//! GREYWILD: an eco-brutalist glade builder with a PS1 cel-shaded look.
+//! TINY COVE: a cozy coastal island builder with a PS1 cel-shaded look.
 
 pub mod camera;
 pub mod env;

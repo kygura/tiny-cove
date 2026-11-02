@@ -1,4 +1,4 @@
-# CAIRN COVE
+# TINY COVE
 
 A cozy, goal-free builder set on a small sunlit island. You build a home for a
 seafaring people. Drag out dry-stone dykes, thatched huts, roundhouses, beacon
@@ -30,7 +30,7 @@ kit, `DESIGN.md` defines the art and HUD, and `TASKS.md` is the build log.
 ## Run
 
 ```sh
-cd cairn-cove
+cd tiny-cove
 cargo run --release            # empty island
 cargo run --release -- --demo  # start in the showcase cove
 ```
@@ -82,8 +82,8 @@ cargo test --release --workspace
 cargo build --release
 # headless (Mesa lavapipe + Xvfb):
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan
-xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/cairn-cove --demo-shot out.png --time 18.5 --weather rain [--hud] [--zoom S] [--yaw D]
-xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/cairn-cove --tool-smoke smoke.png   # drives all 18 tools, exits 0 on pass
+xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/tiny-cove --demo-shot out.png --time 18.5 --weather rain [--hud] [--zoom S] [--yaw D]
+xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/tiny-cove --tool-smoke smoke.png   # drives all 18 tools, exits 0 on pass
 ```
 
 ## Layout

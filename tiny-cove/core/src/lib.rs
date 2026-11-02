@@ -1,4 +1,4 @@
-//! CAIRN COVE core: document model, island terrain and procedural geometry. No Bevy.
+//! TINY COVE core: document model, island terrain and procedural geometry. No Bevy.
 
 pub mod buildings;
 pub mod demo;

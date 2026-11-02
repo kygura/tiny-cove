@@ -2,10 +2,14 @@
 members = ["core"]
 
 [package]
-name = "cairn-cove"
+name = "tiny-cove"
 version = "0.1.0"
 edition = "2024"
-default-run = "cairn-cove"
+default-run = "tiny-cove"
+
+# The game is branded Tiny Cove; internal crate names keep the original cairn_cove prefix.
+[lib]
+name = "cairn_cove"
 
 [dependencies]
 bevy = "0.20"

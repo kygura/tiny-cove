@@ -1,4 +1,4 @@
-//! CAIRN COVE document: an ordered list of terrain strokes and structures, plus undo history.
+//! TINY COVE document: an ordered list of terrain strokes and structures, plus undo history.
 //!
 //! Everything here is plain data. `crate::scene::build` turns a [`Document`] into meshes.
 //! World units are metres, `y` is up, the buildable island spans `x, z ∈ [-GLADE_HALF, GLADE_HALF]`.

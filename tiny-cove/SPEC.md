@@ -1,4 +1,4 @@
-# CAIRN COVE — spec
+# TINY COVE — spec
 
 A cozy, goal-free diorama builder set on a small sunlit island. You build the
 home of a fictional seafaring people. Bleached driftwood, thick thatch, dry-stone
@@ -48,7 +48,7 @@ tokens, and the renderer and `core/src/palette.rs` follow them.
 
 ## Layout
 
-Cargo workspace in `cairn-cove/`. Its build cache is shared with sibling
+Cargo workspace in `tiny-cove/`. Its build cache is shared with sibling
 projects through `.cargo/config.toml` (`../target`).
 
 - `core/` holds the crate `cairn_cove_core`, which has **no Bevy
@@ -61,7 +61,7 @@ projects through `.cargo/config.toml` (`../target`).
   the screenshot CLI.
 
 The engine started as a fork of the sibling `greywild` prototype (PS1/cel
-renderer, core mesh pipeline, tool framework). Cairn Cove re-themes all of it
+renderer, core mesh pipeline, tool framework). Tiny Cove re-themes all of it
 and adds the sea, tide, stilts, jetties, canoes, beacons and wind.
 
 ## World
@@ -105,7 +105,7 @@ the player-facing names are the setting's.
 | **Opening** (9) | click a hut or dyke wall | Cycles shuttered window → doorway → wide boat door → nothing. |
 | **Roof** (0) | click inside a closed dyke ring | Roofs the ring with any roof style. |
 | **Tree** (G) | click / drag to scatter | `TreeKind::SeaPine` (wind-bent umbrella pine), `Palm` (leaning palm, fronds), `Cypress` (tall dark flame), `Fig` (broad canopy with fruit) and `Snag` (bleached dead driftwood tree). |
-| **Prop** (C) | click to place, scroll to rotate | `ClutterKind::Canoe` (outrigger canoe; on water it floats), `DryingRack` (fish on a rack), `Firepit` (stone ring with fire), `Cairn` (stacked stones, the island's namesake), `StandingStone` (carved spiral), `CarvedPole` (painted pole with a bird top), `NetRack`, `Baskets` (woven baskets and clay jars), `LanternPost`, `Pennant` (tall pole with a cloth pennant streaming in the wind), `Rock`, `Bush` (flowering gorse/flax), `CrabPots` and `Woodpile` (driftwood). |
+| **Prop** (C) | click to place, scroll to rotate | `ClutterKind::Canoe` (outrigger canoe; on water it floats), `DryingRack` (fish on a rack), `Firepit` (stone ring with fire), `Cairn` (stacked stones), `StandingStone` (carved spiral), `CarvedPole` (painted pole with a bird top), `NetRack`, `Baskets` (woven baskets and clay jars), `LanternPost`, `Pennant` (tall pole with a cloth pennant streaming in the wind), `Rock`, `Bush` (flowering gorse/flax), `CrabPots` and `Woodpile` (driftwood). |
 | **Paint** (P) | brush | `PaintLayer::SeaPinks` (thrift flower carpet in magenta/pink), `DuneGrass` (marram tufts), `Wrack` (seaweed on the shore), `Pebbles`, and `Clear` to erase. |
 | **Raise / lower** (R) | brush | Hold Shift to lower. |
 | **Flatten** (F) | brush | Flattens to the height under the cursor at the start of the stroke. |
@@ -288,6 +288,6 @@ cycles per day). Beacon fires burn at night, in storms and in fog.
    foam and the beach. The shots are visibly PS1, cel-shaded with sharp
    shadows, and **vibrant**.
    (`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan
-   xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/cairn-cove --demo-shot out.png`)
+   xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/tiny-cove --demo-shot out.png`)
 4. `--tool-smoke` drives all 18 tools and exits 0. Every primitive above can
    be reached from the HUD or keys and placed in the interactive game.

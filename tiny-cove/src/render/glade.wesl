@@ -1,4 +1,4 @@
-// CAIRN COVE main pass: PS1 rasteriser (snapped vertices, affine UVs, nearest atlas) with
+// TINY COVE main pass: PS1 rasteriser (snapped vertices, affine UVs, nearest atlas) with
 // "Folk Pigment" cel lighting (DESIGN.md A3): three hard bands from N.L x the sun shadow map,
 // band maths in sRGB with hue-shifted, saturated shadows (never grey), an anti-mud floor, rim
 // light, emissive windows / glow / fire at night, a wet-sand honey band above the current

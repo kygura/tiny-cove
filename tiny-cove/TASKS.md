@@ -1,4 +1,4 @@
-# CAIRN COVE — build map
+# TINY COVE — build map
 
 Harness: Claude Code (cloud, auto mode, ultracode on). Planner: claude-opus-5-5 @ xhigh.
 Roster: opus (claude-opus-5-5), sonnet (claude-sonnet-5-5), haiku (claude-haiku-5-5), fable

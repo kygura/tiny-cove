@@ -4,7 +4,7 @@ use bevy::prelude::*;
 fn main() -> AppExit {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window { title: "Cairn Cove".into(), ..default() }),
+        primary_window: Some(Window { title: "Tiny Cove".into(), ..default() }),
         ..default()
     }))
     .add_plugins(cairn_cove::GladePlugin);

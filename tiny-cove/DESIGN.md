@@ -1,8 +1,8 @@
 **Panel verdict.** Scores (vibrancy / cozy coherence / 15-bit survival / cel hue-shift / coastal-tribal fit / implementability): POSTER 10/6/6/8/7/7 = 7.3, TEXTILE "Folk Pigment" 9/9/7/8/10/9 = 8.7, PS1 "Arcade Vivid" 8/7/10/10/7/9 = 8.5.  
-**Winner: TEXTILE "Folk Pigment".** Its named dye swatches (madder, woad, cochineal, saffron, malachite) tie the palette to the people who live in the cove, and its woad-cloth HUD gives Cairn Cove its own identity.  
+**Winner: TEXTILE "Folk Pigment".** Its named dye swatches (madder, woad, cochineal, saffron, malachite) tie the palette to the people who live in the cove, and its woad-cloth HUD gives Tiny Cove its own identity.  
 **Grafted:** from PS1, 5-bit-exact hexes, the `shade()` band function, analogous gradient mid-stops, tint-space atlas tiles and lit/shadow split swatch chips. From POSTER, the complementary-adjacency rule for the demo cove, lilac driftwood grain, foam-shade, the lagoon colour, the fog-never-grey rule and the ink-not-black outline.
 
-# CAIRN COVE: design
+# TINY COVE: design
 
 This file replaces the greywild HUD brief. Part A (§Art) is the render contract and Part B (§HUD) is the interface contract. `core/src/palette.rs`, the shaders, `src/render/atlas.rs`, `src/weather.rs` and `src/ui.rs` follow it literally.
 
