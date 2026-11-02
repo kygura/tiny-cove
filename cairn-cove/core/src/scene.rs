@@ -2,10 +2,10 @@
 //! (paths cut portals through walls / doors through houses / gaps in fences; houses flatten the
 //! ground; closed wall rings can be roofed). Also ray picking against the result.
 
-use crate::buildings::{house_mesh, roof_mesh};
+use crate::buildings::{house_mesh, is_beacon, roof_mesh};
 use crate::geom::{closed, closest_on_polyline, footprint_polygon, is_closed, polyline_crossings, signed_area};
-use crate::mesh::{Marker, MarkerKind, MeshData};
-use crate::model::{Document, Footprint, Structure, StructureId};
+use crate::mesh::{hash2, Marker, MarkerKind, MeshData};
+use crate::model::{Document, Footprint, House, Structure, StructureId};
 use crate::nature::{placed_mesh, scatter_mesh};
 use crate::paths::{bridge_mesh, path_mesh, platform_mesh, stairs_mesh};
 use crate::terrain::{FlattenRegion, Terrain};
@@ -34,15 +34,19 @@ pub struct Scene {
 pub fn build(doc: &Document) -> Scene {
     let seed = doc.seed;
 
-    // Ground under houses is levelled (paths follow the terrain).
-    let flatten: Vec<FlattenRegion> = doc
-        .structures
-        .iter()
-        .filter_map(|(_, s)| match s {
-            Structure::House(h) => Some(FlattenRegion { poly: footprint_polygon(&h.footprint), height: None, margin: 1.5 }),
-            _ => None,
-        })
-        .collect();
+    // Ground under houses is levelled unless the house stands on stilts (explicit, or
+    // automatic over water / steep ground judged on the unlevelled ground). Paths follow it.
+    let houses: Vec<&House> = doc.structures.iter().filter_map(|(_, s)| if let Structure::House(h) = s { Some(h) } else { None }).collect();
+    let flatten: Vec<FlattenRegion> = if houses.is_empty() {
+        Vec::new()
+    } else {
+        let raw = Terrain::build(seed, &doc.terrain, &[]);
+        houses
+            .iter()
+            .filter(|h| !needs_stilts_fallback(h, &raw))
+            .map(|h| FlattenRegion { poly: footprint_polygon(&h.footprint), height: None, margin: 1.5 })
+            .collect()
+    };
     let terrain = Terrain::build(seed, &doc.terrain, &flatten);
 
     let paths: Vec<(&[Vec2], f32)> = doc
@@ -135,21 +139,21 @@ pub fn build(doc: &Document) -> Scene {
         parts.push(Part { id: *id, mesh });
     }
 
-    // Ducks: a few spots on open water.
-    let mut ponds = 0;
-    'outer: for zi in (-30..=30).step_by(5) {
+    // Birds swim on open water: lagoons first, then the sea inside the buildable area.
+    let mut spots: Vec<(bool, Vec2, f32)> = Vec::new();
+    for zi in (-30..=30).step_by(5) {
         for xi in (-30..=30).step_by(5) {
             let p = Vec2::new(xi as f32, zi as f32);
             if let Some(level) = terrain.water_level(p) {
                 if terrain.height(p) < level - 0.3 {
-                    markers.push(Marker { kind: MarkerKind::Pond, pos: Vec3::new(p.x, level, p.y), dir: Vec3::Y });
-                    ponds += 1;
-                    if ponds >= 6 {
-                        break 'outer;
-                    }
+                    spots.push((terrain.is_sea(p), p, level));
                 }
             }
         }
+    }
+    spots.sort_by_key(|s| (s.0, hash2(seed, s.1.x, s.1.y)));
+    for (_, p, level) in spots.into_iter().take(6) {
+        markers.push(Marker { kind: MarkerKind::Pond, pos: Vec3::new(p.x, level, p.y), dir: Vec3::Y });
     }
 
     Scene {
@@ -189,6 +193,30 @@ fn grow(poly: &[Vec2], d: f32) -> Vec<Vec2> {
     poly.iter().map(|p| *p + (*p - c).normalize_or_zero() * d).collect()
 }
 
+/// TEMPORARY stand-in for `buildings::needs_stilts` (same signature and rule, task B owns the
+/// real one; swap at merge): a hut stands on stilts when it has an explicit stilt height, any
+/// part of its footprint is over the sea or a lagoon, or the ground under it varies by more
+/// than 0.8 m. Beacons never do.
+pub fn needs_stilts_fallback(house: &House, terrain: &Terrain) -> bool {
+    if is_beacon(house) {
+        return false;
+    }
+    if house.stilts > 0.0 {
+        return true;
+    }
+    let poly = footprint_polygon(&house.footprint);
+    if poly.iter().any(|p| !p.is_finite()) {
+        return false;
+    }
+    let c = poly.iter().copied().sum::<Vec2>() / poly.len().max(1) as f32;
+    let samples: Vec<Vec2> = poly.iter().flat_map(|p| [*p, p.lerp(c, 0.5)]).chain([c]).collect();
+    if samples.iter().any(|p| terrain.water_level(*p).is_some()) {
+        return true;
+    }
+    let (lo, hi) = samples.iter().map(|p| terrain.height(*p)).fold((f32::MAX, f32::MIN), |(l, h), y| (l.min(y), h.max(y)));
+    hi - lo > 0.8
+}
+
 /// Result of a pick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hit {
@@ -200,6 +228,9 @@ pub struct Hit {
     /// closest to the hit; 0 for other structures and terrain.
     pub along: f32,
 }
+
+/// How close (metres, on the water plane) a ray must pass to a mesh-less floating prop.
+const FLOAT_PICK_RADIUS: f32 = 1.5;
 
 /// Nearest hit of a world-space ray against structures and terrain.
 pub fn pick(doc: &Document, scene: &Scene, origin: Vec3, dir: Vec3) -> Option<Hit> {
@@ -216,6 +247,20 @@ pub fn pick(doc: &Document, scene: &Scene, origin: Vec3, dir: Vec3) -> Option<Hi
                 let along = doc.get(part.id).map_or(0.0, |s| along_of(s, Vec2::new(point.x, point.z)));
                 best = Some((t, Hit { id: Some(part.id), point, normal: n, along }));
             }
+        }
+    }
+    // Props with no mesh (a canoe afloat is only a `Boat` marker): hit them within
+    // `FLOAT_PICK_RADIUS` of their spot on the water plane.
+    for part in &scene.parts {
+        let Some(Structure::Placed(p)) = doc.get(part.id) else { continue };
+        if !part.mesh.is_empty() || !p.at.is_finite() || dir.y.abs() < 1e-6 {
+            continue;
+        }
+        let y = scene.terrain.water_level(p.at).unwrap_or_else(|| scene.terrain.height(p.at));
+        let t = (y - origin.y) / dir.y;
+        let point = origin + dir * t;
+        if t > 1e-4 && Vec2::new(point.x, point.z).distance(p.at) <= FLOAT_PICK_RADIUS && best.as_ref().is_none_or(|(bt, _)| t < *bt) {
+            best = Some((t, Hit { id: Some(part.id), point, normal: Vec3::Y, along: 0.0 }));
         }
     }
     if let Some((t, n)) = ray_mesh(origin, dir, &scene.ground) {
@@ -362,6 +407,13 @@ mod tests {
     #[test]
     fn every_variant_builds_a_valid_mesh() {
         let mut doc = Document::new(11);
+        // Raise the whole buildable area to dry land first.
+        for i in -3..=3 {
+            for j in -3..=3 {
+                let center = Vec2::new(i as f32 * 8.0, j as f32 * 8.0);
+                doc.terrain.push(TerrainDab { center, radius: 7.5, op: TerrainOp::Flatten { height: 1.0, strength: 1.0 } });
+            }
+        }
         let v = |x: f32, z: f32| Vec2::new(x, z);
         let at = |x: f32, z: f32| Vec3::new(x, 2.0, z);
         for (i, kind) in [WallKind::DryStone, WallKind::Turf, WallKind::Palisade].into_iter().enumerate() {
@@ -479,5 +531,96 @@ mod tests {
         let s = build(&doc);
         let h = pick(&doc, &s, Vec3::new(0.0, 50.0, 0.0), -Vec3::Y).expect("hit");
         assert!(h.id.is_none());
+        assert!((h.point.y - s.terrain.height(Vec2::ZERO)).abs() < 0.05);
+        // Out over the sea the ray still finds the seabed.
+        let off = s.terrain.plan().cove * 30.0;
+        let h = pick(&doc, &s, Vec3::new(off.x, 50.0, off.y), -Vec3::Y).expect("hit");
+        assert!(h.id.is_none() && h.point.y < SEA_LEVEL);
+    }
+
+    /// A canoe afloat has no mesh (only a Boat marker), yet Erase / Dye can still click it.
+    #[test]
+    fn pick_hits_floating_canoe() {
+        let mut doc = Document::new(4);
+        let sea = Vec2::new(-6.0, 6.0);
+        doc.terrain.push(TerrainDab { center: sea, radius: 6.0, op: TerrainOp::Sculpt { amount: -6.0 } });
+        let canoe = doc.add(prop(sea, PropKind::Clutter(ClutterKind::Canoe)));
+        let s = build(&doc);
+        assert!(s.parts.iter().find(|p| p.id == canoe).unwrap().mesh.is_empty());
+        let dir = Vec3::new(-1.0, -1.2, -1.0).normalize();
+        let shot = |at: Vec2| pick(&doc, &s, Vec3::new(at.x, SEA_LEVEL, at.y) - dir * 60.0, dir);
+        for off in [Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, -1.2)] {
+            let h = shot(sea + off).expect("hit");
+            assert_eq!(h.id, Some(canoe), "offset {off}");
+            assert!((h.point.y - SEA_LEVEL).abs() < 1e-3);
+        }
+        let miss = shot(sea + Vec2::new(2.0, 0.0)).expect("hit");
+        assert_ne!(miss.id, Some(canoe));
+        // A structure in front of the canoe (on the shore, towards the camera) still wins.
+        let mut doc2 = doc.clone();
+        let front = sea - dir.xz().normalize() * 6.0;
+        let hut_id = doc2.add(Structure::House(hut(Footprint::Rect { center: front, half: Vec2::new(1.5, 1.5), angle: 0.0 }, 6.0, RoofStyle::Thatch, Material::Stone)));
+        let s2 = build(&doc2);
+        let h = pick(&doc2, &s2, Vec3::new(sea.x, SEA_LEVEL, sea.y) - dir * 60.0, dir).expect("hit");
+        assert_eq!(h.id, Some(hut_id));
+    }
+
+    /// Ground under a hut is levelled, except under a stilted hut (over the water, steep
+    /// ground or explicit stilts), which keeps the natural ground; beacons always level.
+    #[test]
+    fn stilted_huts_are_not_flattened() {
+        let mut doc = Document::new(7);
+        let bare = Terrain::build(7, &[], &[]);
+        let cove = bare.plan().cove;
+        let shore = (0..200).map(|i| i as f32 * 0.25).find(|r| bare.is_sea(cove * *r)).unwrap();
+        let rect = |c: Vec2| Footprint::Rect { center: c, half: Vec2::new(2.2, 1.6), angle: cove.to_angle() };
+        let over_water = rect(cove * (shore + 0.5));
+        let on_land = rect(-cove * 4.0);
+        let mut explicit = hut(rect(cove.perp() * 7.0), 2.4, RoofStyle::Turf, Material::Plank);
+        explicit.stilts = 1.2;
+        doc.add(Structure::House(hut(over_water, 2.4, RoofStyle::Thatch, Material::Wattle)));
+        doc.add(Structure::House(hut(on_land, 2.4, RoofStyle::Hide, Material::Wattle)));
+        doc.add(Structure::House(explicit));
+        let s = build(&doc);
+        let raw = Terrain::build(7, &[], &[]);
+        let ring = |fp: Footprint| -> Vec<Vec2> {
+            let poly = footprint_polygon(&fp);
+            let c = poly.iter().copied().sum::<Vec2>() / poly.len() as f32;
+            poly.iter().flat_map(|p| [*p, p.lerp(c, 0.5)]).chain([c]).collect()
+        };
+        for (_, st) in &doc.structures {
+            let Structure::House(h) = st else { continue };
+            let pts = ring(h.footprint);
+            if needs_stilts_fallback(h, &raw) {
+                assert!(pts.iter().all(|p| s.terrain.height(*p) == raw.height(*p)), "{:?}", h.footprint);
+            } else {
+                let hs: Vec<f32> = pts.iter().map(|p| s.terrain.height(*p)).collect();
+                let (lo, hi) = hs.iter().fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(*y), b.max(*y)));
+                assert!(hi - lo < 0.05, "levelled {lo}..{hi}");
+            }
+        }
+        assert!(needs_stilts_fallback(&hut(over_water, 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
+        assert!(!needs_stilts_fallback(&hut(on_land, 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
+        // Steep ground: the headland's cliff edge.
+        let head = raw.plan().headland;
+        let cliff = (40..150).map(|i| head * i as f32 * 0.25).find(|p| raw.normal(*p).y < 0.5).unwrap();
+        assert!(needs_stilts_fallback(&hut(rect(cliff), 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
+        let beacon = hut(Footprint::Round { center: cliff, radius: 1.5 }, 6.0, RoofStyle::Thatch, Material::Stone);
+        assert!(!needs_stilts_fallback(&beacon, &raw));
+    }
+
+    /// Swimming birds go to lagoons first, then to the open sea.
+    #[test]
+    fn pond_markers_prefer_lagoons() {
+        let mut doc = Document::new(3);
+        doc.terrain.push(TerrainDab { center: Vec2::new(5.0, 5.0), radius: 4.0, op: TerrainOp::Water { depth: 1.2 } });
+        let s = build(&doc);
+        let ponds: Vec<&Marker> = s.markers.iter().filter(|m| m.kind == MarkerKind::Pond).collect();
+        assert_eq!(ponds.len(), 6);
+        let lv = s.terrain.water_level(Vec2::new(5.0, 5.0)).unwrap();
+        assert!(lv > SEA_LEVEL + 0.1);
+        assert!((ponds[0].pos.y - lv).abs() < 1e-5 && ponds[0].pos.xz() == Vec2::new(5.0, 5.0));
+        assert!(ponds[1..].iter().all(|m| m.pos.y == SEA_LEVEL && s.terrain.is_sea(m.pos.xz())));
+        assert_eq!(build(&doc).markers, s.markers);
     }
 }

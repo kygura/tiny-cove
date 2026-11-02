@@ -1,28 +1,47 @@
-//! Terrain heightfield, brush edits, paint layers and the ground/water meshes.
+//! Island heightfield, brush edits, paint layers and the ground / lagoon meshes.
 //!
-//! Grid: `GRID` x `GRID` samples over `[-EXTENT, EXTENT]²` where `EXTENT = GLADE_HALF + 8`
-//! (the glade plus an 8 m skirt each side), spacing `SPACING = 2*EXTENT/(GRID-1)` = 0.625 m.
-//! Index = `j * GRID + i`, `i` along +x, `j` along +z.
+//! Grid: `GRID` x `GRID` samples over `[-EXTENT, EXTENT]²` where `EXTENT = GLADE_HALF + 16`
+//! (the buildable area plus a 16 m sea skirt each side), spacing `SPACING = 2*EXTENT/(GRID-1)`
+//! = 0.6 m. Index = `j * GRID + i`, `i` along +x, `j` along +z.
 //!
-//! Water: each water dab records, per cell, `ground height before carving - 0.2`
+//! Base shape ([`IslandPlan`], a function of the seed): a grassy interior 0.5–3 m above sea
+//! level, a sand beach ring sloping gently into the sea, a sheltered cove bay cutting in on one
+//! side, a rocky headland with cliffs up to ~7 m on its flank, 2–4 offshore sea stacks, and a
+//! seabed falling away towards [`FLOOR`], so the sea surrounds the island inside the grid.
+//! The sea itself is not meshed here: the renderer draws a sea plane at [`SEA_LEVEL`].
+//!
+//! Lagoons: each water dab records, per cell, `ground height before carving - 0.2`
 //! (`carve` tracks how much water dabs lowered a cell, so overlapping dabs do not creep
 //! downwards). After all edits, every connected blob of wet cells (mask > 0.5) gets ONE level:
-//! the minimum over the blob, so each pond is exactly flat, and its bed is forced below it.
+//! the minimum over the blob, so each lagoon is exactly flat, and its bed is forced below it.
 
 use crate::geom;
 use crate::mesh::{hash_f, MeshData, Surface};
 use crate::model::{PaintLayer, TerrainDab, TerrainOp, GLADE_HALF, SEA_LEVEL};
 use crate::palette;
 use glam::{Vec2, Vec3};
+use std::f32::consts::{PI, TAU};
 
-/// Samples per side of the heightfield grid (covers `[-GLADE_HALF, GLADE_HALF]` and a skirt).
-pub const GRID: usize = 129;
-/// Half extent of the grid in metres (glade + 8 m skirt).
-pub const EXTENT: f32 = GLADE_HALF + 8.0;
+/// Samples per side of the heightfield grid (covers the buildable area and a sea skirt).
+pub const GRID: usize = 161;
+/// Half extent of the grid in metres (buildable area + 16 m of sea).
+pub const EXTENT: f32 = GLADE_HALF + 16.0;
 /// Distance between grid samples in metres.
 pub const SPACING: f32 = 2.0 * EXTENT / (GRID as f32 - 1.0);
-/// Bottom of the diorama block.
+/// Bottom of the diorama block (the seabed far offshore rests just above it).
 pub const FLOOR: f32 = -8.0;
+
+/// Mean shoreline radius of the island before the cove, headland and wobble.
+const ISLAND_R: f32 = 24.0;
+/// How far the cove bay cuts into the island at its centre.
+const COVE_DEPTH: f32 = 10.0;
+/// How far the headland juts out beyond the mean shoreline.
+const HEADLAND_JUT: f32 = 4.0;
+/// Hash salt of the island layout. Chosen so the default demo seed (7) opens the cove
+/// towards the default camera (front-right) with the headland on its left flank.
+const PLAN_SALT: u64 = 0x25D;
+/// Ground below this (near the shore) is beach sand.
+const BEACH_TOP: f32 = 0.6;
 
 const NO_LEVEL: f32 = f32::INFINITY;
 const LAYERS: usize = 4;
@@ -38,10 +57,11 @@ pub struct FlattenRegion {
     pub margin: f32,
 }
 
-/// Heightfield plus water mask and paint layers; a pure function of `(seed, dabs, regions)`.
+/// Heightfield plus lagoon mask and paint layers; a pure function of `(seed, dabs, regions)`.
 #[derive(Clone, Debug)]
 pub struct Terrain {
     pub seed: u64,
+    plan: IslandPlan,
     h: Vec<f32>,
     wet: Vec<f32>,
     level: Vec<f32>,
@@ -65,28 +85,113 @@ fn vnoise(seed: u64, x: f32, z: f32) -> f32 {
     a + (b - a) * v
 }
 
-/// Signed distance from `p` to the glade's rounded-square edge (corner radius 8 m);
-/// negative inside the glade, positive on the cliff side.
+/// Signed distance from `p` to the buildable area's rounded-square edge (corner radius 8 m);
+/// negative inside, positive outside.
 pub fn glade_dist(p: Vec2) -> f32 {
     let q = p.abs() - Vec2::splat(GLADE_HALF - 8.0);
     q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - 8.0
 }
 
-/// Procedural base ground height before any edits.
-fn base_height(seed: u64, p: Vec2) -> f32 {
-    let f = |s: f32, o: u64| vnoise(seed ^ o, p.x / s, p.y / s);
-    let n = 0.6 * f(16.0, 11) + 0.3 * f(7.0, 23) + 0.1 * f(3.0, 37);
-    let mut g = (n * 1.8 - 0.1).clamp(0.0, 1.5);
-    // one soft low hill
-    let hc = Vec2::new((hash_f(seed, 1.0, 2.0) - 0.5) * 36.0, (hash_f(seed, 3.0, 4.0) - 0.5) * 36.0);
-    g += 1.3 * (-(p - hc).length_squared() / (2.0 * 7.0 * 7.0)).exp();
-    let d = glade_dist(p);
-    if d <= 0.0 {
-        return g;
+/// The seed's island layout: which way the cove and the headland face, and where the sea
+/// stacks stand. Directions are unit vectors on the ground plane `(x, z)` from the origin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IslandPlan {
+    seed: u64,
+    /// Towards the middle of the cove bay.
+    pub cove: Vec2,
+    /// Towards the rocky headland, on one flank of the cove so it shelters it.
+    pub headland: Vec2,
+    /// Towards the low sandy spit on the cove's other flank.
+    pub spit: Vec2,
+    /// Offshore sea stacks `(centre, radius, top height)`. The first stands nearest the
+    /// headland cliffs (close enough to bridge).
+    pub stacks: Vec<(Vec2, f32, f32)>,
+}
+
+impl IslandPlan {
+    /// Layout for `seed`.
+    pub fn new(seed: u64) -> Self {
+        let r = |k: f32| hash_f(seed ^ PLAN_SALT, k, 7.0);
+        let cove_a = r(1.0) * TAU;
+        let side = if r(2.0) < 0.5 { 1.0 } else { -1.0 };
+        let head_a = cove_a + side * PI * (0.42 + 0.1 * r(3.0));
+        let mut plan = IslandPlan {
+            seed,
+            cove: Vec2::from_angle(cove_a),
+            headland: Vec2::from_angle(head_a),
+            spit: Vec2::from_angle(cove_a - side * 0.8),
+            stacks: Vec::new(),
+        };
+        let count = 2 + ((r(4.0) * 3.0) as usize).min(2);
+        for k in 0..count {
+            // Alternate sides of the headland, each further round and further out.
+            let s = if k % 2 == 0 { -side } else { side };
+            let a = head_a + s * (0.14 + 0.2 * k as f32 + 0.08 * r(10.0 + k as f32));
+            let dir = Vec2::from_angle(a);
+            let gap = if k == 0 { 4.0 + r(20.0) } else { 5.0 + 4.0 * r(20.0 + k as f32) };
+            let radius = 1.7 + 0.7 * r(30.0 + k as f32);
+            let top = if k == 0 { 5.5 + r(40.0) } else { 3.5 + 3.5 * r(40.0 + k as f32) };
+            plan.stacks.push((dir * (plan.shore_radius(dir) + gap + radius), radius, top));
+        }
+        plan
     }
-    let s = smooth(0.0, 3.0, d);
-    let jag = (vnoise(seed ^ 77, p.x * 0.8, p.y * 0.8) - 0.5) * 1.2 * s;
-    (g * (1.0 - s) - 5.0 * s - 0.6 * (d - 3.0).max(0.0) + jag).max(FLOOR + 0.5)
+
+    /// Distance from the origin to the base shoreline in direction `dir` (unit).
+    pub fn shore_radius(&self, dir: Vec2) -> f32 {
+        let wob = (vnoise(self.seed ^ 101, dir.x * 1.7 + 9.0, dir.y * 1.7 + 9.0) - 0.5) * 5.0;
+        let cove = smooth(0.55f32.cos(), 0.05f32.cos(), dir.dot(self.cove));
+        let head = smooth(0.45f32.cos(), 0.1f32.cos(), dir.dot(self.headland));
+        let spit = smooth(0.35f32.cos(), 1.0, dir.dot(self.spit));
+        ISLAND_R + wob - COVE_DEPTH * cove + HEADLAND_JUT * head + 3.0 * spit
+    }
+
+    /// Signed horizontal distance from `p` to the base shoreline (negative inland).
+    pub fn shore_dist(&self, p: Vec2) -> f32 {
+        p.length() - self.shore_radius(p.normalize_or(Vec2::X))
+    }
+
+    /// Base ground height at `p` before any player edits.
+    pub fn height(&self, p: Vec2) -> f32 {
+        let seed = self.seed;
+        let f = |s: f32, o: u64| vnoise(seed ^ o, p.x / s, p.y / s);
+        let n = 0.6 * f(14.0, 11) + 0.3 * f(6.0, 23) + 0.1 * f(2.5, 37);
+        // Grassy interior with one soft hill near the middle.
+        let hc = Vec2::new(hash_f(seed, 1.0, 2.0) - 0.5, hash_f(seed, 3.0, 4.0) - 0.5) * 14.0;
+        let hill = 0.8 * (-(p - hc).length_squared() / (2.0 * 6.0 * 6.0)).exp();
+        let land = (0.5 + 1.8 * (n - 0.3).max(0.0) + hill).clamp(0.5, 3.0);
+        // Beach ring sloping into the shallows, then the shelf dropping towards the floor.
+        let r = p.length();
+        let dir = p.normalize_or(Vec2::X);
+        let d = r - self.shore_radius(dir);
+        let coast = if d < 0.0 {
+            -0.11 * d
+        } else if d < 6.0 {
+            -0.22 * d
+        } else {
+            -1.32 - 0.75 * (d - 6.0)
+        };
+        let mut h = land + (coast - land) * smooth(-11.0, -5.0, d);
+        // Rocky headland: a turf-topped plateau rising seawards to ~7 m, ending in cliffs.
+        let hw = smooth(0.55f32.cos(), 0.22f32.cos(), dir.dot(self.headland)) * smooth(6.0, 15.0, r);
+        if hw > 0.0 {
+            let dh = d + (vnoise(seed ^ 61, p.x * 0.45, p.y * 0.45) - 0.5) * 3.0;
+            let plateau = 2.5 + 4.3 * smooth(8.0, 24.0, r) + (n - 0.5) * 0.8;
+            let head = if dh < 1.5 { plateau + (-2.5 - plateau) * smooth(-1.0, 1.5, dh) } else { -2.5 - 0.7 * (dh - 1.5) };
+            h += (head - h) * hw;
+        }
+        // Sea stacks: steep ragged rock columns standing in the sea.
+        for &(c, rad, top) in &self.stacks {
+            let q = p - c;
+            let ragged = 1.0 + (vnoise(seed ^ 83, q.x * 0.9 + c.x, q.y * 0.9 + c.y) - 0.5) * 0.35;
+            let dist = q.length() * ragged;
+            let s = 1.0 - smooth(rad * 0.7, rad * 1.1, dist);
+            if s > 0.0 {
+                let crown = top - 0.25 * (dist / rad).powi(2) + (n - 0.5) * 0.5;
+                h += (crown - h).max(0.0) * s;
+            }
+        }
+        h.max(FLOOR + 0.5)
+    }
 }
 
 fn bilerp(v: &[f32], p: Vec2) -> f32 {
@@ -124,12 +229,14 @@ fn seg_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 }
 
 impl Terrain {
-    /// Builds the base glade from `seed`, applies `dabs` in order, then `flatten` regions.
+    /// Builds the base island from `seed`, applies `dabs` in order, then `flatten` regions.
     pub fn build(seed: u64, dabs: &[TerrainDab], flatten: &[FlattenRegion]) -> Self {
         let n = GRID * GRID;
+        let plan = IslandPlan::new(seed);
         let mut t = Terrain {
             seed,
-            h: (0..n).map(|k| base_height(seed, world(k % GRID, k / GRID))).collect(),
+            h: (0..n).map(|k| plan.height(world(k % GRID, k / GRID))).collect(),
+            plan,
             wet: vec![0.0; n],
             level: vec![NO_LEVEL; n],
             paint: std::array::from_fn(|_| vec![0.0; n]),
@@ -283,6 +390,11 @@ impl Terrain {
         self.max_h = self.h.iter().cloned().fold(FLOOR, f32::max);
     }
 
+    /// The seed's island layout (cove, headland, sea stacks).
+    pub fn plan(&self) -> &IslandPlan {
+        &self.plan
+    }
+
     /// Ground height at `p` (bilinear). Outside the grid: clamps.
     pub fn height(&self, p: Vec2) -> f32 {
         bilerp(&self.h, p)
@@ -391,10 +503,42 @@ impl Terrain {
         (t > 0.0).then(|| origin + dir * t)
     }
 
-    /// Ground mesh (grass/dirt/rock/sand by slope, paint and water, cliff skirt and bottom).
+    /// Ground surface and vertex tint of a ground triangle with centroid `c` and normal `n`:
+    /// rock on cliffs and steep faces (banded red sandstone), sand on the beach ring, the
+    /// seabed and lagoon beds, pebbles where painted, worn dirt on banks, lime-to-emerald grass.
+    fn ground_look(&self, c: Vec3, n: Vec3) -> (Surface, Vec3) {
+        let cp = Vec2::new(c.x, c.z);
+        let jit = 0.95 + 0.1 * hash_f(self.seed ^ 5, c.x, c.z);
+        let wet = self.wetness(cp);
+        let k = vnoise(self.seed ^ 9, c.x * 0.12, c.z * 0.12);
+        let near_shore = self.plan.shore_dist(cp) > -12.0;
+        if n.y < 40f32.to_radians().cos() {
+            // Cliff strata: an ochre stripe every 1.2 m of height.
+            let band = (c.y / 1.2).rem_euclid(1.0) < 0.3;
+            let base = palette::rock().lerp(palette::dirt(), 0.3);
+            let col = if band { palette::rock().lerp(palette::hay(), 0.55) } else { base };
+            (Surface::Rock, col * jit)
+        } else if wet > 0.5 || c.y < SEA_LEVEL - 0.1 {
+            // Lagoon beds and the seabed: wet honey sand.
+            (Surface::Sand, palette::wet_sand() * jit)
+        } else if wet > 0.02 || (near_shore && c.y < BEACH_TOP + 0.3 * k) {
+            (Surface::Sand, palette::sand() * jit)
+        } else if self.paint(PaintLayer::Pebbles, cp) > 0.5 {
+            (Surface::Pebble, palette::stone() * jit)
+        } else if n.y < 22f32.to_radians().cos() {
+            // Worn banks: red-ochre earth.
+            (Surface::Dirt, palette::dirt() * jit)
+        } else {
+            // Lime grass deepening to emerald, drying towards the dunes.
+            let dune = if near_shore { smooth(BEACH_TOP + 0.9, BEACH_TOP + 0.2, c.y) * 0.6 } else { 0.0 };
+            (Surface::Grass, palette::grass().lerp(palette::leaves(), k * 0.6).lerp(palette::grass_dry(), dune) * jit)
+        }
+    }
+
+    /// Ground mesh (surfaces from [`Self::ground_look`]), plus a skirt and bottom so the
+    /// block reads as solid from below the sea.
     pub fn ground_mesh(&self) -> MeshData {
         let mut m = MeshData::default();
-        let rock_cos = 40f32.to_radians().cos();
         for j in 0..GRID - 1 {
             for i in 0..GRID - 1 {
                 let corner = |a: usize, b: usize| {
@@ -406,22 +550,7 @@ impl Terrain {
                 let tris = if (i + j) % 2 == 0 { [[p00, p01, p11], [p00, p11, p10]] } else { [[p00, p01, p10], [p10, p01, p11]] };
                 for t in tris {
                     let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
-                    let c = (t[0] + t[1] + t[2]) / 3.0;
-                    let cp = Vec2::new(c.x, c.z);
-                    let jit = hash_f(self.seed ^ 5, c.x, c.z);
-                    let wet = self.wetness(cp);
-                    let (s, col) = if glade_dist(cp) > 0.3 || n.y < rock_cos {
-                        (Surface::Rock, palette::rock() * (0.85 + 0.2 * jit))
-                    } else if wet > 0.5 {
-                        (Surface::Dirt, palette::dirt() * 0.6)
-                    } else if wet > 0.02 {
-                        (Surface::Sand, palette::sand() * (0.95 + 0.1 * jit))
-                    } else if self.paint(PaintLayer::Pebbles, cp) > 0.5 {
-                        (Surface::Dirt, palette::dirt() * (0.93 + 0.14 * jit))
-                    } else {
-                        let k = vnoise(self.seed ^ 9, c.x * 0.12, c.z * 0.12);
-                        (Surface::Grass, palette::grass().lerp(palette::grass_dry(), k) * (0.95 + 0.1 * jit))
-                    };
+                    let (s, col) = self.ground_look((t[0] + t[1] + t[2]) / 3.0, n);
                     for p in t {
                         m.vertex(p, n, Vec2::new(p.x, p.z) * 0.5, col, s);
                     }
@@ -430,7 +559,7 @@ impl Terrain {
                 }
             }
         }
-        // Skirt walls (two strata bands) and bottom, so the block reads as solid.
+        // Skirt walls (two strata bands) and bottom.
         let g = GRID - 1;
         let mut edge = |pts: Vec<(usize, usize)>| {
             for w in pts.windows(2) {
@@ -463,11 +592,12 @@ impl Terrain {
         m
     }
 
-    /// Water surface mesh (Surface::Water): marching squares on the wet mask (threshold 0.5),
-    /// the clipped polygon of each cell at its pond level, so shorelines are smooth.
+    /// Lagoon surface mesh (Surface::Water): marching squares on the wet mask (threshold 0.5),
+    /// the clipped polygon of each cell at its lagoon level, so shorelines are smooth. The sea
+    /// is not included (the renderer draws it as a plane).
     pub fn water_mesh(&self) -> MeshData {
         let mut m = MeshData::default();
-        let col = Vec3::new(0.08, 0.38, 0.45);
+        let col = palette::sea_shallow();
         for j in 0..GRID - 1 {
             for i in 0..GRID - 1 {
                 let Some(y) = self.cell_level(i, j) else { continue };
@@ -537,13 +667,105 @@ mod tests {
     #[test]
     fn base_shape() {
         let t = Terrain::build(3, &[], &[]);
-        assert!(t.height(Vec2::ZERO) > -0.01 && t.height(Vec2::ZERO) < 3.0);
-        assert!(t.height(Vec2::new(GLADE_HALF + 3.0, 0.0)) < -4.0);
+        assert!(t.height(Vec2::ZERO) >= 0.5 && t.height(Vec2::ZERO) <= 3.0);
         let g = t.ground_mesh();
         assert!(g.is_valid() && !g.is_empty());
         // ground triangles face up
         assert!(g.normals[..9].iter().all(|n| n[1] > 0.0));
+        // The sea is drawn by the renderer: no lagoons, no water mesh.
         assert!(t.water_mesh().is_empty());
+        for s in [Surface::Grass, Surface::Sand, Surface::Rock] {
+            assert!(g.surfaces.contains(&(s as u8)), "{s:?}");
+        }
+    }
+
+    const SEEDS: std::ops::Range<u64> = 0..24;
+
+    #[test]
+    fn island_has_sea_on_all_edges() {
+        for seed in SEEDS {
+            let t = Terrain::build(seed, &[], &[]);
+            for k in 0..GRID {
+                for (i, j) in [(k, 0), (k, GRID - 1), (0, k), (GRID - 1, k)] {
+                    let h = t.h[j * GRID + i];
+                    assert!(h < SEA_LEVEL - 4.0, "seed {seed} edge ({i},{j}) {h}");
+                    assert!(t.is_sea(world(i, j)) && t.water_level(world(i, j)) == Some(SEA_LEVEL));
+                }
+            }
+            // The seabed far out rests near the floor.
+            assert!(t.height(Vec2::splat(EXTENT - 1.0)) < FLOOR + 1.0);
+        }
+    }
+
+    #[test]
+    fn grassy_interior() {
+        for seed in SEEDS {
+            let t = Terrain::build(seed, &[], &[]);
+            for k in 0..32 {
+                let p = Vec2::from_angle(k as f32 * TAU / 32.0) * (k % 4) as f32 * 2.0;
+                let h = t.height(p);
+                assert!((0.5..=3.0).contains(&h), "seed {seed} {p} {h}");
+                assert!(t.water_level(p).is_none());
+            }
+        }
+    }
+
+    /// Walking out from the middle in any direction away from the headland crosses dry sand
+    /// that slopes gently into the sea.
+    #[test]
+    fn beach_ring() {
+        for seed in SEEDS {
+            let t = Terrain::build(seed, &[], &[]);
+            let mut beaches = 0;
+            let mut dirs = 0;
+            for k in 0..48 {
+                let dir = Vec2::from_angle(k as f32 * TAU / 48.0);
+                if dir.dot(t.plan.headland) > 0.8f32.cos() {
+                    continue;
+                }
+                dirs += 1;
+                let shore = (0..200).map(|i| i as f32 * 0.25).find(|r| t.is_sea(dir * *r)).expect("reaches the sea");
+                assert!(shore > 9.0 && shore < GLADE_HALF, "seed {seed} shore at {shore}");
+                // 2 m inland is low dry beach; 3 m out is shallow sea; the slope is gentle.
+                let (inland, out) = (t.height(dir * (shore - 2.0)), t.height(dir * (shore + 3.0)));
+                if (0.0..BEACH_TOP).contains(&inland) && (-1.5..0.0).contains(&out) {
+                    beaches += 1;
+                }
+            }
+            assert!(beaches * 10 >= dirs * 9, "seed {seed}: {beaches}/{dirs} beach");
+            let g = t.ground_mesh();
+            let sand = g.surfaces.iter().filter(|s| **s == Surface::Sand as u8).count();
+            assert!(sand > g.surfaces.len() / 10, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn headland_cove_and_stacks() {
+        for seed in SEEDS {
+            let t = Terrain::build(seed, &[], &[]);
+            let plan = t.plan.clone();
+            assert_eq!(plan, IslandPlan::new(seed));
+            // The cove cuts in: sea much closer to the middle than elsewhere.
+            let first_sea = |dir: Vec2| (0..200).map(|i| i as f32 * 0.25).find(|r| t.is_sea(dir * *r)).unwrap();
+            let cove = first_sea(plan.cove);
+            assert!(cove < 17.0 && cove > 9.0, "seed {seed} cove shore {cove}");
+            assert!(first_sea(-plan.cove) > cove + 5.0);
+            // Headland: a high plateau (~7 m) ending in steep cliffs.
+            let top = (20..120).map(|i| t.height(plan.headland * i as f32 * 0.25)).fold(f32::MIN, f32::max);
+            assert!((5.0..8.5).contains(&top), "seed {seed} headland top {top}");
+            let steep = (40..150).any(|i| t.normal(plan.headland * i as f32 * 0.25).y < 0.5);
+            assert!(steep, "seed {seed}: no cliff");
+            // 2-4 stacks, standing out of the sea with water all around.
+            assert!((2..=4).contains(&plan.stacks.len()));
+            for &(c, rad, top) in &plan.stacks {
+                assert!(c.x.abs() < EXTENT - 4.0 && c.y.abs() < EXTENT - 4.0);
+                assert!(t.height(c) > top - 1.0 && t.height(c) > 3.0, "seed {seed} stack {c}");
+                for k in 0..12 {
+                    let q = c + Vec2::from_angle(k as f32 * TAU / 12.0) * (rad * 1.3 + 1.5);
+                    assert!(t.is_sea(q), "seed {seed} stack {c} not surrounded at {q}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -560,7 +782,7 @@ mod tests {
         let t = Terrain::build(1, &[dab(0.0, 0.0, 5.0, TerrainOp::Water { depth: 1.0 })], &[]);
         let lv = t.water_level(Vec2::ZERO).expect("wet");
         assert!(t.height(Vec2::ZERO) < lv);
-        assert!(t.water_level(Vec2::new(20.0, 0.0)).is_none());
+        assert!(t.water_level(Vec2::new(7.0, 0.0)).is_none());
         let w = t.water_mesh();
         assert!(w.is_valid() && !w.is_empty());
         assert!(w.positions.iter().all(|p| (p[1] - lv).abs() < 1e-4));
@@ -572,22 +794,22 @@ mod tests {
     fn sea_has_sea_level_and_lagoons_keep_their_own() {
         // Dig a hole well below sea level inside the island, and a lagoon elsewhere.
         let d = [
-            dab(10.0, 10.0, 4.0, TerrainOp::Sculpt { amount: -6.0 }),
-            dab(-10.0, -10.0, 7.0, TerrainOp::Sculpt { amount: 2.0 }),
-            dab(-10.0, -10.0, 4.0, TerrainOp::Water { depth: 1.0 }),
+            dab(6.0, 6.0, 4.0, TerrainOp::Sculpt { amount: -6.0 }),
+            dab(-6.0, -6.0, 7.0, TerrainOp::Sculpt { amount: 2.0 }),
+            dab(-6.0, -6.0, 4.0, TerrainOp::Water { depth: 1.0 }),
         ];
         let t = Terrain::build(5, &d, &[]);
-        let dug = Vec2::new(10.0, 10.0);
+        let dug = Vec2::new(6.0, 6.0);
         assert!(t.is_sea(dug));
         assert_eq!(t.water_level(dug), Some(SEA_LEVEL));
-        // Beyond the island edge the seabed falls away: sea too.
-        let off = Vec2::new(GLADE_HALF + 4.0, 0.0);
+        // Beyond the island the seabed falls away: sea too.
+        let off = -t.plan().headland * (GLADE_HALF + 4.0);
         assert!(t.is_sea(off) && t.water_level(off) == Some(SEA_LEVEL));
         // Dry ground is neither.
-        let dry = Vec2::new(-10.0, 10.0);
+        let dry = Vec2::new(-6.0, 6.0);
         assert!(!t.is_sea(dry) && t.water_level(dry).is_none());
         // The lagoon keeps its own (higher) level.
-        let lagoon = Vec2::new(-10.0, -10.0);
+        let lagoon = Vec2::new(-6.0, -6.0);
         let lv = t.water_level(lagoon).expect("lagoon");
         assert!(!t.is_sea(lagoon) && lv > SEA_LEVEL && t.height(lagoon) < lv);
     }
@@ -633,7 +855,7 @@ mod tests {
         assert_eq!(t.paint(PaintLayer::SeaPinks, Vec2::ZERO), 1.0);
         assert!(t.paint(PaintLayer::Pebbles, Vec2::ZERO) > 0.5);
         assert_eq!(t.paint(PaintLayer::SeaPinks, Vec2::new(10.0, 0.0)), 0.0);
-        assert!(t.ground_mesh().surfaces.contains(&(Surface::Dirt as u8)));
+        assert!(t.ground_mesh().surfaces.contains(&(Surface::Pebble as u8)));
         let mut d2 = d.to_vec();
         d2.push(dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::SeaPinks, strength: -0.4 }));
         assert!((Terrain::build(1, &d2, &[]).paint(PaintLayer::SeaPinks, Vec2::ZERO) - 0.6).abs() < 1e-5);
@@ -667,6 +889,28 @@ mod tests {
         let e = Terrain::build(1, &[], &[]);
         assert!(e.normal(Vec2::new(100.0, -100.0)).is_finite());
         assert!(e.height(Vec2::new(1e6, 0.0)).is_finite());
+    }
+
+    /// ASCII map of an island as the default camera sees it (u right, w towards the viewer).
+    /// `cargo test -p cairn_cove_core --release -- --ignored --nocapture island_map`
+    #[test]
+    #[ignore]
+    fn island_map() {
+        for seed in [7u64, 1, 42] {
+            let t = Terrain::build(seed, &[], &[]);
+            println!("seed {seed} cove {:?} head {:?} stacks {:?}", t.plan.cove, t.plan.headland, t.plan.stacks);
+            for wi in -20..=20 {
+                let row: String = (-30..=30)
+                    .map(|ui| {
+                        let (u, w) =(ui as f32, wi as f32 * 1.5);
+                        let p = Vec2::new(u + w, w - u) * std::f32::consts::FRAC_1_SQRT_2;
+                        let h = t.height(p);
+                        if h < -3.0 { '~' } else if h < 0.0 { '-' } else if h < BEACH_TOP { '.' } else if h < 2.0 { ',' } else if h < 3.2 { ';' } else if h < 5.0 { '#' } else { '@' }
+                    })
+                    .collect();
+                println!("{row}");
+            }
+        }
     }
 
     #[test]
