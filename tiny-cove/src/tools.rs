@@ -9,7 +9,7 @@
 //! - Undo / redo go straight to [`crate::world::Glade`].
 
 use crate::camera::{CameraInput, CameraRig};
-use crate::render::{GameCamera, LowRes, RenderTest, VIEW_HEIGHT, cursor_ray};
+use crate::render::{GameCamera, LowRes, RenderTest, VIEW_HEIGHT, cursor_ray, display_scale};
 use crate::world::{BuiltScene, Glade};
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
@@ -1098,8 +1098,8 @@ fn drive_tools(
     let blocked = over_ui.0 && cursor_override.is_none();
     let cursor = match cursor_override.as_deref() {
         Some(o) => match (o.target, window.as_ref(), camera.single().ok(), low.as_ref()) {
-            (Some(t), Some(w), Some((cam, tf)), Some(low)) => {
-                cam.world_to_viewport(tf, t).ok().map(|v| v * w.size() / low.size.as_vec2() + o.px)
+            (Some(t), Some(w), Some((cam, tf)), Some(_)) => {
+                cam.world_to_viewport(tf, t).ok().map(|v| low_res_to_window(v, w) + o.px)
             }
             _ => None,
         },
@@ -1494,8 +1494,20 @@ fn prop_reason(terrain: &Terrain, s: &ToolSettings, p: Vec2) -> Option<&'static 
     }
 }
 
+/// Inverse of the real cursor path ([`cursor_ray`]: window logical px -> physical -> low-res at the
+/// integer [`display_scale`]), so a synthetic cursor lands on the exact low-res pixel.
+fn low_res_to_window(v: Vec2, w: &Window) -> Vec2 {
+    v * display_scale(w.physical_height()) as f32 / w.scale_factor()
+}
+
 fn prop_invalid(cx: &Cx, p: Vec2) -> Option<&'static str> {
     prop_reason(&cx.scene.terrain, cx.s, p)
+}
+
+/// Drop points along `from -> to`, one every `step` m starting `step` past `from`.
+fn scatter_points(from: Vec2, to: Vec2, step: f32) -> impl Iterator<Item = Vec2> {
+    let dir = (to - from).normalize_or_zero();
+    (1..=(from.distance(to) / step).floor() as usize).map(move |i| from + dir * step * i as f32)
 }
 
 fn prop_tool(cx: &mut Cx) {
@@ -1534,14 +1546,21 @@ fn prop_tool(cx: &mut Cx) {
     cx.invalid = prop_invalid(cx, at);
     let kind = if tree { PropKind::Tree(cx.s.tree) } else { PropKind::Clutter(cx.s.clutter) };
     let head = Placed { at, angle, scale, kind, colors: cx.s.colors };
-    // Tree drag: drop the held tree and take a fresh one whenever the cursor has travelled a step.
-    if tree && inp.held && !inp.release && at.distance(anchor) >= SCATTER_STEP && placed.len() < SCATTER_MAX {
-        if cx.invalid.is_none() {
-            placed.push(head.clone());
+    // Tree drag: once the cursor has travelled a step, plant the press point first, then a tree every
+    // SCATTER_STEP along the drag (a fast drag still fills evenly). The user's scroll angle / scale is
+    // the base for each tree's hashed variation.
+    if tree && inp.held && !inp.release && at.distance(anchor) >= SCATTER_STEP {
+        let first = placed.is_empty().then_some(anchor);
+        for pt in first.into_iter().chain(scatter_points(anchor, at, SCATTER_STEP)) {
+            if placed.len() >= SCATTER_MAX {
+                break;
+            }
+            if prop_invalid(cx, pt).is_none() {
+                let (da, ds) = if pt == anchor { (0.0, 0.0) } else { ((hash01(pt, 1) - 0.5) * (TAU / 4.0), (hash01(pt, 2) - 0.5) * 0.2) };
+                placed.push(Placed { at: pt, angle: (angle + da).rem_euclid(TAU), scale: (scale + ds).clamp(0.7, 1.3), ..head.clone() });
+            }
         }
-        anchor = at;
-        angle = hash01(at, 1) * TAU;
-        scale = 0.9 + hash01(at, 2) * 0.25;
+        anchor += (at - anchor).normalize_or_zero() * (at.distance(anchor) / SCATTER_STEP).floor() * SCATTER_STEP;
     }
     // The held tree is only a tree of its own once the cursor has moved off the last one dropped.
     let head_counts = placed.is_empty() || at.distance(anchor) > 1.0;
@@ -1726,6 +1745,25 @@ fn erase_tool(cx: &mut Cx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synthetic_cursor_inverts_the_real_mapping() {
+        // 1366x768 (scale 3, low-res 456 wide): the old stretch rule gave 2.9956 px per low-res px.
+        let w = Window { resolution: bevy::window::WindowResolution::new(1366, 768), ..default() };
+        let v = Vec2::new(300.0, 100.0);
+        let win = low_res_to_window(v, &w);
+        assert_eq!(win, Vec2::new(900.0, 300.0));
+        assert_eq!(crate::render::window_to_low_res(win * w.scale_factor(), display_scale(w.physical_height())), v);
+    }
+
+    #[test]
+    fn scatter_fills_a_fast_drag_evenly() {
+        // One 9 m jump in a frame still drops a tree every 2.5 m; the remainder carries over.
+        let pts: Vec<Vec2> = scatter_points(Vec2::new(1.0, 1.0), Vec2::new(10.0, 1.0), SCATTER_STEP).collect();
+        assert_eq!(pts, vec![Vec2::new(3.5, 1.0), Vec2::new(6.0, 1.0), Vec2::new(8.5, 1.0)]);
+        assert_eq!(scatter_points(Vec2::ZERO, Vec2::new(2.4, 0.0), SCATTER_STEP).count(), 0);
+        assert_eq!(scatter_points(Vec2::ZERO, Vec2::ZERO, SCATTER_STEP).count(), 0);
+    }
 
     #[test]
     fn simplify_drops_collinear_and_keeps_corners() {
