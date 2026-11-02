@@ -506,6 +506,18 @@ fn steps() -> Vec<Step> {
     v.push(step("tree scatter is one undo", vec![Act::Undo, Act::Wait(2)], move |b, a, _| {
         ok_if(trees_in(b) >= trees_in(a) + 3 && a.structures.len() < b.structures.len(), || format!("trees {} -> {}", trees_in(b), trees_in(a)))
     }));
+    // A fast drag (one 6 m jump per frame) still plants at the press point and every 2.5 m after it.
+    let (p0, p1) = (sd(26.0, -18.0), sd(26.0, -6.0));
+    let jumps = vec![Act::Aim(p0, 0.0), Act::Press, Act::Aim(p0.lerp(p1, 0.5), 0.0), Act::Aim(p1, 0.0), Act::Wait(2), Act::Release];
+    v.push(step("tree fast drag plants at press and fills", with(vec![key(Tool::Tree)], jumps), move |b, a, _| {
+        let fresh: Vec<Vec2> = a.structures.iter().filter(|(id, _)| !b.structures.iter().any(|(i, _)| i == id)).filter_map(|(_, s)| match s {
+            Structure::Placed(p) if matches!(p.kind, PropKind::Tree(_)) => Some(p.at),
+            _ => None,
+        }).collect();
+        let pressed = fresh.iter().any(|t| t.distance(p0) < 0.3);
+        ok_if(pressed && fresh.len() as f32 >= p0.distance(p1) / 2.5 - 0.5, || format!("{} trees, press planted {pressed}", fresh.len()))
+    }));
+    v.push(step("fast scatter is one undo", vec![Act::Undo, Act::Wait(2)], |b, a, _| ok_if(a.structures.len() < b.structures.len(), || "undo".into())));
 
     // Terrain brushes.
     let stroke = |s0: f32| vec![sd(s0, 14.0), sd(s0, 22.0)];

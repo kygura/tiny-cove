@@ -572,7 +572,7 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
             r.spawn(row(0)).with_children(|g| {
                 g.spawn((txt(*label, 10.0, DIM), Node { margin: UiRect::right(px(4)), ..default() }));
                 for (i, (name, h)) in palette(*slot).iter().enumerate() {
-                    // 32x32 hit node; 28x28 deep cell; 20x20 chip: lit hex over the noon-shadow hex.
+                    // 32x32 hit node; 28x28 deep cell; 1-px WEFT border round a 20x20 chip: 13 px lit hex over 7 px noon-shadow hex.
                     g.spawn((
                         button(Node { width: px(32), height: px(32), border: UiRect::all(px(2)), ..default() }, Action::Color(*slot, i as u8)),
                         Cond { sel: yes, en: *en, show: yes },
@@ -581,9 +581,9 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
                     ))
                     .with_children(|b| {
                         b.spawn((Node { width: px(28), height: px(28), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(DEEP))).with_children(|cell| {
-                            cell.spawn((Node { width: px(20), height: px(20), padding: UiRect::all(px(1)), flex_direction: FlexDirection::Column, ..default() }, BackgroundColor(WEFT))).with_children(|chip| {
-                                chip.spawn((Node { height: px(12), ..default() }, BackgroundColor(hex(*h))));
-                                chip.spawn((Node { height: px(6), ..default() }, BackgroundColor(hex(strip::shadow(*slot, i)))));
+                            cell.spawn((Node { width: px(22), height: px(22), padding: UiRect::all(px(1)), flex_direction: FlexDirection::Column, ..default() }, BackgroundColor(WEFT))).with_children(|chip| {
+                                chip.spawn((Node { height: px(13), ..default() }, BackgroundColor(hex(*h))));
+                                chip.spawn((Node { height: px(7), ..default() }, BackgroundColor(hex(strip::shadow(*slot, i)))));
                             });
                         });
                         b.spawn(band(Band::Fill, MALACHITE, Node { left: px(2), right: px(2), bottom: px(-5), height: px(3), ..default() }));

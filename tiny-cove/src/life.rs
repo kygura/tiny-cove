@@ -18,7 +18,7 @@ use crate::camera::CameraRig;
 use crate::env::{Environment, Tide};
 use crate::render::{GladeAssets, particle_mesh, to_bevy_mesh, write_particle_mesh};
 use crate::weather::night_weight;
-use crate::world::{BuiltInfo, BuiltScene, Glade, WarmLight, nearest_by, warm_light};
+use crate::world::{BuiltInfo, BuiltScene, Glade, MAX_LANTERNS, WarmLight, nearest_by, warm_light};
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use cairn_cove_core::{
     ClutterKind, Document, MarkerKind, PropKind, Scene, Structure, TRIM_COLORS,
@@ -31,7 +31,6 @@ use std::{collections::HashSet, sync::Arc};
 const GULLS: usize = 7;
 const CRABS: usize = 6;
 const MAX_BOATS: usize = 12;
-const MAX_FIRES: usize = 10;
 const MAX_CHIMNEYS: usize = 14;
 const MAX_PERCHES: usize = 48;
 const MAX_FLY_HOMES: usize = 14;
@@ -555,9 +554,9 @@ fn update_clouds(
     let t = time.elapsed_secs();
     let tide = Tide::at(env.hour).level;
     let focus = rig.map_or(Vec3::ZERO, |r| r.focus);
-    // Same rule as the fire lights; a fire burns once its light is at least half up.
+    // Same rule and same cap (MAX_LANTERNS) as the fire lights, so no lit fire is left without a flame; a fire burns once its light is at least half up.
     let lit = |kind: WarmLight| warm_light(kind, env.hour, env.storm, env.sea_fog) > 0.5;
-    let fires = nearest_by(world.fires.iter().filter(|(_, k)| lit(*k)), |f| f.0, focus, MAX_FIRES);
+    let fires = nearest_by(world.fires.iter().filter(|(_, k)| lit(*k)), |f| f.0, focus, MAX_LANTERNS);
     let salt = |p: Vec3| hash_f(0x5A17, p.x, p.z) * 7.0;
     for (m, kind) in &clouds {
         let Some(mut mesh) = meshes.get_mut(&m.0) else { continue };
