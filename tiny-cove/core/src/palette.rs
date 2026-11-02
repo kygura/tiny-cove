@@ -426,11 +426,17 @@ pub fn hsv_to_rgb(hsv: Vec3) -> Vec3 {
     Vec3::new(r + m, g + m, b + m)
 }
 
+/// Hue where the cool path of the A3 direction rule starts. DESIGN says 60°; it sits at 70°
+/// so acid yellow-greens (marram #DEE65A is 63°) shade through ochre, not olive, under a warm
+/// golden-hour light. No calibration golden or swatch lies between 60° and 70°.
+pub const WARM_EDGE: f32 = 70.0;
+
 /// Rotates hue `h` toward `t` by up to `amount` degrees along the DESIGN A3 direction rule:
-/// positive when `60 ≤ h < t` (greens/cyans through teal and blue), else negative (the warm
-/// path through orange, red, magenta). Never rotates past `t`. Returns (new hue, warm path).
+/// positive when [`WARM_EDGE`] `≤ h < t` (greens/cyans through teal and blue), else negative
+/// (the warm path through orange, red, magenta). Never rotates past `t`. Returns (new hue,
+/// warm path).
 pub fn rotate_toward(h: f32, t: f32, amount: f32) -> (f32, bool) {
-    if (60.0..t).contains(&h) {
+    if (WARM_EDGE..t).contains(&h) {
         (h + amount.min(t - h), false)
     } else {
         let dist = (h - t).rem_euclid(360.0);
@@ -466,7 +472,7 @@ pub fn shade(c: Vec3, band: Band, tint: Vec3) -> Vec3 {
         a.x = t;
         a.y = a.y.max(floor_white);
     } else {
-        let warm = !(60.0..t).contains(&a.x);
+        let warm = !(WARM_EDGE..t).contains(&a.x);
         a.x = rotate_toward(a.x, t, if warm { rot_warm } else { rot_cool }).0;
     }
     a.y = (a.y * sat_k).min(1.0);
@@ -484,7 +490,7 @@ pub fn shade(c: Vec3, band: Band, tint: Vec3) -> Vec3 {
 /// Below this value a yellow-to-olive colour (hue [`MUD_HUES`]) reads as brown / khaki mud
 /// however saturated it is (a warm albedo under a cool storm or night light).
 pub const MUD_V: f32 = 0.45;
-pub const MUD_HUES: std::ops::Range<f32> = 30.0..100.0;
+pub const MUD_HUES: std::ops::Range<f32> = 15.0..100.0;
 
 /// DESIGN A3 anti-mud floor (after lighting): low-chroma darks are pulled toward the tint
 /// hue and given S = 0.35; dark ochres and olives (hue in [`MUD_HUES`], V < [`MUD_V`]) turn
@@ -493,7 +499,7 @@ pub const MUD_HUES: std::ops::Range<f32> = 30.0..100.0;
 pub fn anti_mud(c: Vec3, tint: Vec3) -> Vec3 {
     let mut a = rgb_to_hsv(c);
     let t = rgb_to_hsv(tint).x;
-    let dist = |h: f32| if (60.0..t).contains(&h) { t - h } else { (h - t).rem_euclid(360.0) };
+    let dist = |h: f32| if (WARM_EDGE..t).contains(&h) { t - h } else { (h - t).rem_euclid(360.0) };
     if a.z < 0.80 && a.y < 0.35 {
         let k = (0.35 - a.y) / 0.35;
         a.x = rotate_toward(a.x, t, dist(a.x) * k).0;
@@ -503,9 +509,25 @@ pub fn anti_mud(c: Vec3, tint: Vec3) -> Vec3 {
         let k = 0.25 + 0.5 * (MUD_V - a.z) / MUD_V;
         a.x = rotate_toward(a.x, t, dist(a.x) * k).0;
         a.y = a.y.max(0.4);
+    } else {
+        a.x = olive_guard(a);
     }
     a.z = a.z.max(0.22);
     hsv_to_rgb(a)
+}
+
+/// Olive guard (A3 "grass never goes olive"): a saturated mid-value yellow-green (H 50-75,
+/// S > 0.4, V 0.45-0.8, e.g. lime grass or dune grass under the warm golden sun) leaves the
+/// olive band, to ochre-gold below 62° and to lime above. Returns the new hue.
+pub fn olive_guard(hsv: Vec3) -> f32 {
+    let (h, s, v) = (hsv.x, hsv.y, hsv.z);
+    if !(50.0..75.0).contains(&h) || s <= 0.4 || !(MUD_V..0.8).contains(&v) {
+        h
+    } else if h < 62.0 {
+        42.0 + (h - 50.0) * 0.5
+    } else {
+        80.0 + (h - 62.0) * 0.5
+    }
 }
 
 /// The post pass's 15-bit quantise (5 bits per channel, no dither) of an sRGB colour.
@@ -650,6 +672,31 @@ mod tests {
         // Bright warm colours are left alone.
         let thatch = hex_to_unit(0xEFB53A);
         assert_eq!(anti_mud(thatch, hex_to_unit(0x4A3AAD)), hsv_to_rgb(rgb_to_hsv(thatch)));
+    }
+
+    /// No lit pixel lands in the olive band (H 50-75 at mid value).
+    #[test]
+    fn olive_is_guarded() {
+        let tint = hex_to_unit(0x7329A5);
+        for hex in [0xADAD42u32, 0xA4A43A, 0xA4AD42, 0x9CA531] {
+            let hsv = rgb_to_hsv(anti_mud(hex_to_unit(hex), tint));
+            assert!(!(50.0..75.0).contains(&hsv.x), "#{hex:06X} -> {hsv:?}");
+        }
+        // Bright lime and gold are left alone.
+        assert_eq!(olive_guard(rgb_to_hsv(hex_to_unit(0xEFE63A))), rgb_to_hsv(hex_to_unit(0xEFE63A)).x);
+    }
+
+    /// Golden-hour marram (dune grass) shades through ochre and gold, never olive or khaki.
+    #[test]
+    fn golden_marram_is_not_olive() {
+        let (sun, fill, tint) = (hex_to_unit(0xFFD69C), hex_to_unit(0xEFB5DE) * 0.9, hex_to_unit(0x7329A5));
+        let marram = hex_to_unit(0xDEE65A);
+        for (band, light) in [(Band::Mid, sun.lerp(fill, 0.5)), (Band::Shadow, fill)] {
+            let c = anti_mud((shade(marram, band, tint) * light).min(Vec3::ONE), tint);
+            let hsv = rgb_to_hsv(c);
+            assert!(hsv.x < 55.0 || hsv.x > 300.0, "{band:?}: {:06X} is olive ({hsv:?})", unit_to_hex(c));
+            assert!(hsv.y > 0.4 && hsv.z > 0.4, "{band:?}: {hsv:?}");
+        }
     }
 
     #[test]

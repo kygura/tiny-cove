@@ -1,9 +1,10 @@
 //! PS1 + cel-shaded renderer.
 //!
-//! - Low-res target ([`LOW_RES_HEIGHT`] px tall, width from the window aspect) rendered
-//!   by the [`GameCamera`] (orthographic `Camera3d`, order -1) and shown nearest-upscaled
-//!   as a fullscreen `ImageNode` on the [`WindowCamera`] (`Camera2d`, `IsDefaultUiCamera`),
-//!   so bevy_ui draws at full resolution on top.
+//! - Low-res target (always [`LOW_RES_HEIGHT`] px tall, width from the window aspect)
+//!   rendered by the [`GameCamera`] (orthographic `Camera3d`, order -1) and shown at an
+//!   integer upscale ([`display_scale`], centred vertically: [`display_offset`]) as an
+//!   `ImageNode` on the [`WindowCamera`] (`Camera2d`, `IsDefaultUiCamera`), so bevy_ui draws
+//!   at full resolution on top.
 //! - Materials ([`GladeAssets`]): [`GladeMaterial`] (everything opaque, from
 //!   [`to_bevy_mesh`]), [`WaterMaterial`] (lagoons), [`SeaMaterial`] (the open sea, see
 //!   [`sea`]), [`ParticleMaterial`] (see [`particles`]). All read one shared globals buffer
@@ -54,8 +55,8 @@ use bevy::{
 use cairn_cove_core::MeshData;
 use std::path::{Path, PathBuf};
 
-/// Internal render height in pixels (exactly this at 720p; the window shows it at an integer
-/// scale, see [`display_scale`]).
+/// Internal render height in pixels at every window size (SPEC: the 240 px target). The
+/// window shows it at an integer scale, see [`display_scale`].
 pub const LOW_RES_HEIGHT: u32 = 240;
 /// Distance from the camera to its focus point along the view direction. Keep the
 /// camera at this distance when orbiting/panning (zoom with the projection `scale`):
@@ -66,7 +67,13 @@ pub const CAMERA_FAR: f32 = 250.0;
 /// Default orthographic view height in metres (≈ 42 m across at 16:9).
 pub const VIEW_HEIGHT: f32 = 24.0;
 pub const DEFAULT_YAW: f32 = 45.0;
-pub const DEFAULT_PITCH: f32 = 35.0;
+/// 30° is the 2:1 dimetric of pixel-art isometric games.
+pub const DEFAULT_PITCH: f32 = 30.0;
+/// Where the camera focus sits in the frame, from the bottom (`OrthographicProjection::
+/// viewport_origin.y`). Below the centre, so the frame shows less near sea and more of the
+/// sky above the horizon (DESIGN A8: sky across the top of the frame), which can never come
+/// nearer than the far edge of the buildable square (see [`sea::Horizon`]).
+pub const VIEW_ORIGIN_Y: f32 = 0.4;
 
 pub struct RenderPlugin;
 
@@ -131,7 +138,7 @@ impl Plugin for RenderPlugin {
         .add_systems(PreStartup, setup.in_set(RenderSetup))
         .add_systems(Startup, sea::spawn_sea.run_if(not(resource_exists::<RenderTest>)))
         .add_systems(Update, screenshot_on_f12)
-        .add_systems(PostUpdate, (fit_to_window, apply_environment, sea::update_heightfield, sea::fire_lights, material::sync_globals).chain())
+        .add_systems(PostUpdate, (fit_to_window, apply_environment, sea::update_heightfield, material::sync_globals).chain())
         .add_systems(
             PostUpdate,
             update_post_settings
@@ -142,18 +149,29 @@ impl Plugin for RenderPlugin {
     }
 }
 
-/// Integer upscale factor for a window `height` physical px tall: every low-res pixel is
-/// exactly `s × s` window pixels (no uneven rows/columns, no blended edge rows).
+/// Integer upscale factor for a window `height` physical px tall, so every low-res pixel is
+/// exactly `s × s` window pixels: the integer nearest `height / LOW_RES_HEIGHT` (at least 1).
+/// The [`LOW_RES_HEIGHT`] rows then cover `240·s` px, and the few left over are letterboxed
+/// (or cropped) evenly top and bottom by [`display_offset`]. On a tie (1080 p: 4× leaves 120
+/// px, 5× is 120 px too tall) it letterboxes rather than crops.
 pub fn display_scale(height: u32) -> u32 {
-    (height / LOW_RES_HEIGHT).max(1)
+    let lo = (height / LOW_RES_HEIGHT).max(1);
+    let (below, above) = (height.saturating_sub(lo * LOW_RES_HEIGHT), ((lo + 1) * LOW_RES_HEIGHT).saturating_sub(height));
+    if above < below { lo + 1 } else { lo }
 }
 
-/// Low-res target size for a window of `physical` px: the window divided by the integer
-/// [`display_scale`], rounded up so the upscaled image covers it (cropping < s px at the
-/// right / bottom edge).
+/// Low-res target size for a window of `physical` px: [`LOW_RES_HEIGHT`] rows, and as many
+/// columns as cover the window width at [`display_scale`] (cropping < s px at the right).
 pub fn low_res_for_physical(physical: UVec2) -> UVec2 {
     let s = display_scale(physical.y);
-    UVec2::new(physical.x.div_ceil(s).max(1), physical.y.div_ceil(s).max(1))
+    UVec2::new(physical.x.div_ceil(s).max(1), LOW_RES_HEIGHT)
+}
+
+/// Where the upscaled image's top-left corner sits in the window (physical px): flush left,
+/// centred vertically (positive y = letterbox bar above it, negative = rows cropped above).
+pub fn display_offset(physical: UVec2) -> Vec2 {
+    let s = display_scale(physical.y);
+    Vec2::new(0.0, ((physical.y as f32 - (LOW_RES_HEIGHT * s) as f32) * 0.5).floor())
 }
 
 fn low_res_for(window: Option<&Window>) -> UVec2 {
@@ -215,6 +233,7 @@ fn setup(
             near: CAMERA_NEAR,
             far: CAMERA_FAR,
             scaling_mode: ScalingMode::FixedVertical { viewport_height: VIEW_HEIGHT },
+            viewport_origin: Vec2::new(0.5, VIEW_ORIGIN_Y),
             ..OrthographicProjection::default_3d()
         }),
         Msaa::Off,
@@ -249,7 +268,8 @@ fn setup(
     commands.spawn((
         WindowCamera,
         Camera2d,
-        Camera { order: 0, clear_color: ClearColorConfig::Custom(Color::BLACK), ..default() },
+        // Letterbox bars (see `display_offset`): night-ink indigo, never black.
+        Camera { order: 0, clear_color: ClearColorConfig::Custom(lin(cairn_cove_core::palette::outline_night())), ..default() },
         Msaa::Off,
         Tonemapping::None,
         DebandDither::Disabled,
@@ -284,14 +304,16 @@ fn fit_to_window(
             image.resize(Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 });
         }
     }
-    // Show it at exactly s× from the top-left corner (UI px = physical / (dpi × UiScale)).
+    // Show it at exactly s×, centred vertically (UI px = physical / (dpi × UiScale)).
     let s = display_scale(window.physical_height()) as f32;
     let k = (window.scale_factor() * ui_scale.map_or(1.0, |u| u.0)).max(1e-3);
     let (w, h) = (Val::Px(size.x as f32 * s / k), Val::Px(size.y as f32 * s / k));
+    let top = Val::Px(display_offset(window.physical_size()).y / k);
     for mut node in &mut display {
-        if node.width != w || node.height != h {
+        if node.width != w || node.height != h || node.top != top {
             node.width = w;
             node.height = h;
+            node.top = top;
         }
     }
 }
@@ -325,21 +347,23 @@ fn update_post_settings(
     mut cam: Query<(&Projection, &GlobalTransform, &mut PostSettings), With<GameCamera>>,
 ) {
     for (projection, tf, mut post) in &mut cam {
-        let (near, far, half) = match projection {
-            Projection::Orthographic(o) => (o.near, o.far, o.area.max.max(-o.area.min)),
-            _ => (CAMERA_NEAR, CAMERA_FAR, Vec2::new(VIEW_HEIGHT * 0.89, VIEW_HEIGHT * 0.5)),
+        let (near, far, area) = match projection {
+            Projection::Orthographic(o) => (o.near, o.far, o.area),
+            _ => (CAMERA_NEAR, CAMERA_FAR, Rect::from_center_half_size(Vec2::ZERO, Vec2::new(VIEW_HEIGHT * 0.89, VIEW_HEIGHT * 0.5))),
         };
-        let p = post_settings(&env, tf, near, far, half, horizon.distance(tf.forward().as_vec3()), time.elapsed_secs_wrapped(), *post);
+        let p = post_settings(&env, tf, near, far, area, horizon.distance(tf.forward().as_vec3()), time.elapsed_secs_wrapped(), *post);
         if p != *post {
             *post = p;
         }
     }
 }
 
-/// Post settings for the camera at `tf` (orthographic, `half` = half view size in metres,
-/// `horizon` = [`sea::Horizon`] distance where the open sea is cut for the sky).
+/// Post settings for the camera at `tf` (orthographic, `area` = the projection's view
+/// rectangle in metres around the camera axis, `horizon` = [`sea::Horizon`] distance where
+/// the open sea is cut for the sky).
 #[allow(clippy::too_many_arguments)]
-pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f32, half: Vec2, horizon: f32, time: f32, prev: PostSettings) -> PostSettings {
+pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f32, area: Rect, horizon: f32, time: f32, prev: PostSettings) -> PostSettings {
+    let (half, centre) = (area.half_size(), area.center());
     let mut p = prev;
     let (right, up, fwd) = (tf.right().as_vec3(), tf.up().as_vec3(), tf.forward().as_vec3());
     let pos = tf.translation();
@@ -354,7 +378,7 @@ pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f3
     // the ground-forward axis, as in the sea shader), in screen uv y (0 = top).
     let fwd_h = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
     let edge = fwd_h * horizon + Vec3::Y * env.tide;
-    let horizon = sea_line_uv(edge - pos, up, half.y);
+    let horizon = sea_line_uv(edge - pos, up, area);
     p.sky_mid = env.sky_mid.extend(horizon);
     p.outline = env.outline.extend(env.storm.clamp(0.0, 1.0));
     p.foam = env.sea[4].extend(env.wetness.clamp(0.0, 1.0));
@@ -369,15 +393,23 @@ pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f3
     let kind = if moon { 2.0 } else if alt > -0.05 && env.storm < 0.5 { 1.0 } else { 0.0 };
     p.disc = env.disc_color.extend(kind);
     p.disc_pos = Vec4::new(x, y, if moon { 2.5 } else { 3.0 }, env.night.clamp(0.0, 1.0));
-    p.ycoef = Vec4::new(pos.y, right.y * half.x, up.y * half.y, fwd.y);
+    p.ycoef = Vec4::new(pos.y + right.y * centre.x + up.y * centre.y, right.y * half.x, up.y * half.y, fwd.y);
     p.bank = Vec4::new(env.sea_fog.clamp(0.0, 1.0), env.fog_top, 0.0, 0.0);
+    let rim = Color::srgb(env.rim_color.x, env.rim_color.y, env.rim_color.z).to_linear();
+    p.rim = Vec4::new(rim.red, rim.green, rim.blue, if env.rim_color.max_element() > 0.0 { 0.8 * env.storm.clamp(0.0, 1.0) } else { 0.0 });
     p
 }
 
 /// Screen uv y (0 = top) of a point `rel` (relative to the camera) for an orthographic view
-/// with up axis `up` and half height `half_h` metres. Clamped to a sane range.
-fn sea_line_uv(rel: Vec3, up: Vec3, half_h: f32) -> f32 {
-    (0.5 - rel.dot(up) / half_h.max(1e-3) * 0.5).clamp(-4.0, 1.0)
+/// with up axis `up` covering `area` (metres around the camera axis). Clamped to a sane range.
+fn sea_line_uv(rel: Vec3, up: Vec3, area: Rect) -> f32 {
+    ((area.max.y - rel.dot(up)) / area.height().max(1e-3)).clamp(-4.0, 1.0)
+}
+
+/// Window position (physical px) of a low-res pixel position: the inverse of
+/// [`window_to_low_res`] for a window of `physical` px (for screen-space HUD markers).
+pub fn low_res_to_window(low_px: Vec2, physical: UVec2) -> Vec2 {
+    low_px * display_scale(physical.y) as f32 + display_offset(physical)
 }
 
 /// Converts cairn_cove_core mesh buffers to a Bevy mesh with POSITION, NORMAL, UV_0, COLOR
@@ -409,7 +441,7 @@ pub fn to_bevy_mesh(m: &MeshData) -> Mesh {
 
 /// Warm lantern light. The cel shader bands clustered point lights by distance within
 /// `range` and scales colour so ~1000 lm ≈ 1× albedo; scale `intensity` by
-/// `Environment::night` (0 by day) to fade lanterns.
+/// `world::warm_light` (0 by day) to fade lanterns.
 pub fn lantern_light(intensity_lm: f32, range: f32) -> PointLight {
     PointLight {
         color: Color::srgb_u8(0xFF, 0xA5, 0x42),
@@ -422,9 +454,10 @@ pub fn lantern_light(intensity_lm: f32, range: f32) -> PointLight {
 }
 
 /// Maps a window cursor position (physical px, top-left origin) to low-res pixels (the
-/// low-res image is shown at the integer `scale` from the top-left corner).
-pub fn window_to_low_res(cursor_physical: Vec2, scale: u32) -> Vec2 {
-    cursor_physical / scale.max(1) as f32
+/// low-res image is shown at the integer `scale` with its top-left corner at `offset`, see
+/// [`display_offset`]).
+pub fn window_to_low_res(cursor_physical: Vec2, scale: u32, offset: Vec2) -> Vec2 {
+    (cursor_physical - offset) / scale.max(1) as f32
 }
 
 /// World ray under `window_cursor` (e.g. `window.cursor_position()`) for the
@@ -436,8 +469,9 @@ pub fn cursor_ray(
     cam_tf: &GlobalTransform,
     low_res: UVec2,
 ) -> Option<Ray3d> {
-    let p = window_to_low_res(window_cursor * window.scale_factor(), display_scale(window.physical_height()));
-    cam.viewport_to_world(cam_tf, p.min(low_res.as_vec2())).ok()
+    let physical = window.physical_size();
+    let p = window_to_low_res(window_cursor * window.scale_factor(), display_scale(physical.y), display_offset(physical));
+    cam.viewport_to_world(cam_tf, p.clamp(Vec2::ZERO, low_res.as_vec2())).ok()
 }
 
 /// Saves `image` (PNG by extension), creating parent directories.
@@ -476,25 +510,37 @@ mod tests {
 
     #[test]
     fn cursor_scales_to_low_res() {
-        assert_eq!(window_to_low_res(Vec2::ZERO, 3), Vec2::ZERO);
-        assert_eq!(window_to_low_res(Vec2::new(1280.0, 720.0), 3), Vec2::new(1280.0 / 3.0, 240.0));
-        assert_eq!(window_to_low_res(Vec2::new(5.0, 5.0), 0), Vec2::new(5.0, 5.0));
+        assert_eq!(window_to_low_res(Vec2::ZERO, 3, Vec2::ZERO), Vec2::ZERO);
+        assert_eq!(window_to_low_res(Vec2::new(1280.0, 720.0), 3, Vec2::ZERO), Vec2::new(1280.0 / 3.0, 240.0));
+        assert_eq!(window_to_low_res(Vec2::new(5.0, 5.0), 0, Vec2::ZERO), Vec2::new(5.0, 5.0));
+        // 1080 p letterboxes 60 px above the image: the image's first row is window row 60.
+        let (s, off) = (display_scale(1080), display_offset(UVec2::new(1920, 1080)));
+        assert_eq!(window_to_low_res(Vec2::new(8.0, 60.0), s, off), Vec2::new(2.0, 0.0));
+        assert_eq!(window_to_low_res(Vec2::new(1920.0, 1020.0), s, off), Vec2::new(480.0, 240.0));
     }
 
-    /// Integer upscale: every low-res pixel is exactly s × s window pixels and the image
-    /// covers the window (crop < s px), so no row or column is 2 px or blended.
+    /// The internal target is 240 rows at every window height (SPEC), shown at an integer
+    /// scale: each low-res pixel is exactly s × s window px, the width covers the window
+    /// (crop < s px) and the leftover rows are split evenly top and bottom.
     #[test]
-    fn low_res_is_an_integer_fraction_of_the_window() {
+    fn low_res_keeps_240_rows_at_an_integer_scale() {
         assert_eq!(low_res_for(None), UVec2::new(427, 240));
-        for (w, h) in [(1280u32, 720u32), (1920, 1080), (1366, 768), (2560, 1440), (800, 600), (300, 200)] {
-            let s = display_scale(h);
-            let low = low_res_for_physical(UVec2::new(w, h));
-            assert!(low.y >= LOW_RES_HEIGHT.min(h), "{w}x{h}");
+        for (w, h, scale, top) in [
+            (1280u32, 720u32, 3u32, 0.0f32),
+            (1920, 1080, 4, 60.0),
+            (2560, 1440, 6, 0.0),
+            (1366, 768, 3, 24.0),
+            (1440, 900, 4, -30.0),
+            (1280, 719, 3, -1.0),
+            (640, 479, 2, -1.0),
+            (800, 600, 2, 60.0),
+            (300, 200, 1, -20.0),
+        ] {
+            let (s, low, off) = (display_scale(h), low_res_for_physical(UVec2::new(w, h)), display_offset(UVec2::new(w, h)));
+            assert_eq!((s, low.y, off.y), (scale, LOW_RES_HEIGHT, top), "{w}x{h}");
             assert!(low.x * s >= w && low.x * s < w + s, "{w}x{h}: width covers with < s crop");
-            assert!(low.y * s >= h && low.y * s < h + s, "{w}x{h}: height covers with < s crop");
+            assert!((h as f32 - (low.y * s) as f32).abs() <= (LOW_RES_HEIGHT * s) as f32 / 2.0, "{w}x{h}: nearest scale");
         }
-        assert_eq!(low_res_for_physical(UVec2::new(1280, 720)), UVec2::new(427, 240));
-        assert_eq!(display_scale(720), 3);
     }
 
     #[test]

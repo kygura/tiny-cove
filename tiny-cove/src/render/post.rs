@@ -58,6 +58,9 @@ pub struct PostSettings {
     pub ycoef: Vec4,
     /// x sea-fog bank strength, y bank top (m).
     pub bank: Vec4,
+    /// xyz rim colour (linear), w ridge-rim strength: the storm's cyan hairline on the top
+    /// edge of every silhouette.
+    pub rim: Vec4,
 }
 
 impl Default for PostSettings {
@@ -75,6 +78,7 @@ impl Default for PostSettings {
             disc_pos: Vec4::ZERO,
             ycoef: Vec4::ZERO,
             bank: Vec4::ZERO,
+            rim: Vec4::ZERO,
         }
     }
 }
