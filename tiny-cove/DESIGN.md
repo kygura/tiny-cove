@@ -406,7 +406,7 @@ Spacing, `UiScale` and the region anchors are unchanged from the fork:
 
 - Spacing scale is 2/4/6/8/12/16. Screen margin 16, panel padding 8 (6 on the toolbar).
 - `UiScale = clamp(min(round(h/720·4)/4, floor(w/1200·4)/4), 0.75, 2.0)`.
-- The middle 60% of the screen is never covered, with one exception: the variant strip (B4) may rise into the bottom of that band while a tool is active. The toolbar plus one strip row cannot fit in the bottom 20%.
+- The central 60% of the screen in both axes is never covered by panels, except where the corner panels (HintsPanel, WeatherPanel) overlap its corners by a few dozen pixels at 1280 px and below. One further exception: the variant strip (B4) may rise into the bottom of that band while a tool is active. The toolbar plus one strip row cannot fit in the bottom 20%.
 
 Bevy default font only. Labels, buttons, plates and group names are UPPERCASE. Hint descriptions and tooltip second lines are sentence case. Line height is 1.25.
 
@@ -499,18 +499,18 @@ Controls that do not apply are shown disabled, not hidden. Field names are `Tool
 
 | Tool | Row A | Row B |
 |---|---|---|
-| **Dyke** (`Wall`) | `DRY STONE` `TURF` `PALISADE` (`wall_kind`†: `WallKind`) · `[ ] CREST` (`crest`†, was `planters`) · `[ ] TUMBLED` (`tumbled`†, was `ruined`) · `THICK` 0.3–1.2 M (`wall_thickness`) · `FOOTING` 0–2 M (`footing`†, was `plinth`) · `WEATHER` 0–1 (`weathering`†, was `overgrowth`) | `TRIM` ×5 (stake tips, painted copestones, gateposts) |
-| **Windbreak** (`Fence`) | `WATTLE` `DRIFTWOOD` `NETS` `REED` (`fence`: `Wattle`, `Driftwood`, `NetLine`, `Reed`) | `TRIM` ×5; enabled for `Driftwood` (painted tips) and `NetLine` (floats), disabled otherwise |
+| **Dyke** (`Wall`) | `DRY STONE` `TURF` `PALISADE` (`wall_kind`†: `WallKind`) · `[ ] CREST` (`crest`†, was `planters`) · `[ ] TUMBLED` (`tumbled`†, was `ruined`) · `THICK` 0.3–1.2 M (`wall_thickness`) · `FOOTING` 0–2 M (`footing`†, was `plinth`) · `WEATHER` 0–1 (`weathering`†, was `overgrowth`) | `TRIM` ×5; enabled for `Palisade` only (painted stake tips). Dry-stone copestones and gateposts are natural stone. |
+| **Windbreak** (`Fence`) | `WATTLE` `DRIFTWOOD` `NETS` `REED` (`fence`: `Wattle`, `Driftwood`, `NetLine`, `Reed`) | `TRIM` ×5; enabled for `NetLine` (floats) only. Driftwood stays bleached and unpainted. |
 | **Hut** (`Block`) | `WATTLE` `PLANK` `STONE` (`material`) · `THATCH` `TURF` `HIDE` `BOAT` (`roof`) · `PITCH` 15–60° · `[ ] CARVED` (`carved`†, was `fins`) · `[ ] HANGINGS` (`hangings`†) · `STILTS` 0–3 M (`stilts`†; readout `AUTO` at 0) · `WEATHER` 0–1 | `ROOF` ×6 · `WALL` ×5 · `TRIM` ×5 |
 | **Roundhouse** (`Tower`) | `WATTLE` `PLANK` `STONE` (disabled while the ghost is a beacon, which is always stone) · `THATCH` `TURF` `HIDE` `BOAT` (`BOAT` disabled: it falls back to thatch on round footprints; `TURF` and `HIDE` read as "open" on a beacon) · `[ ] CARVED` · `[ ] HANGINGS` · `WEATHER` 0–1 | `ROOF` ×6 · `WALL` ×5 · `TRIM` ×5 |
 | **Track** (`Path`) | `SHELL` `PEBBLE` `FLAGS` `BOARDS` `STEPPING` (`path`: `Shell`, `Pebble`, `Flagstone`, `Boardwalk`, `Stepping`) · `WIDTH` 0.8–4 M | none |
-| **Steps** (`Stairs`) | `STONE` `LOG` `LADDER` (`stairs`: `Stone`, `Log`, `RopeLadder`) | `TRIM` ×5 (stake and float paint) |
+| **Steps** (`Stairs`) | `STONE` `LOG` `LADDER` (`stairs`: `Stone`, `Log`, `RopeLadder`) | `TRIM` ×5; enabled for `RopeLadder` only (rungs) |
 | **Jetty** (`Deck`) | none (deck height is set by Raising) | `TRIM` ×5 (mooring-post tips, canoe strakes) |
 | **Bridge** | `ROPE` `LOG` `CAUSEWAY` (`bridge`; `ROPE` keeps the last railing) · `RAILING` `ROPE` `NET` `RAILS` `FLOATS` (`Rope { railing: 0..=3 }`, Rope only) · `HANGING` `NONE` `LANTERNS` `PENNANTS` (`hanging`, Rope only) | `TRIM` ×5 (floats, pennants, lantern posts) |
 | **Opening** | `PLACE` `SHUTTER` `DOOR` `WIDE` (`opening`: `Window`, `Door`, `WideDoor`) | none |
 | **Roof** | `THATCH` `TURF` `HIDE` `BOAT` · `PITCH` 15–60° | `ROOF` ×6 |
 | **Tree** | `PINE` `PALM` `CYPRESS` `FIG` `SNAG` (`tree`: `SeaPine`, `Palm`, `Cypress`, `Fig`, `Snag`) | none |
-| **Prop** (`Clutter`) | 14-cell grid, 7 per row, cells 72×36 (table below) | `TRIM` ×5; enabled for Canoe, StandingStone, CarvedPole, Baskets, Pennant, CrabPots, disabled otherwise |
+| **Prop** (`Clutter`) | 14-cell grid, 7 per row, cells 72×36 (table below) | `TRIM` ×5; disabled for Firepit, Cairn, Rock and Woodpile, enabled for every other prop |
 | **Paint** | `PINKS` `DUNE` `WRACK` `PEBBLES` `CLEAR` (`paint`: `SeaPinks`, `DuneGrass`, `Wrack`, `Pebbles`, `Clear`) · `BRUSH` 1–8 M | none |
 | **Raise** (`Sculpt`) | `RAISE` `LOWER` · `RADIUS` 1–8 M · `STRENGTH` 0.1–1 | none |
 | **Flatten** | `RADIUS` 1–8 M · `STRENGTH` 0.1–1 | none |

@@ -100,7 +100,7 @@ the player-facing names are the setting's.
 | **Roundhouse / Beacon** (4) | drag a circle, raise it | A low round footprint gives a **roundhouse**: a round wall with a cone roof. Thatch gets a topknot, Turf a low dome, Hide a conical tent with poles poking out of the apex, and `Boat` falls back to a thatch cone. A tall one (wall height ≥ 2.5 × radius) is a **beacon**: a tapered dry-stone tower with wind holes and a top platform with an iron fire basket. The basket burns at night and in storms and fog, with flame particles and a hot orange light. Roof options on a beacon are a thatch cone above the fire, or open. |
 | **Track** (5) | drag a polyline | `PathKind::Shell` (crushed white shell with a pebble kerb), `Pebble` (cobbled beach pebbles), `Flagstone` (slate slabs with grass joints), `Boardwalk` (planks on sleepers, laid across sand and marsh) and `Stepping` (stepping stones). It has a width, cuts dyke gaps, and becomes stepping stones across water. |
 | **Steps** (6) | drag from one point to another (ground, dyke top, jetty, hut floor) | `StairKind::Stone` (cut-stone steps), `Log` (log-and-earth steps held by stakes), `RopeLadder`. |
-| **Jetty** (7) | drag a rectangle | A plank deck on log piles. Over water the piles run down to the seabed. Mooring posts with rope coils stand at the corners, a ladder goes down to the water, and every jetty over the sea gets one or two canoes moored alongside (`Boat` markers) that bob with the swell. On land it is a raised stage. |
+| **Jetty** (7) | drag a rectangle | A plank deck on log piles. Over water the piles run down to the seabed. Mooring posts with rope coils stand at the corners, a ladder goes down to the water, and a jetty that reaches water at least 0.5 m deep at low tide gets one or two canoes moored alongside (`Boat` markers) that bob with the swell; jetties over shallows that dry out get none. On land it is a raised stage. |
 | **Bridge** (8) | drag between two points | `BridgeKind::Rope { railing }` (sagging plank-and-rope bridge with 4 railing designs: plain rope, netting, plank balusters, knotted rope with floats), `Log` (a big driftwood log trestle) and `Causeway` (a stacked stone causeway with culvert arches). `Hanging`: none, lanterns, or pennants that flutter in the wind. |
 | **Opening** (9) | click a hut or dyke wall | Cycles shuttered window → doorway → wide boat door → nothing. |
 | **Roof** (0) | click inside a closed dyke ring | Roofs the ring with any roof style. |
@@ -201,7 +201,7 @@ values from DESIGN.md §Art.
 - A dyke segment over the sea becomes a breakwater.
 - The ground under a hut is flattened unless the hut stands on stilts.
 - Tracks follow the ground.
-- A jetty over the sea emits `Boat` markers.
+- A jetty over the sea emits `Boat` markers where the water stays at least `BOAT_DEPTH` (0.5 m) deep at low tide, clear of its piles.
 - A Canoe prop placed over water emits a `Boat` marker instead of a static
   mesh.
 - Beacons and firepits emit `Fire` markers.
