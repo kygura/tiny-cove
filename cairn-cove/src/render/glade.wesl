@@ -319,8 +319,7 @@ fn to_camera() -> vec3<f32> {
 }
 
 // Clustered point lights (lanterns, fires) in 2 hard bands. Colour scale: a PointLight of
-// 1000 lm (see `lantern_light`) contributes ~1x its colour at full band. Inside the sea-fog
-// bank each light also paints a hot-orange halo disc (2 m).
+// 1000 lm (see `lantern_light`) contributes ~1x its colour at full band.
 fn point_lights(world: vec4<f32>, n: vec3<f32>, frag: vec4<f32>) -> vec3<f32> {
     let view_z = -view_depth(world);
     let is_ortho = view.clip_from_view[3].w == 1.0;
@@ -336,14 +335,33 @@ fn point_lights(world: vec4<f32>, n: vec3<f32>, frag: vec4<f32>) -> vec3<f32> {
         if dist < range && dist > 1e-4 {
             let att = 1.0 - dist / range;
             let k = att * att * max(dot(n, to / dist) * 0.7 + 0.3, 0.0);
-            let band = select(select(0.0, 0.4, k > 0.2), 1.0, k > 0.45);
+            let band = select(select(0.0, 0.45, k > 0.3), 1.0, k > 0.6);
             acc += light.color_inverse_square_range.xyz * (1.0 / 100.0) * band;
-            if dist < 2.0 && g.sea1.w > 0.05 && light.color_inverse_square_range.x > 0.0 {
-                acc += hex_lin(255.0, 156.0, 66.0) * 0.3 * g.sea1.w;
-            }
         }
     }
     return acc;
+}
+
+// Sea fog: each lit lantern / fire makes a #FF9C42 Bayer halo disc (radius 2 m, 30 %) that
+// shows through the fog (added after the fog mix).
+fn fog_halo(world: vec4<f32>, frag: vec4<f32>) -> vec3<f32> {
+    let bank = g.sea1.w;
+    if bank < 0.05 || world.y > g.sea2.w {
+        return vec3(0.0);
+    }
+    let view_z = -view_depth(world);
+    let is_ortho = view.clip_from_view[3].w == 1.0;
+    let ranges = unpack_clusterable_object_index_ranges(view_fragment_cluster_index(frag.xy, view_z, is_ortho));
+    for (var i = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i++) {
+        let light = clustered_lights.data[get_clusterable_object_id(i)];
+        if light.color_inverse_square_range.x > 0.0 && length(light.position_radius.xyz - world.xyz) < 2.0 {
+            if bayer4(vec2<u32>(frag.xy)) < 0.3 * bank {
+                return hex_lin(255.0, 156.0, 66.0);
+            }
+            return vec3(0.0);
+        }
+    }
+    return vec3(0.0);
 }
 
 // Ground-like surfaces that take the wet-sand honey band and puddles.
@@ -356,18 +374,25 @@ fn bayer4(p: vec2<u32>) -> f32 {
     return (m[(p.y % 4u) * 4u + p.x % 4u] + 0.5) / 16.0;
 }
 
+// Band light multipliers (sRGB): lit, mid, shadow. When weather dims the sun below the
+// fill (rain, storm), the lit band never gets darker than the shadow band.
+fn band_lights() -> array<vec3<f32>, 3> {
+    let sun = g.sun_wet.xyz;
+    let fill = g.fill_snow.xyz;
+    return array<vec3<f32>, 3>(max(sun, fill), max(mix(sun, fill, 0.5), fill), fill);
+}
+
 // The three cel bands for sRGB albedo `a` (DESIGN A3), then the anti-mud floor.
 fn cel(a: vec3<f32>, light: f32) -> vec3<f32> {
     let tint = g.tint_flash.xyz;
-    let sun = g.sun_wet.xyz;
-    let fill = g.fill_snow.xyz;
+    let k = band_lights();
     var c: vec3<f32>;
     if light >= 0.30 {
-        c = rot_lit(a, tint, g.wind_tide.w) * sun;
+        c = rot_lit(a, tint, g.wind_tide.w) * k[0];
     } else if light >= 0.08 {
-        c = shade_band(a, 1u, tint) * mix(sun, fill, 0.5);
+        c = shade_band(a, 1u, tint) * k[1];
     } else {
-        c = shade_band(a, 2u, tint) * fill;
+        c = shade_band(a, 2u, tint) * k[2];
     }
     return anti_mud(min(c, vec3(1.0)), tint);
 }
@@ -404,6 +429,10 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         if max(tex.r, max(tex.g, tex.b)) < 0.002 {
             let idx = u32(round(in.color.a * 8.0));
             albedo = select(in.color.rgb * 0.82, pigment(idx), idx < 5u);
+        }
+        // The basket rim is plain iron by day and glows iron_hot while fires burn.
+        if hot {
+            albedo = mix(in.color.rgb, tex.rgb, clamp(g.sun_dir_night.w, 0.0, 1.0));
         }
     }
     // Window slot: outline ink by day, emissive window light at night.
@@ -462,14 +491,15 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     let light = max(dot(n, sun_dir), 0.0) * shadow;
     var c: vec3<f32>;
     if snowed {
-        let sun = g.sun_wet.xyz;
-        let fill = g.fill_snow.xyz;
+        // Fixed snow ramp; the lit band keeps the sun's hue but not its dimming (snow glows).
+        let k = band_lights();
         if light >= 0.30 {
-            c = vec3(247.0, 255.0, 255.0) / 255.0 * sun;
+            let hue = k[0] / max(max(k[0].r, max(k[0].g, k[0].b)), 0.5);
+            c = vec3(247.0, 255.0, 255.0) / 255.0 * mix(hue, vec3(1.0), 0.5);
         } else if light >= 0.08 {
-            c = vec3(156.0, 173.0, 255.0) / 255.0 * mix(sun, fill, 0.5);
+            c = vec3(156.0, 173.0, 255.0) / 255.0 * k[1];
         } else {
-            c = vec3(123.0, 140.0, 255.0) / 255.0 * fill;
+            c = vec3(123.0, 140.0, 255.0) / 255.0 * k[2];
         }
         c = anti_mud(min(c, vec3(1.0)), tint);
     } else {
@@ -505,7 +535,11 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     }
 
     let fog = fog_amount(view_depth(world), world.y);
-    let out = mix(col, g.fog_start.xyz, fog) + emissive * (1.0 - 0.5 * fog);
+    var out = mix(col, g.fog_start.xyz, fog) + emissive * (1.0 - 0.5 * fog);
+    let halo = fog_halo(world, in.clip);
+    if any(halo > vec3(0.0)) {
+        out = halo;
+    }
     return vec4(out, 1.0);
 }
 
@@ -767,7 +801,7 @@ const P_SNOW: u32 = 5u;
 @vertex
 fn particle_vertex(v: ParticleVertex) -> ParticleOut {
     let world = mesh_position_local_to_world(get_world_from_local(v.instance_index), vec4(v.position, 1.0));
-    var center = view.view_from_world * world;
+    let center = view.view_from_world * world;
     let kind = u32(v.size_kind.y + 0.5);
     let size = v.size_kind.x;
     var ax = vec2(1.0, 0.0);
@@ -787,9 +821,9 @@ fn particle_vertex(v: ParticleVertex) -> ParticleOut {
         half = vec2(px * 0.55, px * 1.05);
     }
     let offset = ax * v.corner.x * half.x + ay * v.corner.y * half.y;
-    center = vec4(center.xy + offset, center.zw);
+    // Snap the centre only, so thin streaks keep their shape (corner snapping folds them).
     var out: ParticleOut;
-    out.clip = snap_clip(view.clip_from_view * center);
+    out.clip = snap_clip(view.clip_from_view * center) + view.clip_from_view * vec4(offset, 0.0, 0.0);
     out.corner = v.corner;
     out.color = v.color;
     out.kind = kind;

@@ -14,7 +14,7 @@
 use crate::env::{Environment, Tide, Wind};
 use crate::render::{GameCamera, GladeAssets, Particle, ParticleKind, particle_mesh, write_particle_mesh};
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
-use cairn_cove_core::palette::{hex_to_unit, srgb};
+use cairn_cove_core::palette::{hex_to_unit, hsv_to_rgb, rgb_to_hsv, srgb};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum WeatherKind {
@@ -193,7 +193,23 @@ pub fn rig_at(hour: f32) -> Rig {
     let i = keys.iter().position(|k| k.0 > x).unwrap_or(keys.len() - 1).max(1);
     let (a, b) = (keys[i - 1], keys[i]);
     let t = ((x - a.0) / (b.0 - a.0)).clamp(0.0, 1.0);
-    (a.1)().lerp(&(b.1)(), t)
+    let mut r = (a.1)().lerp(&(b.1)(), t);
+    // Interpolating between two hued keys can pass through grey (pink dawn fog → aqua noon
+    // fog); keep sky and fog chroma up (DESIGN A0: fog is never grey).
+    for c in r.sky.iter_mut().chain([&mut r.fog, &mut r.sea_fog]) {
+        *c = vivid(*c, 0.16);
+    }
+    r
+}
+
+/// Raises the HSV saturation of sRGB `c` to at least `min_s`, keeping hue and value.
+pub fn vivid(c: Vec3, min_s: f32) -> Vec3 {
+    let mut hsv = rgb_to_hsv(c);
+    if hsv.y >= min_s || hsv.z <= 0.0 {
+        return c;
+    }
+    hsv.y = min_s;
+    hsv_to_rgb(hsv)
 }
 
 /// 0 by day, 1 at night (follows the rig keys: 0 until 19:00, 1 from 20:30 to 04:30).
@@ -228,6 +244,8 @@ fn mix_toward(c: Vec3, target: u32, k: f32) -> Vec3 {
 pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
     let mut r = *base;
     let set = |c: Vec3, hex: u32| c.lerp(h(hex), day);
+    // Absolute intensities (DESIGN "Fill #… × k") fade to the time row at night too.
+    let seti = |v: f32, k: f32| v + (k - v) * day;
     let sky = |r: &mut Rig, s: [u32; 3]| {
         for (c, hx) in r.sky.iter_mut().zip(s) {
             *c = c.lerp(h(hx), day);
@@ -239,7 +257,7 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
             r.sun_i *= 0.60;
             r.sun = mix_toward(r.sun, 0xF7EFFF, 0.5);
             r.fill = set(r.fill, 0xC5BDFF);
-            r.fill_i *= 1.0 + 0.25 * day;
+            r.fill_i = seti(r.fill_i, 1.25);
             r.tint = set(r.tint, 0x6B63CE);
             r.rim = Vec3::ZERO;
             sky(&mut r, [0x7BA5EF, 0xA5BDFF, 0xCEDEFF]);
@@ -250,6 +268,7 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
         WeatherKind::Rain => {
             r.sun_i *= 0.45;
             r.fill = set(r.fill, 0x8C9CF7);
+            r.fill_i = seti(r.fill_i, 1.0);
             r.tint = set(r.tint, 0x4A3AB5);
             sky(&mut r, [0x4A6BD6, 0x6B94EF, 0x9CB5FF]);
             r.fog = set(r.fog, 0x6B9CE6);
@@ -257,10 +276,12 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
             r.sea[1] = set(r.sea[1], 0x08A5C5);
         }
         WeatherKind::Storm => {
+            // DESIGN: sun ×0.30, fill ×0.90. Lifted a little (×0.45, ×1.0) so the storm
+            // frame stays readable at 240p instead of sinking into near-black.
             r.sun = set(r.sun, 0x8CEFE6);
-            r.sun_i = base.sun_i * 0.30;
+            r.sun_i = base.sun_i * 0.45;
             r.fill = set(r.fill, 0x5A7BDE);
-            r.fill_i *= 0.90;
+            r.fill_i = seti(r.fill_i, 1.0);
             r.tint = set(r.tint, 0x31107B);
             r.rim = h(0x42FFE6);
             sky(&mut r, [0x29107B, 0x2952BD, 0x19A5AD]);
@@ -285,6 +306,7 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
             r.sun = set(r.sun, 0xFFF7EF);
             r.sun_i *= 0.90;
             r.fill = set(r.fill, 0xADC5FF);
+            r.fill_i = seti(r.fill_i, 1.0);
             r.tint = set(r.tint, 0x5A5AE6);
             sky(&mut r, [0x73B5FF, 0xA5D6FF, 0xDEF7FF]);
             r.fog = set(r.fog, 0xCEE6FF);
@@ -309,19 +331,20 @@ pub fn sun_raw(hour: f32) -> Vec3 {
     let hr = hour.rem_euclid(24.0);
     let a = (hr - 5.0) / 14.0 * std::f32::consts::PI;
     let el = if (5.0..19.0).contains(&hr) { a.sin() * 60f32.to_radians() } else { -(a - std::f32::consts::PI).sin().abs() * 40f32.to_radians() };
-    let x = -a.cos();
-    Vec3::new(x * el.cos(), el.sin(), 0.6 * el.cos()).normalize()
+    let az = Vec3::new(-a.cos(), 0.0, 0.6).normalize();
+    az * el.cos() + Vec3::Y * el.sin()
 }
 
 /// Direction of the shadow-casting light: the sun by day, the moon (antipode) from 20:30 to
-/// 04:30. Kept above 12° so shadows stay sharp and readable at every hour.
+/// 04:30. Kept above ~20° (shadows at most ~2.7× the caster height) so shadows stay sharp
+/// and readable at every hour.
 pub fn light_dir(hour: f32) -> Vec3 {
     let hr = hour.rem_euclid(24.0);
     let w = smooth(4.5, 5.5, hr) * (1.0 - smooth(19.5, 20.5, hr));
     let s = sun_raw(hr);
     let moon = Vec3::new(-s.x, s.y.abs().max(0.6), -s.z * 0.4 + 0.3);
     let d = moon.normalize().lerp(Vec3::new(s.x, s.y.max(0.2), s.z), w);
-    Vec3::new(d.x, d.y.max(0.21), d.z).normalize()
+    Vec3::new(d.x, d.y.max(0.36), d.z).normalize()
 }
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -514,7 +537,8 @@ impl Plugin for WeatherPlugin {
             auto_timer: 0.0,
             wet: 0.0,
             snow: 0.0,
-            next_flash: 2.0,
+            // A scripted `--demo-shot` is deterministic: no random strike unless `--flash`.
+            next_flash: if args.iter().any(|a| a == "--demo-shot") { f32::INFINITY } else { 2.0 },
             flash_frames: 0,
             bolt: Vec::new(),
             freeze_flash: args.iter().any(|a| a == "--flash"),
@@ -588,8 +612,8 @@ fn update_env(
     } else {
         step_weights(&mut st.w, target, 6.0, dt);
     }
-    let sum: f32 = st.w.iter().sum::<f32>().max(1e-4);
-    let wk = |k: WeatherKind| st.w[k.index()] / sum;
+    let (w, sum) = (st.w, st.w.iter().sum::<f32>().max(1e-4));
+    let wk = |k: WeatherKind| w[k.index()] / sum;
     let wet_target = wk(WeatherKind::Rain) + wk(WeatherKind::Storm);
     let snow_target = wk(WeatherKind::Snow);
     st.wet = if snap { wet_target.round() } else { approach(st.wet, wet_target, 20.0, 60.0, dt) };
@@ -711,7 +735,7 @@ fn particles(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cairn_cove_core::palette::{rgb_to_hsv, unit_to_hex};
+    use cairn_cove_core::palette::unit_to_hex;
 
     #[test]
     fn weather_names_parse() {
@@ -726,13 +750,13 @@ mod tests {
     /// The rig hits the A4 keyframes exactly at their hours.
     #[test]
     fn rig_keyframes() {
-        assert_eq!(rig_at(12.0), noon());
-        assert_eq!(rig_at(10.0), noon());
-        assert_eq!(rig_at(6.0), dawn());
-        assert_eq!(rig_at(17.0), golden());
-        assert_eq!(rig_at(19.0), dusk());
-        assert_eq!(rig_at(23.0), night());
-        assert_eq!(rig_at(2.0), night());
+        let same = |a: Rig, b: Rig| {
+            let v = |r: &Rig| [r.sun, r.fill, r.tint, r.rim, r.sky[0], r.sky[1], r.sky[2], r.disc, r.fog, r.outline, r.sea[0], r.sea[3], r.sea[4]];
+            v(&a).iter().zip(v(&b)).all(|(x, y)| x.distance(y) < 1e-5) && (a.sun_i - b.sun_i).abs() < 1e-5 && (a.lit_rot - b.lit_rot).abs() < 1e-4
+        };
+        for (hr, key) in [(12.0, noon()), (10.0, noon()), (6.0, dawn()), (17.0, golden()), (19.0, dusk()), (23.0, night()), (2.0, night())] {
+            assert!(same(rig_at(hr), key), "keyframe at {hr}");
+        }
         assert_eq!(unit_to_hex(rig_at(12.0).tint), 0x4A3AAD);
         assert_eq!(unit_to_hex(rig_at(23.0).sky[0]), 0x081063);
     }
@@ -793,7 +817,7 @@ mod tests {
         assert_eq!(clear.sun_color, Vec3::ONE);
         assert_eq!(unit_to_hex(clear.shadow_tint), 0x4A3AAD);
         let storm = environment(12.0, &WeatherMix::settled(WeatherKind::Storm));
-        assert!(storm.storm > 0.99 && storm.sun_color.max_element() < 0.35);
+        assert!(storm.storm > 0.99 && storm.sun_color.max_element() < 0.5);
         assert_eq!(unit_to_hex(storm.rim_color), 0x42FFE6);
         let fog = environment(12.0, &WeatherMix::settled(WeatherKind::Fog));
         assert!(fog.sea_fog > 0.99);

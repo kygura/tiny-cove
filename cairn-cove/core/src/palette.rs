@@ -320,6 +320,49 @@ pub fn flower(i: u32) -> Vec3 {
     [petal_sea_pink, petal_gorse, petal_flax, petal_sea_pink_deep][(i % 4) as usize]()
 }
 
+// ---- short aliases other modules used as private helpers before the tokens existed -------
+
+/// Lilac slate stone (alias of [`dry_stone_alt`]).
+pub fn stone_alt() -> Vec3 {
+    dry_stone_alt()
+}
+/// Shell chip pink (alias of [`shell_nacre`]).
+pub fn nacre() -> Vec3 {
+    shell_nacre()
+}
+/// Beach pebble A (alias of [`pebble_lilac`]).
+pub fn pebble() -> Vec3 {
+    pebble_lilac()
+}
+/// Lilac driftwood grain (alias of [`driftwood_grain`]).
+pub fn grain() -> Vec3 {
+    driftwood_grain()
+}
+/// Dying spark (alias of [`ember_fade`]).
+pub fn ember() -> Vec3 {
+    ember_fade()
+}
+/// Gorse flower (alias of [`petal_gorse`]).
+pub fn gorse() -> Vec3 {
+    petal_gorse()
+}
+/// Flax flower (alias of [`petal_flax`]).
+pub fn flax() -> Vec3 {
+    petal_flax()
+}
+/// Thrift flower (alias of [`petal_sea_pink`]).
+pub fn sea_pink() -> Vec3 {
+    petal_sea_pink()
+}
+/// Thrift centre (alias of [`petal_sea_pink_deep`]).
+pub fn sea_pink_deep() -> Vec3 {
+    petal_sea_pink_deep()
+}
+/// Cliff strata stripe (alias of [`cliff_band`]).
+pub fn strata() -> Vec3 {
+    cliff_band()
+}
+
 // ---- cel band function (DESIGN A3), CPU port of glade.wesl `shade_band` -----------------
 
 /// Light band of a cel-shaded pixel.
@@ -595,5 +638,28 @@ mod tests {
         assert_eq!(white(), salt_bleach());
         assert_eq!(flower(1), petal_gorse());
         assert_eq!(roof(Colors::default()), thatch());
+        // Aliases for the tokens walls / paths / nature faked locally (same DESIGN hexes).
+        for (got, hex) in [
+            (stone_alt(), 0xBDA5EF),
+            (stone_joint(), 0x84529C),
+            (sod(), 0x9C4A29),
+            (rope(), 0xEFC56B),
+            (fiber_dark(), 0xB58C29),
+            (lichen_yellow(), 0xEFE63A),
+            (salt_bleach(), 0xF7EFD6),
+            (grass_tip(), 0xADEF4A),
+            (boards(), 0xDE9C5A),
+            (thatch_bind(), 0xD67B19),
+            (flagstone(), 0x5A73CE),
+            (pebble(), 0xA59CEF),
+            (nacre(), 0xFFADA5),
+            (sailcloth(), 0xF7E6AD),
+            (cliff(), 0xB5635A),
+            (strata(), 0xEFA55A),
+            (grain(), 0xC5A5C5),
+            (ember(), 0x84195A),
+        ] {
+            assert_eq!(got, srgb(hex), "#{hex:06X}");
+        }
     }
 }

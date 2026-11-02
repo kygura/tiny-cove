@@ -9,7 +9,7 @@
 //!   hot-orange fire light with a stepped ±12 % flicker at 8 Hz; lantern lights get the
 //!   lantern colour.
 
-use super::{GladeAssets, SeaField, SeaMaterial};
+use super::{GladeAssets, SeaField};
 use crate::env::Environment;
 use crate::world::BuiltScene;
 use bevy::{
