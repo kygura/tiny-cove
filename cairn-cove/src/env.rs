@@ -2,6 +2,7 @@
 //! read by `render` (sun light, material uniforms, sky, fog) and `life`.
 
 use bevy::prelude::*;
+use cairn_cove_core::{SEA_LEVEL, TIDE_RANGE};
 
 /// Current atmosphere. All colours linear RGB. Default = clear noon.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -55,5 +56,54 @@ impl Default for Environment {
             wind: Vec2::new(1.0, 0.3),
             hour: 13.0,
         }
+    }
+}
+
+/// Shared wind. `dir` is a unit vector on the ground plane (x, z) the wind blows toward;
+/// `strength` is in m/s (calm ≈ 1, breezy ≈ 3, storm ≈ 9).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct Wind {
+    pub dir: Vec2,
+    pub strength: f32,
+}
+
+impl Default for Wind {
+    fn default() -> Self {
+        Self { dir: Vec2::new(0.96, 0.29), strength: 1.2 }
+    }
+}
+
+impl Wind {
+    /// Wind velocity on the ground plane (m/s).
+    pub fn vector(&self) -> Vec2 {
+        self.dir * self.strength
+    }
+    /// Wind velocity as a world vector (y = 0).
+    pub fn vector3(&self) -> Vec3 {
+        Vec3::new(self.dir.x, 0.0, self.dir.y) * self.strength
+    }
+}
+
+/// Current tide (render-side; core logic always uses `SEA_LEVEL`).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct Tide {
+    /// Sea surface height in metres: `SEA_LEVEL ± TIDE_RANGE`.
+    pub level: f32,
+    /// True while the water is going out.
+    pub falling: bool,
+}
+
+impl Default for Tide {
+    fn default() -> Self {
+        Self::at(12.0)
+    }
+}
+
+impl Tide {
+    /// The tide at `hour` (0..24): two full cycles per day, high water at 03:00 and 15:00,
+    /// low water at 09:00 and 21:00.
+    pub fn at(hour: f32) -> Self {
+        let phase = (hour - 3.0) / 12.0 * std::f32::consts::TAU;
+        Self { level: SEA_LEVEL + TIDE_RANGE * phase.cos(), falling: phase.sin() > 0.0 }
     }
 }

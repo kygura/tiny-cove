@@ -18,6 +18,8 @@ pub struct GladePlugin;
 impl Plugin for GladePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<env::Environment>()
+            .init_resource::<env::Wind>()
+            .init_resource::<env::Tide>()
             .insert_resource(shot::Cli::parse(std::env::args()))
             .add_plugins((render::RenderPlugin, world::WorldPlugin, weather::WeatherPlugin, camera::CameraPlugin, shot::ShotPlugin))
             .add_plugins((tools::ToolsPlugin, ui::UiPlugin, life::LifePlugin));
