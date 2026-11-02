@@ -179,7 +179,7 @@ pub struct ToolSettings {
     /// Path width in metres, 0.8..=4.
     pub path_width: f32,
     pub stairs: StairKind,
-    /// `Cable { railing }` keeps the chosen railing design.
+    /// `Rope { railing }` keeps the chosen railing design.
     pub bridge: BridgeKind,
     pub hanging: Hanging,
     /// What a click on bare wall places.
@@ -296,6 +296,12 @@ pub struct CursorOverride {
 
 /// A dragged polyline gets a new point every this many metres.
 const POINT_SPACING: f32 = 1.5;
+/// A tree drag drops a tree every this many metres.
+const SCATTER_STEP: f32 = 2.5;
+/// Most trees one drag may plant.
+const SCATTER_MAX: usize = 200;
+/// Erase drag: the cursor must travel this many window pixels before it takes another structure.
+const ERASE_STEP_PX: f32 = 6.0;
 /// A wall/fence ending this close to its start snaps closed.
 const CLOSE_SNAP: f32 = 1.5;
 /// Polyline simplification tolerance (metres).
@@ -321,6 +327,7 @@ const TOO_STEEP: &str = "TOO STEEP";
 const NEEDS_ANCHORS: &str = "NEEDS TWO ANCHORS";
 const NEEDS_WALL: &str = "NEEDS A HUT OR DYKE";
 const NEEDS_RING: &str = "NEEDS A CLOSED DYKE RING";
+const ON_SEA: &str = "ON THE SEA";
 
 // =============================================================================================
 // Pure helpers (unit-tested)
@@ -466,7 +473,7 @@ fn pitch_deg(frac: f32) -> f32 {
 
 fn cycle_roof(r: RoofStyle, dir: i32, round: bool) -> RoofStyle {
     let all: &[RoofStyle] = if round {
-        &[RoofStyle::Thatch, RoofStyle::Turf]
+        &[RoofStyle::Thatch, RoofStyle::Turf, RoofStyle::Hide]
     } else {
         &[RoofStyle::Boat, RoofStyle::Hide, RoofStyle::Thatch, RoofStyle::Turf]
     };
@@ -484,6 +491,14 @@ fn cycle_fence(k: FenceKind, dir: i32) -> FenceKind {
 fn with_structure(doc: &Document, s: Structure) -> Document {
     let mut d = doc.clone();
     d.add(s);
+    d
+}
+
+fn with_all(doc: &Document, list: &[Structure]) -> Document {
+    let mut d = doc.clone();
+    for s in list {
+        d.add(s.clone());
+    }
     d
 }
 
@@ -710,13 +725,14 @@ pub fn roof_click(doc: &Document, hit: &Hit, s: &ToolSettings, remove: bool) -> 
             w.roofed = !remove;
             w.roof = s.roof;
             w.roof_pitch = pitch_frac(s.roof_pitch_deg);
+            w.colors.roof = s.colors.roof;
             w.crest |= s.roof == RoofStyle::Turf && s.crest;
         }
         Some(Structure::House(h)) if !remove => {
             let round = matches!(h.footprint, Footprint::Round { .. });
             h.roof = if round && s.roof == RoofStyle::Boat { RoofStyle::Thatch } else { s.roof };
             h.roof_pitch = pitch_frac(s.roof_pitch_deg);
-            h.hangings = s.hangings;
+            h.colors.roof = s.colors.roof;
         }
         _ => return Err(NEEDS_RING),
     }
@@ -796,53 +812,33 @@ pub fn copy_style(st: &Structure, s: &mut ToolSettings) {
     }
 }
 
-/// Dye click: apply the settings' style to a structure (geometry untouched).
+/// Dye click: recolour a structure with what the Dye strip shows (swatches, hut material, dyke
+/// kind, carved, weathering). Kinds, variants and geometry are never touched; the material and
+/// dyke kind only apply while their strip control is live (see `ToolSettings::dye`).
 pub fn apply_style(st: &mut Structure, s: &ToolSettings) {
     match st {
         Structure::Wall(w) => {
-            w.kind = s.wall_kind;
-            w.crest = s.crest;
-            w.tumbled = s.tumbled;
-            w.thickness = s.wall_thickness;
-            w.footing = s.footing;
+            if s.dye.is_none_or(|d| d == "DYKE") {
+                w.kind = s.wall_kind;
+            }
             w.weathering = s.weathering;
-            w.roof = s.roof;
-            w.roof_pitch = pitch_frac(s.roof_pitch_deg);
             w.colors = s.colors;
         }
         Structure::House(h) => {
-            let round = matches!(h.footprint, Footprint::Round { .. });
-            h.material = s.material;
-            h.roof = if round && s.roof == RoofStyle::Boat { RoofStyle::Thatch } else { s.roof };
-            h.roof_pitch = pitch_frac(s.roof_pitch_deg);
+            if s.dye.is_none_or(|d| d == "HUT") {
+                h.material = s.material;
+            }
             h.carved = s.carved;
-            h.stilts = if round { 0.0 } else { s.stilts };
-            h.hangings = s.hangings;
             h.weathering = s.weathering;
             h.colors = s.colors;
         }
-        Structure::Fence(f) => {
-            f.kind = s.fence;
-            f.colors = s.colors;
-        }
-        Structure::Path(p) => p.kind = s.path,
-        Structure::Stairs(st) => {
-            st.kind = s.stairs;
-            st.colors = s.colors;
-        }
-        Structure::Platform(p) => p.colors = s.colors,
-        Structure::Bridge(b) => {
-            b.kind = s.bridge;
-            b.hanging = s.hanging;
-            b.colors = s.colors;
-        }
-        Structure::Placed(p) => {
-            p.kind = match p.kind {
-                PropKind::Tree(_) => PropKind::Tree(s.tree),
-                PropKind::Clutter(_) => PropKind::Clutter(s.clutter),
-            };
-            p.colors = s.colors;
-        }
+        Structure::Fence(Fence { colors, .. })
+        | Structure::Stairs(Stairs { colors, .. })
+        | Structure::Platform(Platform { colors, .. })
+        | Structure::Bridge(Bridge { colors, .. })
+        | Structure::Placed(Placed { colors, .. }) => *colors = s.colors,
+        // Tracks carry no colours.
+        Structure::Path(_) => {}
     }
 }
 
@@ -876,18 +872,19 @@ enum Phase {
     Idle,
     /// Wall / fence / path polyline. `held` = LMB down; `moved` = drag distance since press.
     Line { pts: Vec<Vec2>, end: Vec2, held: bool, moved: f32 },
-    /// Block / tower / deck footprint drag.
+    /// Hut / roundhouse / jetty footprint drag.
     Footprint { a: Vec2, b: Vec2, angle: f32 },
     /// Footprint fixed; vertical mouse sets the height; click casts.
     Raise { shape: Shape, base: f32, anchor_y: f32 },
     /// Stairs / bridge A→B.
     Span { a: Vec3, b: Vec3, anchored: (bool, bool) },
-    /// Tree / clutter held before release.
-    Prop { angle: f32, scale: f32 },
+    /// Tree / clutter held before release. A tree drag also scatters: `placed` are the trees
+    /// dropped so far and `anchor` is where the last one went.
+    Prop { angle: f32, scale: f32, placed: Vec<Placed>, anchor: Vec2 },
     /// Terrain brush stroke (working document = committed + dabs so far).
     Stroke { doc: Document, last: Vec2, still: f32, level: f32 },
-    /// Erase drag: structures removed so far.
-    Erase { removed: Vec<StructureId> },
+    /// Erase drag: structures removed so far, and the cursor position (window px) of the last one.
+    Erase { removed: Vec<StructureId>, at: Vec2 },
 }
 
 #[derive(Resource, Default)]
@@ -907,6 +904,8 @@ pub struct ToolState {
 struct Input {
     ray: Option<(Vec3, Vec3)>,
     ground: Option<Vec3>,
+    /// Cursor in window pixels.
+    cursor: Vec2,
     cursor_y: f32,
     press: bool,
     held: bool,
@@ -947,6 +946,8 @@ enum Pending {
     /// The stroke's working document, identified by its dab count.
     Stroke(usize),
     Remove(Vec<StructureId>),
+    /// Several new structures at once (a tree scatter).
+    AddMany(Vec<Structure>),
 }
 
 /// Everything a tool handler touches this frame.
@@ -1128,6 +1129,7 @@ fn drive_tools(
         let inp = Input {
             ray,
             ground,
+            cursor: cursor.unwrap_or_default(),
             cursor_y: cursor.map_or(0.0, |c| c.y),
             press: mouse.just_pressed(MouseButton::Left) && !blocked,
             held: mouse.pressed(MouseButton::Left),
@@ -1169,6 +1171,7 @@ fn drive_tools(
                 let base = cx.glade.committed();
                 let doc = match (&pending, &cx.phase) {
                     (Some(Pending::Add(a)), _) => Some(with_structure(base, a.clone())),
+                    (Some(Pending::AddMany(list)), _) => Some(with_all(base, list)),
                     (Some(Pending::Stroke(_)), Phase::Stroke { doc, .. }) => Some(doc.clone()),
                     (Some(Pending::Remove(ids)), _) => {
                         let mut d = base.clone();
@@ -1196,7 +1199,7 @@ fn drive_tools(
             // Let the stroke end where it is.
             match std::mem::take(&mut st.phase) {
                 Phase::Stroke { doc, .. } => g.commit(doc),
-                Phase::Erase { removed } if !removed.is_empty() => {
+                Phase::Erase { removed, .. } if !removed.is_empty() => {
                     let mut d = g.committed().clone();
                     d.structures.retain(|(id, _)| !removed.contains(id));
                     g.commit(d);
@@ -1316,7 +1319,7 @@ fn line_tool(cx: &mut Cx) {
     }
 }
 
-// --- Block / Tower / Deck -----------------------------------------------------------------------
+// --- Hut / Roundhouse / Jetty ----------------------------------------------------------------------
 
 fn default_height(tool: Tool) -> f32 {
     match tool {
@@ -1387,6 +1390,10 @@ fn shape_tool(cx: &mut Cx) {
             let (lo, hi) = height_range(tool);
             match tool {
                 Tool::Jetty => base += inp.steps as f32 * 0.25,
+                // A beacon has two roofs, the thatch cone and open (hide stands for open).
+                Tool::Roundhouse if inp.steps != 0 && cx.s.ghost_beacon => {
+                    cx.s.roof = if cx.s.roof == RoofStyle::Thatch { RoofStyle::Hide } else { RoofStyle::Thatch };
+                }
                 Tool::Roundhouse if inp.steps != 0 => cx.s.roof = cycle_roof(cx.s.roof, inp.steps.signum(), true),
                 _ if inp.steps != 0 && inp.shift => cx.s.roof = cycle_roof(cx.s.roof, inp.steps.signum(), false),
                 _ => cx.s.roof_pitch_deg = (cx.s.roof_pitch_deg + inp.steps as f32 * 5.0).clamp(15.0, 60.0),
@@ -1476,21 +1483,45 @@ fn span_tool(cx: &mut Cx) {
 
 // --- Tree / Clutter ------------------------------------------------------------------------------
 
+/// Why a prop or tree cannot stand at `p`. Only a canoe may sit on the sea.
+fn prop_reason(terrain: &Terrain, s: &ToolSettings, p: Vec2) -> Option<&'static str> {
+    if !inside_valley(p) {
+        Some(OUTSIDE)
+    } else if terrain.is_sea(p) && !(s.tool == Tool::Prop && s.clutter == ClutterKind::Canoe) {
+        Some(ON_SEA)
+    } else {
+        None
+    }
+}
+
+fn prop_invalid(cx: &Cx, p: Vec2) -> Option<&'static str> {
+    prop_reason(&cx.scene.terrain, cx.s, p)
+}
+
 fn prop_tool(cx: &mut Cx) {
     let inp = cx.inp;
+    let tree = cx.s.tool == Tool::Tree;
+    let phase = std::mem::take(&mut cx.phase);
     let Some(g) = inp.ground else {
-        if inp.release {
-            cx.phase = Phase::Idle;
+        // Pointer off the ground: keep holding, and a release still plants what was scattered.
+        match phase {
+            Phase::Prop { placed, .. } if inp.release => {
+                if !placed.is_empty() {
+                    let all: Vec<Structure> = placed.into_iter().map(Structure::Placed).collect();
+                    let doc = with_all(cx.glade.committed(), &all);
+                    cx.commit(doc);
+                }
+            }
+            other => cx.phase = other,
         }
         return;
     };
     let p = q2(g.xz());
-    let phase = std::mem::take(&mut cx.phase);
-    let (at, mut angle, mut scale) = match phase {
-        Phase::Prop { angle, scale, .. } => (p, angle, scale),
-        _ if inp.press => (p, hash01(p, 1) * TAU, 0.9 + hash01(p, 2) * 0.25),
+    let (at, mut angle, mut scale, mut placed, mut anchor) = match phase {
+        Phase::Prop { angle, scale, placed, anchor } => (p, angle, scale, placed, anchor),
+        _ if inp.press => (p, hash01(p, 1) * TAU, 0.9 + hash01(p, 2) * 0.25, Vec::new(), p),
         _ => {
-            cx.invalid = (!inside_valley(p)).then_some(OUTSIDE);
+            cx.invalid = prop_invalid(cx, p);
             cx.ring(g, 0.5);
             return;
         }
@@ -1500,19 +1531,37 @@ fn prop_tool(cx: &mut Cx) {
     } else {
         angle = (angle + inp.steps as f32 * 15f32.to_radians()).rem_euclid(TAU);
     }
-    cx.invalid = (!inside_valley(at)).then_some(OUTSIDE);
-    let kind = if cx.s.tool == Tool::Tree { PropKind::Tree(cx.s.tree) } else { PropKind::Clutter(cx.s.clutter) };
-    let st = Structure::Placed(Placed { at, angle, scale, kind, colors: cx.s.colors });
-    if inp.release || !inp.held {
+    cx.invalid = prop_invalid(cx, at);
+    let kind = if tree { PropKind::Tree(cx.s.tree) } else { PropKind::Clutter(cx.s.clutter) };
+    let head = Placed { at, angle, scale, kind, colors: cx.s.colors };
+    // Tree drag: drop the held tree and take a fresh one whenever the cursor has travelled a step.
+    if tree && inp.held && !inp.release && at.distance(anchor) >= SCATTER_STEP && placed.len() < SCATTER_MAX {
         if cx.invalid.is_none() {
-            cx.commit_add(st);
+            placed.push(head.clone());
+        }
+        anchor = at;
+        angle = hash01(at, 1) * TAU;
+        scale = 0.9 + hash01(at, 2) * 0.25;
+    }
+    // The held tree is only a tree of its own once the cursor has moved off the last one dropped.
+    let head_counts = placed.is_empty() || at.distance(anchor) > 1.0;
+    let mut all: Vec<Structure> = placed.iter().cloned().map(Structure::Placed).collect();
+    if head_counts {
+        all.push(Structure::Placed(Placed { angle, scale, ..head }));
+    }
+    if inp.release || !inp.held {
+        if cx.invalid.is_some() && head_counts {
+            all.pop();
+        }
+        if !all.is_empty() {
+            cx.commit(with_all(cx.glade.committed(), &all));
         }
         cx.invalid = None;
         return;
     }
     cx.ring(g, 0.5);
-    cx.pending = Some(Pending::Add(st));
-    cx.phase = Phase::Prop { angle, scale };
+    cx.pending = Some(if all.len() == 1 { Pending::Add(all.remove(0)) } else { Pending::AddMany(all) });
+    cx.phase = Phase::Prop { angle, scale, placed, anchor };
 }
 
 // --- Paint / Sculpt / Flatten / Water ------------------------------------------------------------
@@ -1640,19 +1689,27 @@ fn click_tool(cx: &mut Cx) {
 
 fn erase_tool(cx: &mut Cx) {
     let inp = cx.inp;
-    let hovered = cx.hover().and_then(|h| h.id);
+    let prev = match std::mem::take(&mut cx.phase) {
+        Phase::Erase { removed, at } => Some((removed, at)),
+        _ => None,
+    };
+    // The shown scene already lacks what this gesture removed, so a cursor held still would peel
+    // the next structure behind it every frame. A new target needs the cursor to have travelled.
+    let fresh = prev.as_ref().is_none_or(|(_, at)| at.distance(inp.cursor) > ERASE_STEP_PX);
+    let hovered = if fresh { cx.hover().and_then(|h| h.id) } else { None };
     if let Some(id) = hovered {
         cx.marks.push(Mark::Part(id, Tint::Bad));
-    } else if let Some(g) = inp.ground {
+    } else if fresh && let Some(g) = inp.ground {
         cx.marks.push(Mark::Ring(g, 0.4, Tint::Bad));
     }
-    let mut removed = match std::mem::take(&mut cx.phase) {
-        Phase::Erase { removed } => removed,
-        _ if inp.press => Vec::new(),
-        _ => return,
+    let (mut removed, mut at) = match prev {
+        Some(p) => p,
+        None if inp.press => (Vec::new(), inp.cursor),
+        None => return,
     };
     if let Some(id) = hovered.filter(|id| !removed.contains(id)) {
         removed.push(id);
+        at = inp.cursor;
     }
     if inp.release || !inp.held {
         if !removed.is_empty() {
@@ -1663,7 +1720,7 @@ fn erase_tool(cx: &mut Cx) {
         return;
     }
     cx.pending = (!removed.is_empty()).then(|| Pending::Remove(removed.clone()));
-    cx.phase = Phase::Erase { removed };
+    cx.phase = Phase::Erase { removed, at };
 }
 
 #[cfg(test)]
@@ -1878,13 +1935,193 @@ mod tests {
 
     #[test]
     fn style_round_trip() {
-        let mut s = ToolSettings { material: Material::Plank, roof: RoofStyle::Hide, roof_pitch_deg: 40.0, ..default() };
+        let mut s = ToolSettings { material: Material::Plank, carved: true, weathering: 0.7, roof: RoofStyle::Hide, roof_pitch_deg: 40.0, ..default() };
+        s.colors.wall = 2;
         let mut st = shape_structure(Tool::Hut, &ToolSettings::default(), Shape::Rect { center: Vec2::ZERO, half: Vec2::ONE * 3.0, angle: 0.0 }, 5.0);
         apply_style(&mut st, &s);
         s = ToolSettings::default();
         copy_style(&st, &mut s);
-        assert_eq!((s.material, s.roof), (Material::Plank, RoofStyle::Hide));
-        assert!((s.roof_pitch_deg - 40.0).abs() < 0.01);
+        assert_eq!((s.material, s.carved, s.colors.wall), (Material::Plank, true, 2));
+        assert!((s.weathering - 0.7).abs() < 1e-5);
+        // The roof is not on the Dye strip: it stays what the hut was built with.
+        assert_eq!(s.roof, RoofStyle::Thatch);
+    }
+
+    /// One structure of every kind, with every variant / geometry field away from the defaults.
+    fn every_structure() -> Vec<Structure> {
+        let odd = Colors { roof: 5, wall: 4, trim: 4 };
+        let house = |footprint| House {
+            footprint,
+            wall_height: 3.1,
+            roof: RoofStyle::Hide,
+            roof_pitch: 0.9,
+            material: Material::Stone,
+            carved: false,
+            hangings: false,
+            stilts: 1.7,
+            openings: vec![Opening { along: 1.0, kind: OpeningKind::Door }],
+            colors: odd,
+            weathering: 0.9,
+        };
+        vec![
+            Structure::Wall(Wall {
+                points: vec![Vec2::ZERO, Vec2::X * 6.0],
+                height: 7.0,
+                thickness: 1.1,
+                kind: WallKind::Palisade,
+                crest: false,
+                tumbled: true,
+                footing: 1.6,
+                roofed: true,
+                roof: RoofStyle::Turf,
+                roof_pitch: 1.1,
+                openings: vec![Opening { along: 2.0, kind: OpeningKind::Window }],
+                colors: odd,
+                weathering: 0.9,
+            }),
+            Structure::House(house(Footprint::Rect { center: Vec2::ZERO, half: Vec2::new(2.0, 3.0), angle: 0.3 })),
+            Structure::House(house(Footprint::Round { center: Vec2::ZERO, radius: 2.5 })),
+            Structure::Fence(Fence { points: vec![Vec2::ZERO, Vec2::X * 4.0], kind: FenceKind::Reed, colors: odd }),
+            Structure::Path(Path { points: vec![Vec2::ZERO, Vec2::X * 4.0], width: 3.0, kind: PathKind::Stepping }),
+            Structure::Stairs(Stairs { from: Vec3::ZERO, to: Vec3::new(4.0, 2.0, 0.0), width: 2.0, kind: StairKind::RopeLadder, colors: odd }),
+            Structure::Platform(Platform { center: Vec2::ZERO, half: Vec2::new(2.0, 1.0), angle: 0.2, height: 2.5, colors: odd }),
+            Structure::Bridge(Bridge { a: Vec3::ZERO, b: Vec3::new(8.0, 0.0, 0.0), width: 2.5, kind: BridgeKind::Rope { railing: 3 }, hanging: Hanging::Pennants, colors: odd }),
+            Structure::Placed(Placed { at: Vec2::ONE, angle: 1.0, scale: 1.2, kind: PropKind::Tree(TreeKind::Fig), colors: odd }),
+            Structure::Placed(Placed { at: Vec2::ONE, angle: 1.0, scale: 1.2, kind: PropKind::Clutter(ClutterKind::Cairn), colors: odd }),
+            Structure::Placed(Placed { at: Vec2::ONE, angle: 1.0, scale: 1.2, kind: PropKind::Clutter(ClutterKind::Firepit), colors: odd }),
+        ]
+    }
+
+    /// Settings whose every shared knob is away from `every_structure`'s values.
+    fn contrary_settings() -> ToolSettings {
+        ToolSettings {
+            tool: Tool::Dye,
+            wall_kind: WallKind::Turf,
+            material: Material::Plank,
+            roof: RoofStyle::Boat,
+            roof_pitch_deg: 20.0,
+            carved: true,
+            hangings: true,
+            crest: true,
+            tumbled: false,
+            wall_thickness: 0.4,
+            footing: 0.2,
+            stilts: 0.0,
+            weathering: 0.1,
+            fence: FenceKind::Wattle,
+            path: PathKind::Shell,
+            path_width: 1.0,
+            stairs: StairKind::Stone,
+            bridge: BridgeKind::Causeway,
+            hanging: Hanging::Lanterns,
+            tree: TreeKind::Snag,
+            clutter: ClutterKind::Canoe,
+            wall_height: 3.0,
+            stair_width: 1.0,
+            bridge_width: 1.2,
+            colors: Colors { roof: 1, wall: 2, trim: 3 },
+            ..default()
+        }
+    }
+
+    #[test]
+    fn dye_click_only_changes_what_the_dye_strip_shows() {
+        let s = contrary_settings();
+        for st in every_structure() {
+            let mut dyed = st.clone();
+            apply_style(&mut dyed, &s);
+            // Put back the Dye strip's own fields: nothing else may have moved.
+            let mut back = dyed.clone();
+            match (&mut back, &st) {
+                (Structure::Wall(b), Structure::Wall(o)) => (b.kind, b.weathering, b.colors) = (o.kind, o.weathering, o.colors),
+                (Structure::House(b), Structure::House(o)) => (b.material, b.carved, b.weathering, b.colors) = (o.material, o.carved, o.weathering, o.colors),
+                (Structure::Fence(b), Structure::Fence(o)) => b.colors = o.colors,
+                (Structure::Stairs(b), Structure::Stairs(o)) => b.colors = o.colors,
+                (Structure::Platform(b), Structure::Platform(o)) => b.colors = o.colors,
+                (Structure::Bridge(b), Structure::Bridge(o)) => b.colors = o.colors,
+                (Structure::Placed(b), Structure::Placed(o)) => b.colors = o.colors,
+                _ => {}
+            }
+            assert_eq!(back, st, "dye changed a field the strip does not show: {}", dye_name(&st));
+            // ... and the strip's own fields did apply.
+            let recoloured = !matches!(st, Structure::Path(_));
+            assert_eq!(dyed != st, recoloured, "{}", dye_name(&st));
+        }
+    }
+
+    #[test]
+    fn dye_leaves_props_and_bridges_their_kind() {
+        let s = contrary_settings();
+        let mut cairn = Structure::Placed(Placed { at: Vec2::ZERO, angle: 0.0, scale: 1.0, kind: PropKind::Clutter(ClutterKind::Cairn), colors: Colors::default() });
+        apply_style(&mut cairn, &s);
+        assert!(matches!(cairn, Structure::Placed(Placed { kind: PropKind::Clutter(ClutterKind::Cairn), colors: Colors { roof: 1, wall: 2, trim: 3 }, .. })));
+        let mut bridge = Structure::Bridge(Bridge { a: Vec3::ZERO, b: Vec3::X * 8.0, width: 2.0, kind: BridgeKind::Log, hanging: Hanging::None, colors: Colors::default() });
+        apply_style(&mut bridge, &s);
+        assert!(matches!(bridge, Structure::Bridge(Bridge { kind: BridgeKind::Log, hanging: Hanging::None, width, .. }) if width == 2.0));
+    }
+
+    #[test]
+    fn dye_material_and_dyke_kind_follow_the_picked_control() {
+        let mut s = contrary_settings();
+        let hut = every_structure().remove(1);
+        let wall = every_structure().remove(0);
+        // After picking a hut only the hut material is live; after picking a dyke, only the kind.
+        s.dye = Some("HUT");
+        let (mut h, mut w) = (hut.clone(), wall.clone());
+        apply_style(&mut h, &s);
+        apply_style(&mut w, &s);
+        assert!(matches!(h, Structure::House(ref x) if x.material == Material::Plank));
+        assert!(matches!(w, Structure::Wall(ref x) if x.kind == WallKind::Palisade));
+        s.dye = Some("DYKE");
+        let (mut h, mut w) = (hut, wall);
+        apply_style(&mut h, &s);
+        apply_style(&mut w, &s);
+        assert!(matches!(h, Structure::House(ref x) if x.material == Material::Stone));
+        assert!(matches!(w, Structure::Wall(ref x) if x.kind == WallKind::Turf));
+    }
+
+    #[test]
+    fn roof_tool_paints_the_roof_swatch_and_leaves_hangings() {
+        let ring = vec![Vec2::ZERO, Vec2::new(6.0, 0.0), Vec2::new(6.0, 6.0), Vec2::new(0.0, 6.0), Vec2::ZERO];
+        let (d, id) = wall_doc(ring);
+        let s = ToolSettings { roof: RoofStyle::Turf, colors: Colors { roof: 4, wall: 3, trim: 2 }, hangings: false, ..default() };
+        let hit = Hit { id: None, point: Vec3::new(3.0, 0.0, 3.0), normal: Vec3::Y, along: 0.0 };
+        let d1 = roof_click(&d, &hit, &s, false).unwrap();
+        let Some(Structure::Wall(w)) = d1.get(id) else { panic!() };
+        assert_eq!((w.colors.roof, w.colors.wall, w.colors.trim), (4, Colors::default().wall, Colors::default().trim), "only the roof swatch");
+        // A hut: roof colour yes, hangings untouched.
+        let mut d = Document::new(1);
+        let hid = d.add(shape_structure(Tool::Hut, &ToolSettings::default(), Shape::Rect { center: Vec2::ZERO, half: Vec2::ONE * 3.0, angle: 0.0 }, 2.4));
+        let hit = Hit { id: Some(hid), point: Vec3::new(0.0, 3.0, 0.0), normal: Vec3::Y, along: 0.0 };
+        let d1 = roof_click(&d, &hit, &s, false).unwrap();
+        let Some(Structure::House(h)) = d1.get(hid) else { panic!() };
+        assert!(h.hangings && h.colors.roof == 4 && h.roof == RoofStyle::Turf);
+    }
+
+    #[test]
+    fn only_a_canoe_may_stand_on_the_sea() {
+        let t = Terrain::build(3, &[], &[]);
+        let grid = || (-31..=31).flat_map(|x| (-31..=31).map(move |z| Vec2::new(x as f32, z as f32)));
+        let sea = grid().find(|p| t.is_sea(*p)).expect("some sea inside the valley square");
+        let land = grid().find(|p| !t.is_sea(*p)).unwrap();
+        let prop = |k| ToolSettings { tool: Tool::Prop, clutter: k, ..default() };
+        assert_eq!(prop_reason(&t, &prop(ClutterKind::Firepit), sea), Some(ON_SEA));
+        assert_eq!(prop_reason(&t, &ToolSettings { tool: Tool::Tree, ..default() }, sea), Some(ON_SEA));
+        assert_eq!(prop_reason(&t, &prop(ClutterKind::Canoe), sea), None, "canoes float");
+        assert_eq!(prop_reason(&t, &prop(ClutterKind::Firepit), land), None);
+        assert_eq!(prop_reason(&t, &prop(ClutterKind::Canoe), Vec2::splat(40.0)), Some(OUTSIDE));
+    }
+
+    #[test]
+    fn scroll_reaches_every_roundhouse_roof() {
+        let mut r = RoofStyle::Thatch;
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            r = cycle_roof(r, 1, true);
+            seen.push(r);
+        }
+        assert_eq!(seen, [RoofStyle::Turf, RoofStyle::Hide, RoofStyle::Thatch]);
+        assert_eq!(cycle_roof(RoofStyle::Hide, -1, true), RoofStyle::Turf);
     }
 
     #[test]

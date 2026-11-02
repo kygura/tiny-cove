@@ -13,7 +13,7 @@ use crate::env::Tide;
 use crate::tools::{PointerOverUi, Tool, ToolSettings, ToolStatus};
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::Glade;
-use bevy::{prelude::*, text::LineHeight, ui::RelativeCursorPosition, ui::UiSystems, window::PrimaryWindow};
+use bevy::{prelude::*, text::{LineBreak, LineHeight}, ui::RelativeCursorPosition, ui::UiSystems, window::PrimaryWindow};
 use cairn_cove_core::{ClutterKind, Colors, TIDE_RANGE};
 use strip::{C, CLUTTER, GROUPS, Opt, Sl, yes};
 
@@ -97,7 +97,14 @@ enum Action {
 struct Cond {
     sel: fn(&ToolSettings) -> bool,
     en: fn(&ToolSettings) -> bool,
+    /// Hidden (`Display::None`, and never enabled) while false.
+    show: fn(&ToolSettings) -> bool,
 }
+/// The toolbar panel and its tool buttons; `toolbar_density` resizes them under 1180 logical px.
+#[derive(Component)]
+struct ToolBar;
+#[derive(Component)]
+struct ToolBtn;
 /// Derived button state. `now` is the "now showing" marker of the auto weather; `bad` is the
 /// invalid treatment (the active tool while its placement is invalid).
 #[derive(Component, Default, PartialEq, Clone, Copy)]
@@ -191,7 +198,7 @@ impl Plugin for UiPlugin {
             .init_resource::<LastSlider>()
             .add_systems(Startup, spawn_hud)
             .add_systems(PreUpdate, pointer_over.after(UiSystems::Focus))
-            .add_systems(Update, (ui_scale, rebuild_strip, rebuild_hints, keys, click, sliders, sync_btn, paint, sync_text, plate, tooltip).chain());
+            .add_systems(Update, (ui_scale, toolbar_density, rebuild_strip, rebuild_hints, keys, click, sliders, sync_btn, show_opts, paint, sync_text, plate, tooltip).chain());
     }
 }
 
@@ -272,6 +279,19 @@ fn track(g: &mut ChildSpawnerCommands, w: Val, h: f32, fill_c: Color) -> (Entity
     (t, ids[0], ids[1])
 }
 
+/// Toolbar metrics (DESIGN B4): 58-px buttons with 8-px group gaps; under 1180 logical px of
+/// width, 52 and 6.
+const BTN_W: f32 = 58.0;
+const BTN_W_NARROW: f32 = 52.0;
+const BAR_GAP: f32 = 8.0;
+const BAR_GAP_NARROW: f32 = 6.0;
+const NARROW_BELOW: f32 = 1180.0;
+
+/// (button width, group gap) for a window `logical_w` UI pixels wide.
+fn toolbar_metrics(logical_w: f32) -> (f32, f32) {
+    if logical_w < NARROW_BELOW { (BTN_W_NARROW, BAR_GAP_NARROW) } else { (BTN_W, BAR_GAP) }
+}
+
 fn spawn_hud(mut commands: Commands) {
     let none = Entity::PLACEHOLDER;
     let mut ids = Ids {
@@ -281,7 +301,7 @@ fn spawn_hud(mut commands: Commands) {
 
     // ---- ToolBar
     commands.spawn(Node { left: px(0), right: px(0), bottom: px(16), justify_content: JustifyContent::Center, padding: UiRect::horizontal(px(16)), ..abs() }).with_children(|w| {
-        w.spawn(slab(Node { padding: UiRect::all(px(6)), column_gap: px(5), max_width: percent(100), ..default() }, CLOTH)).with_children(|bar| {
+        w.spawn((slab(Node { padding: UiRect::all(px(6)), column_gap: px(BAR_GAP), max_width: percent(100), ..default() }, CLOTH), ToolBar)).with_children(|bar| {
             deco(bar);
             for (gi, name) in GROUPS.iter().enumerate() {
                 if gi > 0 {
@@ -296,8 +316,8 @@ fn spawn_hud(mut commands: Commands) {
                             r.spawn((
                                 button(
                                     Node {
-                                        width: px(58),
-                                        min_width: px(52),
+                                        width: px(BTN_W),
+                                        min_width: px(BTN_W_NARROW),
                                         height: px(56),
                                         flex_shrink: 1.0,
                                         flex_direction: FlexDirection::Column,
@@ -309,6 +329,7 @@ fn spawn_hud(mut commands: Commands) {
                                     Action::Tool(t),
                                 ),
                                 Tip(format!("{title}  [{key}]"), sub.into()),
+                                ToolBtn,
                             ))
                             .with_children(|b| {
                                 b.spawn(top_band());
@@ -317,7 +338,7 @@ fn spawn_hud(mut commands: Commands) {
                                 b.spawn(Node { left: px(0), right: px(0), top: px(14), justify_content: JustifyContent::Center, ..abs() }).with_children(|gl| {
                                     gl.spawn((txt(t.glyph(), 14.0, DIM), Lbl, Glyph));
                                 });
-                                b.spawn((txt(t.label(), 12.0, SHELL), Lbl));
+                                b.spawn((txt(t.label(), 12.0, SHELL), Lbl, TextLayout { linebreak: LineBreak::NoWrap, ..default() }));
                             });
                         }
                     });
@@ -332,14 +353,14 @@ fn spawn_hud(mut commands: Commands) {
             .spawn(slab(Node { padding: UiRect::all(px(8)), max_width: px(1000), display: Display::None, ..default() }, CLOTH))
             .with_children(|p| {
                 deco(p);
-                ids.strip_body = p.spawn(Node { margin: UiRect::top(px(3)), ..col(4) }).id();
+                ids.strip_body = p.spawn(Node { margin: UiRect::top(px(4)), ..col(4) }).id();
             })
             .id();
     });
 
     // ---- WeatherPanel
     commands.spawn(Node { right: px(16), top: px(16), ..abs() }).with_children(|w| {
-        w.spawn(slab(Node { width: px(244), padding: UiRect::all(px(8)), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() }, CLOTH)).with_children(|p| {
+        w.spawn(slab(Node { width: px(244), padding: UiRect::all(px(8)), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, CLOTH)).with_children(|p| {
             deco(p);
             p.spawn(Node { margin: UiRect::top(px(4)), ..row(8) }).with_children(|r| {
                 r.spawn((Node { flex_shrink: 0.0, ..default() }, Interaction::None, Action::Collapse)).with_children(|c| {
@@ -352,7 +373,7 @@ fn spawn_hud(mut commands: Commands) {
                 });
             });
             ids.weather_body = p
-                .spawn(col(6))
+                .spawn(col(4))
                 .with_children(|b| {
                     // Time slider, with ticks at 06, 12, 18.
                     b.spawn(col(0)).with_children(|t| {
@@ -490,7 +511,7 @@ fn seg_button(g: &mut ChildSpawnerCommands, o: &Opt, a: Action, cond: Option<Con
 
 /// The name plate: 14-px shell text on a deep well with a 3-px band down its left edge.
 fn name_plate(p: &mut ChildSpawnerCommands, text: &str) {
-    p.spawn((Node { padding: UiRect { left: px(12), right: px(10), top: px(6), bottom: px(6) }, align_items: AlignItems::Center, ..default() }, BackgroundColor(DEEP))).with_children(|n| {
+    p.spawn((Node { padding: UiRect { left: px(12), right: px(8), top: px(6), bottom: px(6) }, align_items: AlignItems::Center, ..default() }, BackgroundColor(DEEP))).with_children(|n| {
         n.spawn((Node { left: px(0), top: px(0), bottom: px(0), width: px(3), ..abs() }, BackgroundColor(MALACHITE), PlateBand));
         n.spawn((txt(text, 14.0, SHELL), Plate));
     });
@@ -529,12 +550,12 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
                     g.spawn((txt(*label, 10.0, DIM), Node { margin: UiRect::right(px(4)), ..default() }));
                 }
                 for (i, o) in opts.iter().enumerate() {
-                    seg_button(g, o, Action::Set(o.set), Some(Cond { sel: o.sel, en: o.en }), Seg(grp, i));
+                    seg_button(g, o, Action::Set(o.set), Some(Cond { sel: o.sel, en: o.en, show: o.show }), Seg(grp, i));
                 }
             });
         }
         C::Tog(o) => {
-            r.spawn((button(Node { min_height: px(32), padding: UiRect::horizontal(px(8)), column_gap: px(6), ..default() }, Action::Set(o.set)), Cond { sel: o.sel, en: o.en }, Tog)).with_children(|t| {
+            r.spawn((button(Node { min_height: px(32), padding: UiRect::horizontal(px(8)), column_gap: px(6), ..default() }, Action::Set(o.set)), Cond { sel: o.sel, en: o.en, show: o.show }, Tog)).with_children(|t| {
                 toggle_box(t);
                 t.spawn((txt(o.l, 12.0, SHELL), Lbl));
             });
@@ -554,7 +575,7 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
                     // 32x32 hit node; 28x28 deep cell; 20x20 chip: lit hex over the noon-shadow hex.
                     g.spawn((
                         button(Node { width: px(32), height: px(32), border: UiRect::all(px(2)), ..default() }, Action::Color(*slot, i as u8)),
-                        Cond { sel: yes, en: *en },
+                        Cond { sel: yes, en: *en, show: yes },
                         Tip(name.to_uppercase(), format!("{} swatch", label.to_lowercase())),
                         Chip,
                     ))
@@ -627,6 +648,37 @@ fn ui_scale(win: Query<&Window, With<PrimaryWindow>>, mut scale: ResMut<UiScale>
     let s = ((w.height() / 720.0 * 4.0).round() / 4.0).min((w.width() / 1200.0 * 4.0).floor() / 4.0).clamp(0.75, 2.0);
     if scale.0 != s {
         scale.0 = s;
+    }
+}
+
+/// Under 1180 logical px of width the toolbar narrows its buttons to 52 and its group gaps to 6.
+fn toolbar_density(
+    win: Query<&Window, With<PrimaryWindow>>,
+    scale: Res<UiScale>,
+    mut bar: Query<&mut Node, (With<ToolBar>, Without<ToolBtn>)>,
+    mut btns: Query<&mut Node, With<ToolBtn>>,
+) {
+    let Ok(w) = win.single() else { return };
+    let (bw, gap) = toolbar_metrics(w.width() / scale.0.max(0.01));
+    for mut n in &mut bar {
+        if n.column_gap != px(gap) {
+            n.column_gap = px(gap);
+        }
+    }
+    for mut n in &mut btns {
+        if n.width != px(bw) {
+            n.width = px(bw);
+        }
+    }
+}
+
+/// Options whose `show` predicate is false (the roof choices a beacon does not have) are hidden.
+fn show_opts(s: Res<ToolSettings>, mut q: Query<(&Cond, &mut Node)>) {
+    for (c, mut n) in &mut q {
+        let want = if (c.show)(&s) { Display::Flex } else { Display::None };
+        if n.display != want {
+            n.display = want;
+        }
     }
 }
 
@@ -750,7 +802,7 @@ fn sliders(
 fn sync_btn(s: Res<ToolSettings>, status: Res<ToolStatus>, w: Res<Weather>, clock: Res<Clock>, glade: Res<Glade>, mut q: Query<(&Action, Option<&Cond>, &mut Btn)>) {
     for (a, c, mut b) in &mut q {
         let (sel, en, now) = match *a {
-            Action::Set(_) => c.map_or((false, true, false), |c| ((c.sel)(&s), (c.en)(&s), false)),
+            Action::Set(_) => c.map_or((false, true, false), |c| ((c.sel)(&s), (c.en)(&s) && (c.show)(&s), false)),
             // The toolbar never dims while drawing; picking another tool cancels the gesture.
             Action::Tool(t) => (s.tool == t, true, false),
             Action::Clutter(k) => (s.clutter == k, true, false),
@@ -1015,6 +1067,14 @@ mod tests {
         // The clock drives it: high water at 03:00, low at 09:00.
         assert!(tide_readout(Tide::at(3.0)).starts_with("HIGH"));
         assert!(tide_readout(Tide::at(9.0)).starts_with("LOW"));
+    }
+
+    #[test]
+    fn toolbar_narrows_below_1180() {
+        assert_eq!(toolbar_metrics(1280.0), (58.0, 8.0));
+        assert_eq!(toolbar_metrics(1180.0), (58.0, 8.0));
+        assert_eq!(toolbar_metrics(1179.0), (52.0, 6.0));
+        assert_eq!(toolbar_metrics(900.0), (52.0, 6.0));
     }
 
     #[test]

@@ -80,6 +80,11 @@ pub fn step_yaw(yaw: f32, dir: f32) -> f32 {
     if dir > 0.0 { (s + 1e-3).floor() + 1.0 } else { (s - 1e-3).ceil() - 1.0 }.mul_add(45.0, 0.0)
 }
 
+/// Nearest 45° yaw (where a free right-drag orbit settles on release).
+pub fn snap_yaw(yaw: f32) -> f32 {
+    (yaw / 45.0).round() * 45.0
+}
+
 /// Frame-rate independent approach of `cur` towards `target`.
 fn approach(cur: f32, target: f32, dt: f32) -> f32 {
     let k = 1.0 - (-SMOOTH * dt).exp();
@@ -108,6 +113,7 @@ fn drive_camera(
     window: Option<Single<&Window, With<bevy::window::PrimaryWindow>>>,
     over_ui: Option<Res<PointerOverUi>>,
     mut ui_drag: Local<[bool; 2]>,
+    mut orbiting: Local<bool>,
     mut input: ResMut<CameraInput>,
     mut rig: ResMut<CameraRig>,
     mut cam: Query<(&mut Transform, &mut Projection), With<GameCamera>>,
@@ -135,6 +141,11 @@ fn drive_camera(
     }
     if orbit {
         rig.target_yaw -= motion.delta.x * ORBIT_DEG_PER_PX;
+        *orbiting = true;
+    } else if *orbiting {
+        // Right button let go (or the drag was captured): settle on the nearest 45 degree step.
+        *orbiting = false;
+        rig.target_yaw = snap_yaw(rig.target_yaw);
     }
     let tilt = keys.pressed(KeyCode::PageUp) as i8 - keys.pressed(KeyCode::PageDown) as i8;
     rig.target_pitch = (rig.target_pitch + tilt as f32 * 40.0 * dt).clamp(MIN_PITCH, MAX_PITCH);
@@ -187,6 +198,15 @@ mod tests {
     fn view_half(zoom: f32, aspect: f32) -> (f32, f32) {
         let h = crate::render::VIEW_HEIGHT * zoom * 0.5;
         (h * aspect, h)
+    }
+
+    #[test]
+    fn orbit_release_snaps_to_45() {
+        assert_eq!(snap_yaw(63.0), 45.0);
+        assert_eq!(snap_yaw(68.0), 90.0);
+        assert_eq!(snap_yaw(-20.0), -0.0);
+        assert_eq!(snap_yaw(-30.0), -45.0);
+        assert_eq!(snap_yaw(90.0), 90.0);
     }
 
     #[test]
