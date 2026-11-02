@@ -1,20 +1,19 @@
 # TINY COVE — build map
 
-Harness: Claude Code (cloud, auto mode, ultracode on). Planner: claude-opus-5-5 @ xhigh.
-Roster: opus (claude-opus-5-5), sonnet (claude-sonnet-5-5), haiku (claude-haiku-5-5), fable
-(claude-fable-5-1). All Anthropic, so provider diversity is limited. Reviewers run in fresh
-contexts on a different model or effort than the implementer.
+Harness: Claude Code (cloud, auto mode, ultracode on). The planner is the invoking session.
+The roster is single-provider, so provider diversity is limited. Reviewers run in fresh
+contexts on a different tier or effort than the implementer.
 
-| Role | Model | Effort |
+| Role | Tier | Effort |
 |---|---|---|
-| planner | opus (this session) | xhigh |
-| discussion | opus fresh context | max |
-| designer | opus (3-way judge panel) | high |
-| heavy | opus | high |
-| worker | sonnet | high |
-| ui-impl | sonnet | high |
-| reviewer | opus fresh context (≠ sonnet implementers); sonnet for opus-written tasks | high |
-| drift-check | haiku | low |
+| planner | frontier (this session) | xhigh |
+| discussion | frontier, fresh context | max |
+| designer | frontier (3-way judge panel) | high |
+| heavy | frontier | high |
+| worker | mid-tier | high |
+| ui-impl | mid-tier | high |
+| reviewer | frontier fresh context for mid-tier work, mid-tier for frontier work | high |
+| drift-check | small | low |
 
 **Destination:** SPEC.md "Done". Tests green, release build clean, six headless weather
 shots that are vibrant, PS1 and cel-shaded, `--tool-smoke` passing for all 18 tools, merged
@@ -63,14 +62,14 @@ to `main`.
 ## Tasks
 | # | Task | Files | Model | Deps | State |
 |---|---|---|---|---|---|
-| 0 | Model contract re-theme, keep build green | core/*, src/* (mechanical) | opus | — | done |
-| 1 | Art direction + HUD brief (judge panel) | DESIGN.md | opus ×4 | — | done |
-| A | Dykes, breakwater, gateposts, windbreaks | core/src/walls.rs | opus | 0,1 | done |
-| B | Huts, roundhouses, beacons, roofs, stilts | core/src/buildings.rs | opus | 0,1 | done |
-| C | Tracks, steps, jetty, bridges | core/src/paths.rs | sonnet | 0,1 | done |
-| D | Trees, props | core/src/nature.rs | sonnet | 0,1 | done |
-| E | Island terrain, lagoon, scene rules, demo cove | core/src/terrain.rs, scene.rs, demo.rs | opus | 0 | done |
-| F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | opus | 0,1 | done |
-| G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | sonnet | 0,1 | done |
-| H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | sonnet | 0 | done |
-| V | Verification gate | — | opus/sonnet/haiku | A–H | loop 2 of 3 |
+| 0 | Model contract re-theme, keep build green | core/*, src/* (mechanical) | frontier | — | done |
+| 1 | Art direction + HUD brief (judge panel) | DESIGN.md | frontier ×4 | — | done |
+| A | Dykes, breakwater, gateposts, windbreaks | core/src/walls.rs | frontier | 0,1 | done |
+| B | Huts, roundhouses, beacons, roofs, stilts | core/src/buildings.rs | frontier | 0,1 | done |
+| C | Tracks, steps, jetty, bridges | core/src/paths.rs | mid-tier | 0,1 | done |
+| D | Trees, props | core/src/nature.rs | mid-tier | 0,1 | done |
+| E | Island terrain, lagoon, scene rules, demo cove | core/src/terrain.rs, scene.rs, demo.rs | frontier | 0 | done |
+| F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | frontier | 0,1 | done |
+| G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | mid-tier | 0,1 | done |
+| H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | mid-tier | 0 | done |
+| V | Verification gate | — | mixed tiers | A–H | loop 2 of 3 |
