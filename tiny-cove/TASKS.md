@@ -45,6 +45,20 @@ to `main`.
   test binary. Phase 2b uses a private copy of the warm cache per task (target-F/G/H).
 - Palette tokens missing at phase 2 were faked locally in walls, buildings, paths and terrain
   ('tok' helpers). F adds the real ones; the helpers get swapped at integration.
+- Phase 3 (379b400): integration swapped the tok helpers for palette fns and made the sea edge a
+  ring. Review panel: 7 lenses → 70 findings, of which skeptics confirmed 58 and refuted 12.
+- Fix loop 1 (07e64d8): four parallel groups. All core rules fixed (cut merging, ring seams,
+  jetty height, terraces, canoe depth). Sky shown above a horizon cut, storm/fog anti-mud,
+  slanted rain, integer upscale, vertex-alpha pennant flutter, off-thread preview builds, one
+  warm-light rule, and the Dye/Erase/tree-scatter/orbit-snap fixes. Ponytail findings were
+  reported, not applied.
+- User request: the game is renamed to Tiny Cove (b02a6ba). The folder, package and binary are
+  tiny-cove; the internal crate names keep cairn_cove.
+- Re-verify 2: Done 1–4 pass (127 + 105 tests, 0 warnings, 6 weather shots, smoke 78/78), and
+  every loop-1 core fix holds. Reviewer shot scores: noon 7, dusk-rain 5, night 7, storm 4,
+  seafog 5, snow 7.5. Fix loop 2 targets the look (fog, storm, dusk, sky band, lantern pools),
+  shallow-angle dyke cuts, the camera clamp and the emissive rule.
+- SPEC/DESIGN amended to match the shipped trim rows and the jetty mooring depth (63ac7c9).
 
 ## Tasks
 | # | Task | Files | Model | Deps | State |
@@ -56,7 +70,7 @@ to `main`.
 | C | Tracks, steps, jetty, bridges | core/src/paths.rs | sonnet | 0,1 | done |
 | D | Trees, props | core/src/nature.rs | sonnet | 0,1 | done |
 | E | Island terrain, lagoon, scene rules, demo cove | core/src/terrain.rs, scene.rs, demo.rs | opus | 0 | done |
-| F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | opus | 0,1 | frontier |
-| G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | sonnet | 0,1 | frontier |
-| H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | sonnet | 0 | frontier |
-| V | Verification gate | — | opus/sonnet/haiku | A–H | blocked |
+| F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | opus | 0,1 | done |
+| G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | sonnet | 0,1 | done |
+| H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | sonnet | 0 | done |
+| V | Verification gate | — | opus/sonnet/haiku | A–H | loop 2 of 3 |
