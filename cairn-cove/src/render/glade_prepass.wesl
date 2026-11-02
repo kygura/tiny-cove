@@ -41,6 +41,7 @@ struct Vertex {
     @location(2) uv_b: vec2<f32>,
     @location(3) normal: vec3<f32>,
     @location(4) uv: vec2<f32>,
+    @location(5) color: vec4<f32>,
 }
 
 struct VertexOut {
@@ -50,6 +51,7 @@ struct VertexOut {
     @location(2) unclipped_depth: f32,
     @location(3) @interpolate(linear) uv: vec2<f32>,
     @location(4) world_y: f32,
+    @location(5) world_xz: vec2<f32>,
 }
 
 fn sway(world: vec3<f32>, s: u32) -> vec3<f32> {
@@ -66,6 +68,29 @@ fn sway(world: vec3<f32>, s: u32) -> vec3<f32> {
     let gust = sin(t * (1.7 + 0.12 * strength) + ph) * 0.6 + sin(t * 3.3 + ph * 2.0) * 0.4;
     let lean = 0.5 * min(strength / 6.0, 1.0);
     return world + vec3(dir.x, 0.0, dir.y) * k * (gust + lean) + vec3(0.0, k * 0.35 * gust, 0.0);
+}
+
+// Pennant flutter (vertex colour alpha = 1 - flutter weight); mirrors glade.wesl.
+fn flutter(world: vec3<f32>, alpha: f32) -> vec3<f32> {
+    if alpha >= 0.999 {
+        return world;
+    }
+    let w = globals.wind_tide.xy;
+    let strength = length(w);
+    let dir = select(vec2(1.0, 0.0), w / max(strength, 1e-4), strength > 1e-3);
+    let t = globals.sky_top_time.w;
+    let along = dot(world.xz, dir);
+    let gust = 0.11 + 0.05 * sin(t * (5.0 + 0.4 * min(strength, 10.0)) - along * 3.1) + 0.03 * sin(t * 1.3 + along);
+    return world + vec3(w.x, 0.0, w.y) * (1.0 - clamp(alpha, 0.0, 1.0)) * gust;
+}
+
+// Open sea beyond the horizon line (outline.w metres from the island centre along the
+// camera's ground-forward axis) is cut away so the post pass paints sky there. Mirrors
+// glade.wesl.
+fn past_horizon(xz: vec2<f32>) -> bool {
+    let back = view.world_from_view[2].xyz;
+    let l = length(back.xz);
+    return l > 1e-3 && dot(xz, -back.xz / l) > globals.outline.w;
 }
 
 fn seabed(p: vec2<f32>) -> f32 {
@@ -136,6 +161,7 @@ fn finish(world: vec3<f32>, normal: vec3<f32>, surface: u32, uv: vec2<f32>) -> V
     out.surface = surface;
     out.uv = uv;
     out.world_y = world.y;
+    out.world_xz = world.xz;
     return out;
 }
 
@@ -144,7 +170,7 @@ fn vertex(v: Vertex) -> VertexOut {
     let world = mesh_position_local_to_world(get_world_from_local(v.instance_index), vec4(v.position, 1.0));
     let surface = u32(max(v.uv_b.x, 0.0) + 0.5);
     let n = mesh_normal_local_to_world(v.normal, v.instance_index);
-    return finish(sway(world.xyz, surface), n, surface, v.uv);
+    return finish(flutter(sway(world.xyz, surface), v.color.a), n, surface, v.uv);
 }
 
 @vertex
@@ -176,6 +202,12 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> FragmentOut
     if in.surface == S_WATER && in.world_y < 1e5 && abs(in.world_y) < 0.03 {
         discard;
     }
+@if(NORMAL_PREPASS) {
+    // Sea and sea bed past the horizon line: the post pass paints sky there.
+    if ((in.surface == S_WATER && in.world_y > 1e5) || in.world_y < globals.wind_tide.z - 0.05) && past_horizon(in.world_xz) {
+        discard;
+    }
+}
 @if(NORMAL_PREPASS) {
     var cls = 1.0;
     if in.surface == 16u || in.surface == 23u {

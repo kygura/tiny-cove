@@ -54,7 +54,8 @@ use bevy::{
 use cairn_cove_core::MeshData;
 use std::path::{Path, PathBuf};
 
-/// Internal render height in pixels.
+/// Internal render height in pixels (exactly this at 720p; the window shows it at an integer
+/// scale, see [`display_scale`]).
 pub const LOW_RES_HEIGHT: u32 = 240;
 /// Distance from the camera to its focus point along the view direction. Keep the
 /// camera at this distance when orbiting/panning (zoom with the projection `scale`):
@@ -126,6 +127,7 @@ impl Plugin for RenderPlugin {
         .init_resource::<Environment>()
         .init_resource::<VertexSnap>()
         .init_resource::<SeaField>()
+        .init_resource::<sea::Horizon>()
         .add_systems(PreStartup, setup.in_set(RenderSetup))
         .add_systems(Startup, sea::spawn_sea.run_if(not(resource_exists::<RenderTest>)))
         .add_systems(Update, screenshot_on_f12)
@@ -140,10 +142,25 @@ impl Plugin for RenderPlugin {
     }
 }
 
+/// Integer upscale factor for a window `height` physical px tall: every low-res pixel is
+/// exactly `s × s` window pixels (no uneven rows/columns, no blended edge rows).
+pub fn display_scale(height: u32) -> u32 {
+    (height / LOW_RES_HEIGHT).max(1)
+}
+
+/// Low-res target size for a window of `physical` px: the window divided by the integer
+/// [`display_scale`], rounded up so the upscaled image covers it (cropping < s px at the
+/// right / bottom edge).
+pub fn low_res_for_physical(physical: UVec2) -> UVec2 {
+    let s = display_scale(physical.y);
+    UVec2::new(physical.x.div_ceil(s).max(1), physical.y.div_ceil(s).max(1))
+}
+
 fn low_res_for(window: Option<&Window>) -> UVec2 {
-    let aspect = window.map_or(16.0 / 9.0, |w| w.width() / w.height().max(1.0));
-    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 16.0 / 9.0 };
-    UVec2::new(((LOW_RES_HEIGHT as f32 * aspect).round() as u32).max(1), LOW_RES_HEIGHT)
+    match window.map(|w| w.physical_size()).filter(|p| p.x > 0 && p.y > 0) {
+        Some(p) => low_res_for_physical(p),
+        None => low_res_for_physical(UVec2::new(1280, 720)),
+    }
 }
 
 /// Camera transform looking at `focus` from `yaw`/`pitch` (degrees) at [`CAMERA_DISTANCE`].
@@ -175,7 +192,7 @@ fn setup(
     target.sampler = ImageSampler::nearest();
     let target = images.add(target);
 
-    let _ = buffers.insert(&GLOBALS, ShaderBuffer::from(material::globals_from_env(&env, 0.0, snap.0, field.0)));
+    let _ = buffers.insert(&GLOBALS, ShaderBuffer::from(material::globals_from_env(&env, 0.0, snap.0, field.0, sea::DEFAULT_HORIZON, &[])));
     let atlas = images.add(atlas::atlas_image());
     let heightfield = images.add(sea::heightfield_image(&[], field.0.w as u32));
     commands.insert_resource(GladeAssets {
@@ -241,29 +258,41 @@ fn setup(
     commands.spawn((
         LowResDisplay,
         ImageNode::new(target),
-        Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() },
+        // Sized to exactly s × the low-res image by `fit_to_window`.
+        Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() },
         GlobalZIndex(i32::MIN),
         Pickable::IGNORE,
     ));
 }
 
 fn fit_to_window(
-    window: Query<&Window, (With<PrimaryWindow>, Changed<Window>)>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    ui_scale: Option<Res<UiScale>>,
     mut low: ResMut<LowRes>,
     target: Res<LowResTarget>,
     mut images: ResMut<Assets<Image>>,
+    mut display: Query<&mut Node, With<LowResDisplay>>,
 ) {
     let Ok(window) = window.single() else { return };
     if window.physical_width() == 0 || window.physical_height() == 0 {
         return;
     }
     let size = low_res_for(Some(window));
-    if size == low.size {
-        return;
+    if size != low.size {
+        low.size = size;
+        if let Some(mut image) = images.get_mut(&target.0) {
+            image.resize(Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 });
+        }
     }
-    low.size = size;
-    if let Some(mut image) = images.get_mut(&target.0) {
-        image.resize(Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 });
+    // Show it at exactly s× from the top-left corner (UI px = physical / (dpi × UiScale)).
+    let s = display_scale(window.physical_height()) as f32;
+    let k = (window.scale_factor() * ui_scale.map_or(1.0, |u| u.0)).max(1e-3);
+    let (w, h) = (Val::Px(size.x as f32 * s / k), Val::Px(size.y as f32 * s / k));
+    for mut node in &mut display {
+        if node.width != w || node.height != h {
+            node.width = w;
+            node.height = h;
+        }
     }
 }
 
@@ -291,6 +320,7 @@ fn apply_environment(
 
 fn update_post_settings(
     env: Res<Environment>,
+    horizon: Res<sea::Horizon>,
     time: Res<Time>,
     mut cam: Query<(&Projection, &GlobalTransform, &mut PostSettings), With<GameCamera>>,
 ) {
@@ -299,15 +329,17 @@ fn update_post_settings(
             Projection::Orthographic(o) => (o.near, o.far, o.area.max.max(-o.area.min)),
             _ => (CAMERA_NEAR, CAMERA_FAR, Vec2::new(VIEW_HEIGHT * 0.89, VIEW_HEIGHT * 0.5)),
         };
-        let p = post_settings(&env, tf, near, far, half, time.elapsed_secs_wrapped(), *post);
+        let p = post_settings(&env, tf, near, far, half, horizon.distance(tf.forward().as_vec3()), time.elapsed_secs_wrapped(), *post);
         if p != *post {
             *post = p;
         }
     }
 }
 
-/// Post settings for the camera at `tf` (orthographic, `half` = half view size in metres).
-pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f32, half: Vec2, time: f32, prev: PostSettings) -> PostSettings {
+/// Post settings for the camera at `tf` (orthographic, `half` = half view size in metres,
+/// `horizon` = [`sea::Horizon`] distance where the open sea is cut for the sky).
+#[allow(clippy::too_many_arguments)]
+pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f32, half: Vec2, horizon: f32, time: f32, prev: PostSettings) -> PostSettings {
     let mut p = prev;
     let (right, up, fwd) = (tf.right().as_vec3(), tf.up().as_vec3(), tf.forward().as_vec3());
     let pos = tf.translation();
@@ -318,11 +350,11 @@ pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f3
     p.sky_horizon = env.sky_horizon.extend(env.flash.clamp(0.0, 1.0));
     p.flags.z = env.dark.clamp(0.0, 1.0);
     p.flags.w = time;
-    // Sea line: where the sea plane's far edge sits on screen (uv y, 0 = top).
+    // Sea line: where the sea is cut for the sky (`horizon` m from the island centre along
+    // the ground-forward axis, as in the sea shader), in screen uv y (0 = top).
     let fwd_h = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
-    let focus = crate::weather::ground_focus(pos, fwd);
-    let edge = focus + fwd_h * (sea::SEA_HALF - focus.xz().length()).max(20.0);
-    let horizon = (0.5 - (edge - pos).dot(up) / half.y.max(1e-3) * 0.5).clamp(-4.0, 1.0);
+    let edge = fwd_h * horizon + Vec3::Y * env.tide;
+    let horizon = sea_line_uv(edge - pos, up, half.y);
     p.sky_mid = env.sky_mid.extend(horizon);
     p.outline = env.outline.extend(env.storm.clamp(0.0, 1.0));
     p.foam = env.sea[4].extend(env.wetness.clamp(0.0, 1.0));
@@ -331,13 +363,21 @@ pub fn post_settings(env: &Environment, tf: &GlobalTransform, near: f32, far: f3
     let d = if moon { env.sun_dir } else { crate::weather::sun_raw(env.hour) };
     let alt = d.y.clamp(-1.0, 1.0).asin();
     let x = 0.5 + 0.5 * Vec3::new(d.x, 0.0, d.z).normalize_or_zero().dot(right) * 0.8;
-    let y = horizon - (alt / std::f32::consts::FRAC_PI_2) * (horizon.max(0.0) + 0.2) * 1.4;
-    let kind = if moon { 2.0 } else if alt > -0.05 { 1.0 } else { 0.0 };
+    // Altitude maps into the visible sky band: 0° on the sea line, 90° near the frame top.
+    let y = horizon - (alt / std::f32::consts::FRAC_PI_2) * horizon.max(0.0) * 0.85;
+    // No sun disc behind storm clouds (DESIGN A8: the beacon is the only warm point).
+    let kind = if moon { 2.0 } else if alt > -0.05 && env.storm < 0.5 { 1.0 } else { 0.0 };
     p.disc = env.disc_color.extend(kind);
     p.disc_pos = Vec4::new(x, y, if moon { 2.5 } else { 3.0 }, env.night.clamp(0.0, 1.0));
     p.ycoef = Vec4::new(pos.y, right.y * half.x, up.y * half.y, fwd.y);
     p.bank = Vec4::new(env.sea_fog.clamp(0.0, 1.0), env.fog_top, 0.0, 0.0);
     p
+}
+
+/// Screen uv y (0 = top) of a point `rel` (relative to the camera) for an orthographic view
+/// with up axis `up` and half height `half_h` metres. Clamped to a sane range.
+fn sea_line_uv(rel: Vec3, up: Vec3, half_h: f32) -> f32 {
+    (0.5 - rel.dot(up) / half_h.max(1e-3) * 0.5).clamp(-4.0, 1.0)
 }
 
 /// Converts cairn_cove_core mesh buffers to a Bevy mesh with POSITION, NORMAL, UV_0, COLOR
@@ -381,10 +421,10 @@ pub fn lantern_light(intensity_lm: f32, range: f32) -> PointLight {
     }
 }
 
-/// Maps a window cursor position (logical px, top-left origin) to low-res pixels
-/// (the low-res image is stretched over the whole window).
-pub fn window_to_low_res(cursor: Vec2, window_size: Vec2, low: UVec2) -> Vec2 {
-    cursor * low.as_vec2() / window_size.max(Vec2::ONE)
+/// Maps a window cursor position (physical px, top-left origin) to low-res pixels (the
+/// low-res image is shown at the integer `scale` from the top-left corner).
+pub fn window_to_low_res(cursor_physical: Vec2, scale: u32) -> Vec2 {
+    cursor_physical / scale.max(1) as f32
 }
 
 /// World ray under `window_cursor` (e.g. `window.cursor_position()`) for the
@@ -396,8 +436,8 @@ pub fn cursor_ray(
     cam_tf: &GlobalTransform,
     low_res: UVec2,
 ) -> Option<Ray3d> {
-    let p = window_to_low_res(window_cursor, window.size(), low_res);
-    cam.viewport_to_world(cam_tf, p).ok()
+    let p = window_to_low_res(window_cursor * window.scale_factor(), display_scale(window.physical_height()));
+    cam.viewport_to_world(cam_tf, p.min(low_res.as_vec2())).ok()
 }
 
 /// Saves `image` (PNG by extension), creating parent directories.
@@ -436,15 +476,25 @@ mod tests {
 
     #[test]
     fn cursor_scales_to_low_res() {
-        let low = UVec2::new(427, 240);
-        let win = Vec2::new(1280.0, 720.0);
-        assert_eq!(window_to_low_res(Vec2::ZERO, win, low), Vec2::ZERO);
-        assert_eq!(window_to_low_res(win, win, low), low.as_vec2());
+        assert_eq!(window_to_low_res(Vec2::ZERO, 3), Vec2::ZERO);
+        assert_eq!(window_to_low_res(Vec2::new(1280.0, 720.0), 3), Vec2::new(1280.0 / 3.0, 240.0));
+        assert_eq!(window_to_low_res(Vec2::new(5.0, 5.0), 0), Vec2::new(5.0, 5.0));
     }
 
+    /// Integer upscale: every low-res pixel is exactly s × s window pixels and the image
+    /// covers the window (crop < s px), so no row or column is 2 px or blended.
     #[test]
-    fn low_res_tracks_aspect() {
+    fn low_res_is_an_integer_fraction_of_the_window() {
         assert_eq!(low_res_for(None), UVec2::new(427, 240));
+        for (w, h) in [(1280u32, 720u32), (1920, 1080), (1366, 768), (2560, 1440), (800, 600), (300, 200)] {
+            let s = display_scale(h);
+            let low = low_res_for_physical(UVec2::new(w, h));
+            assert!(low.y >= LOW_RES_HEIGHT.min(h), "{w}x{h}");
+            assert!(low.x * s >= w && low.x * s < w + s, "{w}x{h}: width covers with < s crop");
+            assert!(low.y * s >= h && low.y * s < h + s, "{w}x{h}: height covers with < s crop");
+        }
+        assert_eq!(low_res_for_physical(UVec2::new(1280, 720)), UVec2::new(427, 240));
+        assert_eq!(display_scale(720), 3);
     }
 
     #[test]
