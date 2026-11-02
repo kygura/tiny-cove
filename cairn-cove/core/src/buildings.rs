@@ -456,7 +456,7 @@ struct Site {
     /// Lowest ground sample under the footprint.
     lo: f32,
     stilts: bool,
-    /// Floor level (top of the stilt deck, or just above the lowest ground).
+    /// Floor level (top of the stilt deck, or just above the lowest and highest ground).
     floor: f32,
 }
 
@@ -487,7 +487,9 @@ fn site(house: &House, poly: &[Vec2], terrain: &Terrain) -> Site {
         let f = hi + explicit.max(MIN_STILT);
         water.map_or(f, |l| f.max(l.max(SEA_LEVEL) + WATER_CLEAR))
     } else {
-        lo + 0.1
+        // Levelled ground is flat to a few cm; where a neighbour's pad leaves a lip the grid
+        // cannot smooth out, the floor still clears every bit of ground under it.
+        (lo + 0.1).max(hi + 0.02)
     };
     Site { lo, stilts, floor }
 }
@@ -1767,7 +1769,7 @@ mod tests {
     /// depend on the island layout.
     fn ground() -> Terrain {
         let poly = vec![Vec2::new(-40.0, -40.0), Vec2::new(40.0, -40.0), Vec2::new(40.0, 40.0), Vec2::new(-40.0, 40.0)];
-        Terrain::build(1, &[], &[crate::terrain::FlattenRegion { poly, height: Some(1.0), margin: 1.0 }])
+        Terrain::build(1, &[], &[crate::terrain::FlattenRegion { poly, height: Some(1.0), margin: 1.0, keep: false }])
     }
 
     fn rect(hx: f32, hz: f32) -> Footprint {

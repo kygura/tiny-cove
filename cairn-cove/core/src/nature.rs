@@ -6,7 +6,7 @@
 
 use crate::geom;
 use crate::mesh::{hash2, Marker, MarkerKind, MeshData, Rng, Surface};
-use crate::model::{ClutterKind, Colors, PaintLayer, Placed, PropKind, TreeKind, GLADE_HALF};
+use crate::model::{ClutterKind, Colors, PaintLayer, Placed, PropKind, TreeKind, GLADE_HALF, TIDE_RANGE};
 use crate::palette;
 use crate::terrain::Terrain;
 use glam::{Vec2, Vec3};
@@ -393,9 +393,12 @@ fn canoe(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
 fn fish(m: &mut MeshData, top: Vec3, len: f32, yaw: f32, col: Vec3) {
     let dx = V(yaw.cos(), 0.0, yaw.sin());
     let w = len * 0.2;
+    let from = m.vertex_count();
     let p = |x: f32, y: f32| top + dx * x + Vec3::Y * y;
     quad2(m, p(0.0, 0.0), p(-w, -len * 0.4), p(0.0, -len * 0.85), p(w, -len * 0.4), col, Surface::Petal);
     tri2(m, p(0.0, -len * 0.8), p(-w * 1.1, -len * 1.1), p(w * 1.1, -len * 1.1), dim(col, 0.85), Surface::Petal);
+    // Swings a little from its hook: flutter weight up to 0.3 at the tail.
+    m.flutter(from, |v| 0.3 * (top.y - v.y) / (len * 1.1));
 }
 
 fn drying_rack(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
@@ -611,6 +614,7 @@ fn pennant(m: &mut MeshData, rng: &mut Rng, colors: Colors) -> Vec<Marker> {
     let len = 2.9;
     let wave = |t: f32| V(0.1 + len * t, 0.0, 0.2 * (t * 7.0).sin() * t);
     let band = |i: usize| if i % 2 == 0 { palette::sailcloth() } else { palette::pigment(colors.trim as u32 + (i as u32 / 2)) };
+    let cloth = m.vertex_count();
     for i in 0..seg {
         let (t0, t1) = (i as f32 / seg as f32, (i + 1) as f32 / seg as f32);
         let (p0, p1) = (wave(t0), wave(t1));
@@ -620,6 +624,8 @@ fn pennant(m: &mut MeshData, rng: &mut Rng, colors: Colors) -> Vec<Marker> {
     }
     let end = wave(1.0);
     tri2(m, end + V(0.0, top - 0.2 - 0.06, 0.0), end + V(0.0, top - 0.06, 0.0), end + V(0.25, top - 0.06 - 0.03, 0.0), trim, Surface::Hide);
+    // Pinned at the pole, free at the swallow tail.
+    m.flutter(cloth, |v| (v.x - 0.1) / len);
     vec![Marker { kind: MarkerKind::Flag, pos: V(0.1, top, 0.0), dir: Vec3::X }]
 }
 
@@ -726,9 +732,10 @@ pub fn placed_mesh(placed: &Placed, terrain: &Terrain, seed: u64) -> (MeshData, 
     let y = terrain.height(at);
     let y = if y.is_finite() { y } else { 0.0 };
 
-    // A canoe on water floats: the Bevy side spawns it as a bobbing entity.
+    // A canoe on water deep enough at low tide floats: the Bevy side spawns it as a bobbing
+    // entity. Over shallows that dry out it is drawn as a hull lying on the bed.
     if placed.kind == PropKind::Clutter(ClutterKind::Canoe) {
-        if let Some(level) = terrain.water_level(at).filter(|l| l.is_finite()) {
+        if let Some(level) = terrain.boat_water(at) {
             let d = Vec2::from_angle(angle);
             return (MeshData::default(), vec![Marker { kind: MarkerKind::Boat, pos: V(at.x, level, at.y), dir: V(d.x, 0.0, d.y) }]);
         }
@@ -758,6 +765,12 @@ pub fn placed_mesh(placed: &Placed, terrain: &Terrain, seed: u64) -> (MeshData, 
         mk.pos = V(at.x + q.x, y + mk.pos.y * scale, at.y + q.y);
         let d = rot.rotate(Vec2::new(mk.dir.x, mk.dir.z));
         mk.dir = V(d.x, mk.dir.y, d.y);
+    }
+    // Nothing burns under water: a firepit or lantern post dropped in the sea or a lagoon
+    // keeps its mesh but loses flames and lights below the (high-tide) surface.
+    if let Some(level) = terrain.water_level(at) {
+        let top = if terrain.is_sea(at) { level + TIDE_RANGE } else { level };
+        markers.retain(|k| !matches!(k.kind, MarkerKind::Fire | MarkerKind::Lantern) || k.pos.y > top);
     }
     (m, markers)
 }
@@ -988,6 +1001,7 @@ fn shell(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::SEA_LEVEL;
 
     const TREES: [TreeKind; 5] = [TreeKind::SeaPine, TreeKind::Palm, TreeKind::Cypress, TreeKind::Fig, TreeKind::Snag];
     const CLUTTER: [ClutterKind; 14] = [
@@ -1134,6 +1148,56 @@ mod tests {
                 assert!(!(mx > 0.05 && (mx - mn) / mx < 0.04 && mx < 0.9), "{kind:?} grey vertex {c:?}");
             }
         }
+    }
+
+    /// Cloth flutters (vertex alpha < 1), pinned at the pole and freest at the tip; drying fish
+    /// sway gently; every other prop is rigid (alpha exactly 1).
+    #[test]
+    fn only_cloth_flutters() {
+        let alphas = |m: &MeshData| m.colors.iter().map(|c| c[3]).collect::<Vec<f32>>();
+        let (m, _) = put(PropKind::Clutter(ClutterKind::Pennant), 1.0);
+        let a = alphas(&m);
+        assert!(a.iter().any(|&x| x == 1.0), "pole is rigid");
+        let tip = m.positions.iter().map(|p| p[0]).fold(f32::MIN, f32::max);
+        for (p, x) in m.positions.iter().zip(&a) {
+            if p[0] > tip - 0.3 {
+                assert!(*x < 0.1, "tip flutters freely: {x}");
+            }
+            if p[0] < at().x + 0.11 {
+                assert_eq!(*x, 1.0, "pinned at the pole");
+            }
+        }
+        let (rack, _) = put(PropKind::Clutter(ClutterKind::DryingRack), 1.0);
+        let lo = alphas(&rack).into_iter().fold(1.0, f32::min);
+        assert!((0.69..1.0).contains(&lo), "fish sway gently: {lo}");
+        for kind in TREES.map(PropKind::Tree).into_iter().chain(CLUTTER.map(PropKind::Clutter)) {
+            if !matches!(kind, PropKind::Clutter(ClutterKind::Pennant | ClutterKind::DryingRack)) {
+                assert!(alphas(&put(kind, 1.0).0).iter().all(|&x| x == 1.0), "{kind:?} is rigid");
+            }
+        }
+    }
+
+    /// Fire and lanterns never burn under water; a canoe floats only where it stays afloat at
+    /// low tide, and lies on the bed over shallows.
+    #[test]
+    fn props_over_water() {
+        let t = terrain();
+        let cove = t.plan().cove;
+        let find = |lo: f32, hi: f32| (0..400).map(|i| cove * (i as f32 * 0.1)).find(|p| (lo..hi).contains(&t.height(*p))).unwrap();
+        let (shallow, deep) = (find(-0.45, -0.1), find(-30.0, -3.0));
+        assert!(t.boat_water(shallow).is_none() && t.boat_water(deep) == Some(SEA_LEVEL));
+        let lit = |k: ClutterKind, spot: Vec2| {
+            let (m, mk) = put_at(PropKind::Clutter(k), 1.0, spot, 7);
+            assert!(!m.is_empty());
+            mk.iter().any(|x| matches!(x.kind, MarkerKind::Fire | MarkerKind::Lantern))
+        };
+        assert!(!lit(ClutterKind::Firepit, shallow) && !lit(ClutterKind::Firepit, deep));
+        // A lantern post's lamp stands clear of a shallow flat but not of deep water.
+        assert!(lit(ClutterKind::LanternPost, shallow) && !lit(ClutterKind::LanternPost, deep));
+        let (m, mk) = put_at(PropKind::Clutter(ClutterKind::Canoe), 1.0, deep, 7);
+        assert!(m.is_empty() && mk.len() == 1 && mk[0].kind == MarkerKind::Boat);
+        let (m, mk) = put_at(PropKind::Clutter(ClutterKind::Canoe), 1.0, shallow, 7);
+        assert!(!m.is_empty() && mk.is_empty(), "beached hull over a dry-at-low-tide flat");
     }
 
     #[test]
