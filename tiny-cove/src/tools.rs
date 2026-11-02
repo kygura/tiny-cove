@@ -9,7 +9,7 @@
 //! - Undo / redo go straight to [`crate::world::Glade`].
 
 use crate::camera::{CameraInput, CameraRig};
-use crate::render::{GameCamera, LowRes, RenderTest, VIEW_HEIGHT, cursor_ray, display_scale};
+use crate::render::{GameCamera, LowRes, RenderTest, VIEW_HEIGHT, cursor_ray};
 use crate::world::{BuiltScene, Glade};
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
@@ -1495,9 +1495,10 @@ fn prop_reason(terrain: &Terrain, s: &ToolSettings, p: Vec2) -> Option<&'static 
 }
 
 /// Inverse of the real cursor path ([`cursor_ray`]: window logical px -> physical -> low-res at the
-/// integer [`display_scale`]), so a synthetic cursor lands on the exact low-res pixel.
+/// integer display scale, inside the letterbox), in logical window px, so a synthetic cursor lands on
+/// the exact low-res pixel.
 fn low_res_to_window(v: Vec2, w: &Window) -> Vec2 {
-    v * display_scale(w.physical_height()) as f32 / w.scale_factor()
+    crate::render::low_res_to_window(v, w.physical_size()) / w.scale_factor()
 }
 
 fn prop_invalid(cx: &Cx, p: Vec2) -> Option<&'static str> {
@@ -1752,8 +1753,9 @@ mod tests {
         let w = Window { resolution: bevy::window::WindowResolution::new(1366, 768), ..default() };
         let v = Vec2::new(300.0, 100.0);
         let win = low_res_to_window(v, &w);
-        assert_eq!(win, Vec2::new(900.0, 300.0));
-        assert_eq!(crate::render::window_to_low_res(win * w.scale_factor(), display_scale(w.physical_height())), v);
+        assert_eq!(win, Vec2::new(900.0, 300.0) + crate::render::display_offset(w.physical_size()) / w.scale_factor());
+        let phys = w.physical_size();
+        assert_eq!(crate::render::window_to_low_res(win * w.scale_factor(), crate::render::display_scale(phys.y), crate::render::display_offset(phys)), v);
     }
 
     #[test]
