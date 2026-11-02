@@ -451,10 +451,18 @@ struct Edge {
     dist: f32,
     half_len: f32,
     sea: bool,
-    /// Where a canoe moors off this edge: the nearest spot out from it that stays afloat at
-    /// low tide (`Terrain::boat_water`), if any within reach.
-    boat: Option<Vec2>,
+    /// Where a canoe moors alongside this edge, and its bow direction: the first spot (middle
+    /// first, then sliding towards and past either end, nearest the edge first) that stays
+    /// afloat at low tide (`Terrain::boat_water`), if any within reach.
+    boat: Option<(Vec2, Vec2)>,
 }
+
+/// Footprint of a moored canoe (`nature::canoe`) on the water, in metres: the hull runs this
+/// far either side of the marker along its `dir`, is this wide either side of its keel, and
+/// carries its outrigger float this far out on the `dir.perp()` side.
+pub const CANOE_HALF_LEN: f32 = 1.9;
+pub const CANOE_HALF_BEAM: f32 = 0.35;
+pub const CANOE_OUTRIGGER: f32 = 1.45;
 
 /// A jetty: plank deck on log piles that run down to the seabed, mooring posts with rope coils
 /// at the corners, a ladder to the water and one or two canoes alongside. On land (no sea
@@ -497,10 +505,19 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
         .into_iter()
         .map(|(out, along, dist, half_len)| {
             let sea = terrain.is_sea(p.center + out * (dist + 1.1));
-            let boat = [1.1, 1.6, 2.2, 2.8]
+            // Hull parallel to the edge with its outrigger on the far side, so neither the hull
+            // nor the float reaches under the deck and its piles.
+            let dir = Vec2::new(out.y, -out.x);
+            let afloat = |q: Vec2| {
+                terrain.boat_water(q).is_some() && [-1.0, 1.0].into_iter().all(|sg| terrain.is_sea(q + dir * (sg * CANOE_HALF_LEN)))
+            };
+            let slide = [0.0, 0.5, -0.5, 1.0, -1.0].map(|t| t * half_len);
+            let boat = slide
                 .into_iter()
-                .map(|off| p.center + out * (dist + off))
-                .find(|q| terrain.is_sea(*q) && terrain.boat_water(*q).is_some());
+                .chain([half_len + 1.5, -half_len - 1.5])
+                .flat_map(|t| [1.1, 1.6, 2.2, 2.8].map(|off| p.center + out * (dist + off) + along * t))
+                .find(|q| afloat(*q))
+                .map(|q| (q, dir));
             Edge { out, along, dist, half_len, sea, boat }
         })
         .collect();
@@ -579,16 +596,16 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
         mk.push(Marker { kind: MarkerKind::Perch, pos: v3(world(Vec2::new(sx * (hx - ins), sz * (hz - ins))), perch_y), dir: Vec3::Y });
     }
 
-    // Canoes alongside: prefer the long sea edges, one or two. `dir` runs along the edge.
-    let mut order: Vec<usize> = (0..4).filter(|&i| edges[i].sea && edges[i].boat.is_some()).collect();
-    order.sort_by(|&a, &b| edges[b].half_len.total_cmp(&edges[a].half_len));
+    // Canoes alongside the long edges, one or two, parallel to the jetty and clear of it (a
+    // jetty whose deep water is only off its head moors them beside the head, not across it).
+    let long = hx.max(hz) - 1e-3;
+    let order: Vec<usize> = (0..4).filter(|&i| edges[i].half_len >= long && edges[i].boat.is_some()).collect();
     let mut boats = vec![false; 4];
     for (rank, &i) in order.iter().take(2).enumerate() {
         if rank == 0 || r.f() < 0.5 {
-            let e = &edges[i];
             boats[i] = true;
-            if let Some(q) = e.boat {
-                mk.push(Marker { kind: MarkerKind::Boat, pos: v3(q, SEA_LEVEL), dir: flat(e.along) });
+            if let Some((q, dir)) = edges[i].boat {
+                mk.push(Marker { kind: MarkerKind::Boat, pos: v3(q, SEA_LEVEL), dir: flat(dir) });
             }
         }
     }
@@ -1255,6 +1272,64 @@ mod tests {
         assert!(flat.is_sea(c) && flat.boat_water(c).is_none());
         let (_, mk) = platform_mesh(&jetty(c, 1.0), &flat, 1);
         assert!(!mk.iter().any(|k| k.kind == MarkerKind::Boat));
+    }
+
+    /// Every moored canoe (hull, beam and outrigger float) keeps clear of the deck footprint
+    /// and its piles: its keel is at least a hull's half-width further out than the deck edge.
+    fn assert_canoes_clear(p: &Platform, mk: &[Marker]) -> usize {
+        let (ax, az) = (Vec2::from_angle(p.angle), Vec2::from_angle(p.angle).perp());
+        let half = p.half.abs() + Vec2::splat(0.15);
+        let inside = |q: Vec2| {
+            let l = q - p.center;
+            l.dot(ax).abs() < half.x && l.dot(az).abs() < half.y
+        };
+        let mut n = 0;
+        for b in mk.iter().filter(|k| k.kind == MarkerKind::Boat) {
+            let (q, d) = (Vec2::new(b.pos.x, b.pos.z), Vec2::new(b.dir.x, b.dir.z));
+            let l = q - p.center;
+            let out = (l.dot(ax).abs() - p.half.x.abs()).max(l.dot(az).abs() - p.half.y.abs());
+            assert!(out >= CANOE_HALF_BEAM + 0.15, "keel only {out} m off the deck");
+            for i in 0..=8 {
+                let x = -CANOE_HALF_LEN + 2.0 * CANOE_HALF_LEN * i as f32 / 8.0;
+                for z in [-CANOE_HALF_BEAM, 0.0, CANOE_HALF_BEAM, CANOE_OUTRIGGER] {
+                    let s = q + d * x + d.perp() * z;
+                    assert!(!inside(s), "canoe at {q} reaches the deck at {s}");
+                }
+            }
+            n += 1;
+        }
+        n
+    }
+
+    /// Canoes moor alongside, clear of the deck and piles, whether the deep water is off the
+    /// whole jetty or only off its seaward head.
+    #[test]
+    fn moored_canoes_clear_the_jetty() {
+        let c = Vec2::new(-12.0, 6.0);
+        let terr = sea_at(c);
+        let mut moored = 0;
+        for (half, angle) in [(Vec2::new(2.5, 1.2), 0.4), (Vec2::new(1.2, 2.5), 1.3), (Vec2::new(1.5, 1.5), 0.0)] {
+            for seed in 0..4 {
+                let p = Platform { center: c, half, angle, height: 1.0, colors: Colors::default() };
+                moored += assert_canoes_clear(&p, &platform_mesh(&p, &terr, seed).1);
+            }
+        }
+        // Shore jetties: shallow along the sides near the beach, deep off the head.
+        let shore_terr = Terrain::build(7, &[], &[]);
+        let cove = shore_terr.plan().cove;
+        let shore = (0..400).map(|i| i as f32 * 0.1).find(|r| shore_terr.is_sea(cove * *r)).unwrap();
+        for hx in [4.0, 5.0, 6.0, 8.0, 10.0] {
+            for (hz, turn) in [(1.0, 0.0), (1.5, 0.3), (0.8, -0.3)] {
+                let p = Platform { center: cove * shore, half: Vec2::new(hx, hz), angle: cove.to_angle() + turn, height: 1.5, colors: Colors::default() };
+                let (_, mk) = platform_mesh(&p, &shore_terr, 1);
+                for b in mk.iter().filter(|k| k.kind == MarkerKind::Boat) {
+                    // Parallel to the jetty's long axis.
+                    assert!(b.dir.dot(flat(Vec2::from_angle(p.angle))).abs() > 0.999, "hx {hx}");
+                }
+                moored += assert_canoes_clear(&p, &mk);
+            }
+        }
+        assert!(moored > 12, "{moored}");
     }
 
     #[test]
