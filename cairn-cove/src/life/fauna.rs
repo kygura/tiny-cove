@@ -283,6 +283,10 @@ pub fn boat_level(marker_y: f32, tide_level: f32) -> f32 {
     if (marker_y - SEA_LEVEL).abs() < 0.02 { tide_level } else { marker_y }
 }
 
+/// How deep a floating hull sits (m). Shallow, so the planking and painted bow ride clearly
+/// above the swell instead of sinking into the foam.
+pub const CANOE_DRAFT: f32 = 0.06;
+
 /// One canoe hull per trim colour, built by the core prop code (so afloat canoes match the
 /// beached ones), centred on the origin with the waterline at y = 0 and the bow towards +x.
 /// Empty when the terrain has no dry spot to build on.
@@ -300,7 +304,7 @@ pub fn canoe_meshes(terrain: &Terrain, seed: u64) -> Vec<MeshData> {
             let (mut m, _) = placed_mesh(&placed, terrain, seed);
             let keel = m.positions.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
             for p in &mut m.positions {
-                *p = [p[0] - at.x, p[1] - keel - 0.14, p[2] - at.y];
+                *p = [p[0] - at.x, p[1] - keel - CANOE_DRAFT, p[2] - at.y];
             }
             m
         })
@@ -529,6 +533,7 @@ mod tests {
             let (lo, hi) = m.bounds().unwrap();
             assert!(lo.is_finite() && hi.is_finite());
             assert!(lo.y < 0.0 && hi.y > 0.0, "waterline inside the hull: {lo} {hi}");
+            assert!(lo.y >= -CANOE_DRAFT - 1e-4, "keel just under the water: {lo}");
             assert!(lo.x.abs() < 4.0 && hi.x.abs() < 4.0 && lo.z.abs() < 4.0 && hi.z.abs() < 4.0, "centred: {lo} {hi}");
         }
         // Trim colours differ between variants.

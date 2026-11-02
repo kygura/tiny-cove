@@ -5,9 +5,11 @@
 //! fireflies are four CPU particle clouds, one mesh each. Everything re-targets when
 //! [`BuiltScene`] changes. Behaviour lives in `fauna` (creatures) and `fx` (particles).
 //!
-//! Inputs: `Environment` (hour, night, wetness, wind), `Weather` (beacons burn in storm / fog),
-//! the tide computed as `Tide::at(hour)` (same constants as the sea) and the scene markers
-//! `Perch`, `Fire`, `Boat` and `ChimneySmoke`.
+//! Inputs: `Environment` (hour, night, storm, sea fog, wetness, wind), the tide computed as
+//! `Tide::at(hour)` (same constants as the sea), the scene markers `Perch`, `Fire`, `Boat` and
+//! `ChimneySmoke`, and the committed document (a floating canoe's trim and size). Flames follow
+//! [`warm_light`], the same rule as the fire lights. Flames and smoke go to the fires and smoke
+//! holes nearest the camera focus.
 
 mod fauna;
 mod fx;
@@ -15,16 +17,15 @@ mod fx;
 use crate::camera::CameraRig;
 use crate::env::{Environment, Tide};
 use crate::render::{GladeAssets, particle_mesh, to_bevy_mesh, write_particle_mesh};
-use crate::weather::Weather;
-use crate::world::{BuiltScene, Glade};
+use crate::weather::night_weight;
+use crate::world::{BuiltInfo, BuiltScene, Glade, WarmLight, nearest_by, warm_light};
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use cairn_cove_core::{
-    MarkerKind, Scene, TRIM_COLORS,
+    ClutterKind, Document, MarkerKind, PropKind, Scene, Structure, TRIM_COLORS,
     mesh::{Rng, hash_f, hash2},
     terrain::glade_dist,
 };
 use fauna::{Crab, Gull, GullWorld, Shore};
-use fx::FireKind;
 use std::{collections::HashSet, sync::Arc};
 
 const GULLS: usize = 7;
@@ -138,10 +139,12 @@ struct LifeWorld {
     deep_sea: Vec<Vec2>,
     /// Dry sand near the water where crabs live (1 m grid).
     beach: Vec<Vec2>,
-    /// Fire markers (capped) with their kind.
-    fires: Vec<(Vec3, FireKind)>,
-    /// Smoke hole markers (capped).
+    /// Every fire marker with its kind (flames go to the nearest lit ones).
+    fires: Vec<(Vec3, WarmLight)>,
+    /// Every smoke hole marker (smoke rises from the nearest ones).
     chimneys: Vec<Vec3>,
+    /// Floating canoes (capped), with the trim and scale of what they belong to.
+    boats: Vec<Boat>,
     /// Firefly home points over grass.
     fly_homes: Vec<Vec3>,
 }
@@ -155,9 +158,9 @@ impl LifeWorld {
     }
 }
 
-fn refresh_world(built: Res<BuiltScene>, glade: Res<Glade>, mut world: ResMut<LifeWorld>) {
+fn refresh_world(built: Res<BuiltScene>, info: Res<BuiltInfo>, glade: Res<Glade>, mut world: ResMut<LifeWorld>) {
     // Only the committed document drives life; previews would rebuild every frame of a drag.
-    if glade.has_preview() && world.scene.is_some() {
+    if info.preview && world.scene.is_some() {
         return;
     }
     let Some(scene) = &built.0 else { return };
@@ -192,8 +195,12 @@ fn refresh_world(built: Res<BuiltScene>, glade: Res<Glade>, mut world: ResMut<Li
 
     for m in scene.markers.iter() {
         match m.kind {
-            MarkerKind::Fire if w.fires.len() < MAX_FIRES => w.fires.push((m.pos, fx::fire_kind(m.pos, terrain))),
-            MarkerKind::ChimneySmoke if w.chimneys.len() < MAX_CHIMNEYS => w.chimneys.push(m.pos),
+            MarkerKind::Fire => w.fires.push((m.pos, WarmLight::of_fire(m.pos, terrain))),
+            MarkerKind::ChimneySmoke => w.chimneys.push(m.pos),
+            MarkerKind::Boat if w.boats.len() < MAX_BOATS => {
+                let (trim, scale) = boat_look(glade.committed(), m.pos);
+                w.boats.push(Boat { pos: m.pos, dir: m.dir, trim, scale });
+            }
             _ => {}
         }
     }
@@ -221,14 +228,14 @@ fn refresh_world(built: Res<BuiltScene>, glade: Res<Glade>, mut world: ResMut<Li
 
 /// Beacon tops first, then up to three distinct tall perches (or the highest part's top as a
 /// fallback): the places gulls circle.
-fn tower_tops(scene: &Scene, fires: &[(Vec3, FireKind)]) -> Vec<Vec3> {
+fn tower_tops(scene: &Scene, fires: &[(Vec3, WarmLight)]) -> Vec<Vec3> {
     let mut out: Vec<Vec3> = Vec::new();
     let add = |p: Vec3, out: &mut Vec<Vec3>| {
         if out.len() < 4 && out.iter().all(|q| (q.xz() - p.xz()).length() > 5.0) {
             out.push(p);
         }
     };
-    for (p, _) in fires.iter().filter(|(_, k)| *k == FireKind::Beacon) {
+    for (p, _) in fires.iter().filter(|(_, k)| *k == WarmLight::Beacon) {
         add(*p, &mut out);
     }
     let mut perches: Vec<Vec3> = scene.markers.iter().filter(|m| m.kind == MarkerKind::Perch).map(|m| m.pos).collect();
@@ -243,6 +250,38 @@ fn tower_tops(scene: &Scene, fires: &[(Vec3, FireKind)]) -> Vec<Vec3> {
         }
     }
     out
+}
+
+/// A floating canoe: where it rides, which way the bow points, and its trim and scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Boat {
+    pos: Vec3,
+    dir: Vec3,
+    trim: u8,
+    scale: f32,
+}
+
+/// Trim and scale for the `Boat` marker at `pos`: those of the floating canoe placed there, else
+/// the trim of the jetty it is moored at (DESIGN: jetty trim paints its canoes' strakes), else a
+/// hash of the position.
+fn boat_look(doc: &Document, pos: Vec3) -> (u8, f32) {
+    let p = pos.xz();
+    let placed = doc.structures.iter().find_map(|(_, s)| match s {
+        Structure::Placed(c) if c.kind == PropKind::Clutter(ClutterKind::Canoe) && c.at.distance(p) < 0.05 => {
+            Some((c.colors.trim, if c.scale.is_finite() { c.scale.clamp(0.3, 3.0) } else { 1.0 }))
+        }
+        _ => None,
+    });
+    let jetty = || {
+        let jetties = doc.structures.iter().filter_map(|(_, s)| match s {
+            Structure::Platform(j) if j.center.distance(p) < j.half.length() + 3.0 => Some(j),
+            _ => None,
+        });
+        jetties.min_by(|a, b| a.center.distance(p).total_cmp(&b.center.distance(p))).map(|j| (j.colors.trim, 1.0))
+    };
+    let hashed = || ((hash2(LIFE_SEED, pos.x, pos.z) % TRIM_COLORS as u64) as u8, 1.0);
+    let (trim, scale) = placed.or_else(jetty).unwrap_or_else(hashed);
+    (trim % TRIM_COLORS, scale)
 }
 
 // ---------------------------------------------------------------- components + resources
@@ -449,14 +488,13 @@ fn sync_boats(
     if hulls.is_empty() {
         return;
     }
-    for m in scene.markers.iter().filter(|m| m.kind == MarkerKind::Boat).take(MAX_BOATS) {
-        let h = hash2(LIFE_SEED, m.pos.x, m.pos.z);
-        let yaw = -m.dir.z.atan2(m.dir.x);
+    for b in &world.boats {
+        let yaw = -b.dir.z.atan2(b.dir.x);
         commands.spawn((
-            Mesh3d(hulls[(h % TRIM_COLORS as u64) as usize % hulls.len()].clone()),
+            Mesh3d(hulls[b.trim as usize % hulls.len()].clone()),
             MeshMaterial3d(assets.opaque.clone()),
-            Transform::from_translation(m.pos).with_rotation(Quat::from_rotation_y(yaw)),
-            Canoe { pos: m.pos, yaw, phase: hash_f(5, m.pos.x, m.pos.z) * std::f32::consts::TAU },
+            Transform::from_translation(b.pos).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(b.scale)),
+            Canoe { pos: b.pos, yaw, phase: hash_f(5, b.pos.x, b.pos.z) * std::f32::consts::TAU },
         ));
     }
 }
@@ -508,30 +546,34 @@ fn update_leaps(time: Res<Time>, world: Res<LifeWorld>, rig: Option<Res<CameraRi
 fn update_clouds(
     time: Res<Time>,
     env: Res<Environment>,
-    weather: Res<Weather>,
     world: Res<LifeWorld>,
     leaps: Res<Leaps>,
+    rig: Option<Res<CameraRig>>,
     clouds: Query<(&Mesh3d, &Cloud)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let t = time.elapsed_secs();
     let tide = Tide::at(env.hour).level;
-    let lit = |kind: FireKind| fx::fire_lit(kind, env.hour, weather.kind);
+    let focus = rig.map_or(Vec3::ZERO, |r| r.focus);
+    // Same rule as the fire lights; a fire burns once its light is at least half up.
+    let lit = |kind: WarmLight| warm_light(kind, env.hour, env.storm, env.sea_fog) > 0.5;
+    let fires = nearest_by(world.fires.iter().filter(|(_, k)| lit(*k)), |f| f.0, focus, MAX_FIRES);
+    let salt = |p: Vec3| hash_f(0x5A17, p.x, p.z) * 7.0;
     for (m, kind) in &clouds {
         let Some(mut mesh) = meshes.get_mut(&m.0) else { continue };
         let mut ps = Vec::new();
         match kind {
             Cloud::Flame => {
-                for (k, (pos, fk)) in world.fires.iter().enumerate().filter(|(_, (_, fk))| lit(*fk)) {
-                    fx::flame_particles(*pos, *fk, t, k as f32 * 0.31, env.wind, &mut ps);
+                for (pos, fk) in &fires {
+                    fx::flame_particles(*pos, *fk, t, salt(*pos), env.wind, &mut ps);
                 }
             }
             Cloud::Smoke => {
-                for (k, pos) in world.chimneys.iter().enumerate() {
-                    fx::smoke_particles(*pos, 8, 1.0, t, k as f32 * 0.37, env.wind, env.night, &mut ps);
+                for pos in nearest_by(world.chimneys.iter(), |p| **p, focus, MAX_CHIMNEYS) {
+                    fx::smoke_particles(*pos, 8, 1.0, t, salt(*pos), env.wind, env.night, &mut ps);
                 }
-                for (k, (pos, _)) in world.fires.iter().enumerate().filter(|(_, (_, fk))| lit(*fk)) {
-                    fx::smoke_particles(*pos + Vec3::Y * 0.6, 5, 0.8, t, 0.5 + k as f32 * 0.43, env.wind, env.night, &mut ps);
+                for (pos, _) in &fires {
+                    fx::smoke_particles(*pos + Vec3::Y * 0.6, 5, 0.8, t, 0.5 + salt(*pos), env.wind, env.night, &mut ps);
                 }
             }
             Cloud::Fish => {
@@ -540,8 +582,8 @@ fn update_clouds(
                 }
             }
             Cloud::Firefly => {
-                if env.night > 0.5 && env.wetness < 0.6 {
-                    fx::firefly_particles(&world.fly_homes, t, env.night, &mut ps);
+                if fx::fireflies_out(env.hour) && env.wetness < 0.6 {
+                    fx::firefly_particles(&world.fly_homes, t, night_weight(env.hour), &mut ps);
                 }
             }
         }
@@ -590,20 +632,58 @@ mod tests {
         let doc = cairn_cove_core::demo::demo_document(7);
         let scene = Arc::new(cairn_cove_core::build(&doc));
         let mut app = App::new();
-        app.insert_resource(BuiltScene(Some(scene.clone()))).insert_resource(Glade::new(doc)).init_resource::<LifeWorld>();
+        app.insert_resource(BuiltScene(Some(scene.clone()))).insert_resource(Glade::new(doc)).init_resource::<BuiltInfo>().init_resource::<LifeWorld>();
         app.add_systems(Update, refresh_world);
         app.update();
         let w = app.world().resource::<LifeWorld>();
         assert!(!w.air.perches.is_empty() && !w.air.towers.is_empty(), "gulls need perches and towers");
         assert!(w.air.sea.len() > 20 && w.deep_sea.len() > 20, "gulls and fish need open sea");
         assert!(w.beach.len() > 10, "crabs need a beach, got {}", w.beach.len());
-        assert!(w.fires.iter().any(|(_, k)| *k == FireKind::Beacon), "beacon fire");
-        assert!(w.fires.iter().any(|(_, k)| *k == FireKind::Pit), "firepit fire");
+        assert!(w.fires.iter().any(|(_, k)| *k == WarmLight::Beacon), "beacon fire");
+        assert!(w.fires.iter().any(|(_, k)| *k == WarmLight::Pit), "firepit fire");
         assert!(!w.chimneys.is_empty() && !w.fly_homes.is_empty());
         assert!(w.beach.iter().all(|p| w.crab_ok(*p)));
-        assert!(w.fires.len() <= MAX_FIRES && w.air.perches.len() <= MAX_PERCHES);
+        assert!(w.air.perches.len() <= MAX_PERCHES);
         let boats = scene.markers.iter().filter(|m| m.kind == MarkerKind::Boat).count();
-        assert!(boats >= 2);
+        assert!(boats >= 2 && w.boats.len() == boats.min(MAX_BOATS));
+        // The jetty (Madder trim) paints its moored canoes; the floating canoe keeps its own.
+        assert!(w.boats.iter().all(|b| b.trim == 0 && b.scale == 1.0), "{:?}", w.boats);
         assert!(!fauna::canoe_meshes(&scene.terrain, LIFE_SEED).is_empty());
+    }
+
+    /// A floating canoe keeps the trim and scale the player gave it (Dye recolours it).
+    #[test]
+    fn floating_canoe_keeps_its_trim_and_scale() {
+        let mut doc = cairn_cove_core::demo::demo_document(7);
+        let terrain = cairn_cove_core::build(&doc).terrain;
+        let at = doc
+            .structures
+            .iter_mut()
+            .find_map(|(_, s)| match s {
+                Structure::Placed(c) if c.kind == PropKind::Clutter(ClutterKind::Canoe) && terrain.water_level(c.at).is_some() => {
+                    c.colors.trim = 3;
+                    c.scale = 1.4;
+                    Some(c.at)
+                }
+                _ => None,
+            })
+            .expect("demo has a canoe afloat");
+        let scene = cairn_cove_core::build(&doc);
+        let boat = scene.markers.iter().find(|m| m.kind == MarkerKind::Boat && m.pos.xz().distance(at) < 0.01).expect("its Boat marker");
+        assert_eq!(boat_look(&doc, boat.pos), (3, 1.4));
+        // A boat far from any canoe or jetty falls back to a stable hashed trim.
+        let far = Vec3::new(500.0, 0.0, 500.0);
+        assert_eq!(boat_look(&doc, far), boat_look(&doc, far));
+        assert!(boat_look(&doc, far).0 < TRIM_COLORS && boat_look(&doc, far).1 == 1.0);
+    }
+
+    /// Flames and smoke are not capped in build order: every fire and smoke hole is kept and
+    /// the nearest to the camera are drawn.
+    #[test]
+    fn far_huts_smoke_when_the_camera_is_near() {
+        let chimneys: Vec<Vec3> = (0..40).map(|i| Vec3::new(i as f32 * 3.0, 1.0, 0.0)).collect();
+        let near = nearest_by(chimneys.iter(), |p| **p, Vec3::new(117.0, 0.0, 0.0), MAX_CHIMNEYS);
+        assert_eq!(near.len(), MAX_CHIMNEYS);
+        assert!(near.contains(&&chimneys[39]), "the 40th smoke hole smokes when the camera is by it");
     }
 }

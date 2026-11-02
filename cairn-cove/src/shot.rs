@@ -1,19 +1,22 @@
 //! Command line (`--demo`, `--demo-shot`, …) and the headless demo-shot driver.
 //!
-//! `--demo-shot out.png [--time H] [--weather NAME] [--seed N] [--yaw D] [--zoom S] [--hud]` builds the
-//! demo glade, freezes the clock/weather, waits for the scene plus a few frames, saves a
-//! screenshot and exits. `--demo` just starts interactively with the demo glade.
+//! `--demo-shot out.png [--time H] [--weather NAME] [--seed N] [--yaw D] [--zoom S] [--focus X,Z] [--hud]`
+//! builds the demo glade, freezes the clock/weather, waits for the scene plus a few frames,
+//! saves a screenshot and exits (status 1 if the PNG could not be written). `--zoom` below 1
+//! and `--focus` (ground x,z in metres) frame close-ups. Tool gizmos (the hover ring) are hidden
+//! in shots. `--demo` just starts interactively with the demo glade.
 
 use crate::camera::CameraRig;
-use crate::render::{LowResDisplay, request_screenshot};
+use crate::render::LowResDisplay;
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::BuiltScene;
 use bevy::prelude::*;
 use bevy::render::{
     Render, RenderApp, RenderSystems,
     render_resource::{CachedPipelineState, PipelineCache},
+    view::screenshot::{Screenshot, ScreenshotCaptured},
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
@@ -35,6 +38,8 @@ pub struct Cli {
     pub seed: Option<u64>,
     pub yaw: Option<f32>,
     pub zoom: Option<f32>,
+    /// Camera focus on the ground (x, z), for close-ups.
+    pub focus: Option<Vec2>,
     /// Keep the HUD in the demo shot (default: glade only).
     pub hud: bool,
 }
@@ -54,6 +59,11 @@ impl Cli {
             seed: num(value("--seed")),
             yaw: num(value("--yaw")),
             zoom: num(value("--zoom")),
+            focus: value("--focus").and_then(|v| {
+                let (x, z) = v.split_once(',')?;
+                let p = Vec2::new(x.trim().parse().ok()?, z.trim().parse().ok()?);
+                p.is_finite().then_some(p)
+            }),
             hud: args.iter().any(|a| a == "--hud"),
         }
     }
@@ -79,7 +89,7 @@ impl Plugin for ShotPlugin {
         let pending = PendingPipelines::default();
         app.insert_resource(ShotState { path, frames: 0, ready_frames: 0, requested: false })
             .insert_resource(pending.clone())
-            .add_systems(Startup, apply_cli)
+            .add_systems(Startup, (apply_cli, hide_gizmos))
             .add_systems(Last, capture);
         if !cli.hud {
             app.add_systems(Last, hide_hud.before(capture));
@@ -121,8 +131,18 @@ fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weathe
     if let Some(yaw) = cli.yaw {
         rig.set_yaw(yaw);
     }
-    if let Some(zoom) = cli.zoom {
+    if let Some(zoom) = cli.zoom.filter(|z| z.is_finite()) {
         rig.set_zoom(zoom);
+    }
+    if let Some(f) = cli.focus {
+        rig.focus = Vec3::new(f.x, 0.0, f.y);
+    }
+}
+
+/// Demo shots show the glade only: no tool hover ring or other gizmos.
+fn hide_gizmos(store: Option<ResMut<GizmoConfigStore>>) {
+    for (_, config, _) in store.into_iter().flat_map(|s| s.into_inner().iter_mut()) {
+        config.enabled = false;
     }
 }
 
@@ -156,12 +176,30 @@ fn capture(
         exit.write(AppExit::error());
     } else if st.frames >= SETTLE_FRAMES && st.ready_frames >= READY_FRAMES && !st.requested {
         st.requested = true;
-        request_screenshot(&mut commands, st.path.clone()).observe(
-            |_: On<bevy::render::view::screenshot::ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
-                exit.write(AppExit::Success);
-            },
-        );
+        let path = st.path.clone();
+        commands.spawn(Screenshot::primary_window()).observe(move |shot: On<ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
+            // Scripts rely on the exit status: no PNG, no success.
+            match save_png(shot.image.clone(), &path) {
+                Ok(()) => {
+                    info!("screenshot saved to {}", path.display());
+                    exit.write(AppExit::Success);
+                }
+                Err(err) => {
+                    error!("demo shot failed: {err}");
+                    exit.write(AppExit::error());
+                }
+            }
+        });
     }
+}
+
+/// Writes `image` as a PNG to `path`, creating its folder.
+fn save_png(image: Image, path: &Path) -> Result<(), String> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    }
+    let img = image.try_into_dynamic().map_err(|e| format!("converting screenshot: {e}"))?;
+    img.to_rgb8().save(path).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -179,6 +217,29 @@ mod tests {
         assert_eq!((c.time, c.weather, c.seed, c.yaw, c.zoom), (Some(19.5), Some(WeatherKind::Rain), Some(3), Some(225.0), Some(0.8)));
         assert!(!c.demo && !c.hud);
         assert!(Cli::parse(a("bin --demo-shot x.png --hud")).hud);
+    }
+
+    #[test]
+    fn parses_focus_and_rejects_garbage() {
+        assert_eq!(Cli::parse(a("bin --demo-shot x.png --focus 12.5,-3")).focus, Some(Vec2::new(12.5, -3.0)));
+        for bad in ["12", "a,b", "1,NaN", ",", "1,2,3"] {
+            assert_eq!(Cli::parse(a(&format!("bin --focus {bad}"))).focus, None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn unwritable_shot_path_is_an_error() {
+        let img = Image::new_fill(
+            bevy::render::render_resource::Extent3d { width: 2, height: 2, depth_or_array_layers: 1 },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[10, 20, 30, 255],
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        assert!(save_png(img.clone(), Path::new("/proc/nope/x.png")).is_err());
+        let ok = std::env::temp_dir().join(format!("cairn-shot-{}.png", std::process::id()));
+        assert!(save_png(img, &ok).is_ok() && ok.exists());
+        let _ = std::fs::remove_file(ok);
     }
 
     #[test]
