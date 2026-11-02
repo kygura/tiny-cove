@@ -28,18 +28,26 @@ to `main`.
 - Palette: vibrant and saturated, per a user directive given mid-build.
 - `main` does not exist on the remote. It will be created from the default branch head and
   the build PR merged into it.
+- Contract (fd7df3e): types re-themed, placeholder geometry mapped from old variants, 121 tests
+  green. Beacon = round with wall_height ≥ 2.5 × radius (`buildings::is_beacon`). A floating
+  canoe is a Boat marker with no mesh, so picking falls back to proximity (task E).
+- Design (0832f67): the judge panel scored textile 8.7, PS1 8.5, poster 7.3. "Folk Pigment"
+  art plus the "Woad Cloth" HUD. Hexes are snapped to 5 bits, and shade() has calibration
+  goldens.
+- Phase 2 runs the eight tasks in isolated worktrees with a shared CARGO_TARGET_DIR, merged by
+  the planner.
 
 ## Tasks
 | # | Task | Files | Model | Deps | State |
 |---|---|---|---|---|---|
-| 0 | Model contract re-theme, keep build green | core/*, src/* (mechanical) | opus | — | frontier |
-| 1 | Art direction + HUD brief (judge panel) | DESIGN.md | opus ×4 | — | frontier |
-| A | Dykes, breakwater, gateposts, windbreaks | core/src/walls.rs | opus | 0,1 | blocked |
-| B | Huts, roundhouses, beacons, roofs, stilts | core/src/buildings.rs | opus | 0,1 | blocked |
-| C | Tracks, steps, jetty, bridges | core/src/paths.rs | sonnet | 0,1 | blocked |
-| D | Trees, props | core/src/nature.rs | sonnet | 0,1 | blocked |
-| E | Island terrain, lagoon, scene rules, demo cove | core/src/terrain.rs, scene.rs, demo.rs | opus | 0 | blocked |
-| F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | opus | 0,1 | blocked |
-| G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | sonnet | 0,1 | blocked |
-| H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | sonnet | 0 | blocked |
+| 0 | Model contract re-theme, keep build green | core/*, src/* (mechanical) | opus | — | done |
+| 1 | Art direction + HUD brief (judge panel) | DESIGN.md | opus ×4 | — | done |
+| A | Dykes, breakwater, gateposts, windbreaks | core/src/walls.rs | opus | 0,1 | frontier |
+| B | Huts, roundhouses, beacons, roofs, stilts | core/src/buildings.rs | opus | 0,1 | frontier |
+| C | Tracks, steps, jetty, bridges | core/src/paths.rs | sonnet | 0,1 | frontier |
+| D | Trees, props | core/src/nature.rs | sonnet | 0,1 | frontier |
+| E | Island terrain, lagoon, scene rules, demo cove | core/src/terrain.rs, scene.rs, demo.rs | opus | 0 | frontier |
+| F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | opus | 0,1 | frontier |
+| G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | sonnet | 0,1 | frontier |
+| H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | sonnet | 0 | frontier |
 | V | Verification gate | — | opus/sonnet/haiku | A–H | blocked |
