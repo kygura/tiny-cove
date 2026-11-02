@@ -381,7 +381,7 @@ fn animate_particles(
                     ps.push(p);
                 }
             }
-            ParticleKind::Flake => {
+            ParticleKind::Flake | ParticleKind::Snow => {
                 for i in 0..700 {
                     let y = (hash(i, 3) * 20.0 - t * 1.5).rem_euclid(20.0);
                     let sway = (t + i as f32).sin() * 0.3;

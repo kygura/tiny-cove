@@ -1,60 +1,107 @@
 //! Shared lighting/atmosphere state. Written by `weather` (time of day + weather),
-//! read by `render` (sun light, material uniforms, sky, fog) and `life`.
+//! read by `render` (sun light, material uniforms, sky, fog, sea), `life` and `world`.
+//!
+//! - [`Environment`]: the current light rig (DESIGN A4) + weather effects.
+//! - [`Wind`]: shared wind (direction + strength). Sways leaves and fibres in the vertex
+//!   shader; drives smoke, pennants, rain slant and wave direction.
+//! - [`Tide`]: the current sea level (mean sea level ± `TIDE_RANGE`, two tides per day).
 
 use bevy::prelude::*;
-use cairn_cove_core::{SEA_LEVEL, TIDE_RANGE};
+use cairn_cove_core::{SEA_LEVEL, TIDE_RANGE, palette};
 
-/// Current atmosphere. All colours linear RGB. Default = clear noon.
+/// Current atmosphere. Default = clear noon.
+///
+/// Colour spaces: the cel rig (`sun_color`, `fill_color`, `shadow_tint`, `rim_color`) is in
+/// **sRGB multipliers** because the band maths run in sRGB (DESIGN A3); every other colour
+/// (sky, fog, sea, ambient) is linear RGB.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct Environment {
     /// Unit vector pointing from the ground towards the sun (or moon at night).
     pub sun_dir: Vec3,
-    /// Direct light colour × intensity (cel bands use it as the lit colour).
+    /// Direct light colour × intensity (sRGB multiplier; noon = 1,1,1).
     pub sun_color: Vec3,
-    /// Ambient light from the sky (upward-facing surfaces).
+    /// Fill (shadow-side) light colour × intensity (sRGB multiplier).
+    pub fill_color: Vec3,
+    /// Ambient light from the sky (linear; particles).
     pub ambient_sky: Vec3,
-    /// Ambient bounce from the ground (downward-facing surfaces).
+    /// Ambient bounce from the ground (linear; particles).
     pub ambient_ground: Vec3,
-    /// Tint applied in shadowed bands (cool blue-violet by day).
+    /// Hue the mid/shadow bands rotate toward (sRGB, 0..1). Never grey.
     pub shadow_tint: Vec3,
-    /// Sky gradient.
+    /// Rim light colour (sRGB, 0..1; zero = off).
+    pub rim_color: Vec3,
+    /// Pre-rotation of the lit band toward the tint, degrees (dusk 10, night 30).
+    pub lit_rot: f32,
+    /// Sky gradient: zenith, mid (55 %), horizon (linear).
     pub sky_top: Vec3,
+    pub sky_mid: Vec3,
     pub sky_horizon: Vec3,
+    /// Sun / moon disc colour (linear).
+    pub disc_color: Vec3,
+    /// 1-px keyline colour (linear).
+    pub outline: Vec3,
     /// Distance fog colour and density (0 = none, ~0.02 = light, ~0.08 = thick).
     pub fog_color: Vec3,
     pub fog_density: f32,
-    /// 0..1: darkens ground/stone, adds specular glints, puddles.
+    /// Sea fog: 0..1 strength of the low height-fog bank and its top (m above sea level).
+    pub sea_fog: f32,
+    pub fog_top: f32,
+    /// Sea bands (linear): shallow, mid, deep, abyss, foam, glint.
+    pub sea: [Vec3; 6],
+    /// 0..1 storm amount (whitecaps, swell, doubled foam).
+    pub storm: f32,
+    /// 0..1: darkens ground/stone, adds glints and puddles.
     pub wetness: f32,
-    /// 0..1: white cover on up-facing surfaces.
+    /// 0..1: snow ramp on up-facing surfaces.
     pub snow: f32,
-    /// 0..1: how much windows and lanterns glow (night, storms).
+    /// 0..1: how much windows, glow and fires shine (night, storms, fog).
     pub night: f32,
-    /// 0..1: lightning flash intensity this frame.
+    /// 0..1: how dark the sky is (stars, moon disc).
+    pub dark: f32,
+    /// 0..1: lightning flash this frame (2 frames, no fade).
     pub flash: f32,
-    /// Wind vector on the ground plane (m/s); sways foliage, slants rain.
+    /// Wind vector on the ground plane (m/s): `Wind::dir * Wind::strength`.
     pub wind: Vec2,
+    /// Current sea surface height (m), see [`Tide`].
+    pub tide: f32,
+    /// True while the tide is falling (wet-sand glisten).
+    pub tide_falling: bool,
     /// Hour of day 0..24 (for HUD).
     pub hour: f32,
 }
 
 impl Default for Environment {
     fn default() -> Self {
+        let s = palette::hex_to_unit;
         Self {
             sun_dir: Vec3::new(-0.45, 0.75, 0.35).normalize(),
-            sun_color: Vec3::new(1.0, 0.94, 0.82) * 2.2,
-            ambient_sky: Vec3::new(0.42, 0.50, 0.62),
-            ambient_ground: Vec3::new(0.30, 0.28, 0.20),
-            shadow_tint: Vec3::new(0.76, 0.74, 0.94),
-            sky_top: Vec3::new(0.25, 0.48, 0.85),
-            sky_horizon: Vec3::new(0.75, 0.85, 0.95),
-            fog_color: Vec3::new(0.75, 0.85, 0.95),
+            sun_color: Vec3::ONE,
+            fill_color: Vec3::ONE,
+            ambient_sky: palette::srgb(0x8CE6FF),
+            ambient_ground: palette::srgb(0xF7D68C) * 0.5,
+            shadow_tint: s(0x4A3AAD),
+            rim_color: s(0xCEF7FF),
+            lit_rot: 0.0,
+            sky_top: palette::srgb(0x1973F7),
+            sky_mid: palette::srgb(0x42ADFF),
+            sky_horizon: palette::srgb(0x8CE6FF),
+            disc_color: palette::srgb(0xFFFFDE),
+            outline: palette::outline_day(),
+            fog_color: palette::srgb(0xB5EFFF),
             fog_density: 0.006,
+            sea_fog: 0.0,
+            fog_top: 3.0,
+            sea: [palette::sea_shallow(), palette::sea_mid(), palette::sea_deep(), palette::sea_abyss(), palette::foam(), palette::glint()],
+            storm: 0.0,
             wetness: 0.0,
             snow: 0.0,
             night: 0.0,
+            dark: 0.0,
             flash: 0.0,
             wind: Vec2::new(1.0, 0.3),
-            hour: 13.0,
+            tide: SEA_LEVEL,
+            tide_falling: false,
+            hour: 12.0,
         }
     }
 }
@@ -105,5 +152,30 @@ impl Tide {
     pub fn at(hour: f32) -> Self {
         let phase = (hour - 3.0) / 12.0 * std::f32::consts::TAU;
         Self { level: SEA_LEVEL + TIDE_RANGE * phase.cos(), falling: phase.sin() > 0.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tide_twice_a_day() {
+        let hi = Tide::at(3.0).level;
+        assert!((hi - (SEA_LEVEL + TIDE_RANGE)).abs() < 1e-5);
+        assert!((Tide::at(15.0).level - hi).abs() < 1e-5);
+        assert!((Tide::at(9.0).level - (SEA_LEVEL - TIDE_RANGE)).abs() < 1e-5);
+        assert!(Tide::at(6.0).falling && !Tide::at(12.0).falling);
+        for h in 0..96 {
+            let t = Tide::at(h as f32 * 0.25);
+            assert!(t.level.is_finite() && (t.level - SEA_LEVEL).abs() <= TIDE_RANGE + 1e-5);
+        }
+    }
+
+    #[test]
+    fn wind_vector() {
+        let w = Wind { dir: Vec2::X, strength: 3.0 };
+        assert_eq!(w.vector(), Vec2::new(3.0, 0.0));
+        assert_eq!(w.vector3(), Vec3::new(3.0, 0.0, 0.0));
     }
 }

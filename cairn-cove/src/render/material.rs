@@ -1,9 +1,13 @@
-//! The three PS1 materials and the per-frame globals buffer they share.
+//! The PS1 materials and the per-frame globals buffer they share.
 //!
 //! Shaders: `glade.wesl` (main pass: `vertex`/`fragment` for [`GladeMaterial`],
-//! `water_fragment` for [`WaterMaterial`], `particle_vertex`/`particle_fragment` for
-//! [`ParticleMaterial`]) and `glade_prepass.wesl` (depth/normal prepass + shadow pass,
-//! snapped identically so the outline pass lines up).
+//! `water_fragment` for [`WaterMaterial`], `sea_vertex`/`sea_fragment` for [`SeaMaterial`],
+//! `particle_vertex`/`particle_fragment` for [`ParticleMaterial`]) and `glade_prepass.wesl`
+//! (depth/normal prepass + shadow pass, snapped and displaced identically so the outline pass
+//! lines up).
+//!
+//! Bindings (material group): 0 globals (storage), 1 atlas, 2 water params, 3 sea-bed
+//! heightfield (R32Float, see [`super::sea`]).
 
 use crate::env::Environment;
 use bevy::{
@@ -35,22 +39,44 @@ impl Default for VertexSnap {
     }
 }
 
-/// Distance (view depth, metres) where fog starts. Set from the camera distance.
-pub const FOG_START: f32 = super::CAMERA_DISTANCE - 5.0;
+/// Distance (view depth, metres) where fog starts: the camera focus, so the near half of
+/// the island is crisp and the far half fades.
+pub const FOG_START: f32 = super::CAMERA_DISTANCE;
 
-/// Packs [`Environment`] into the std430 vec4 layout of `Globals` in `glade.wesl`.
-pub fn globals_from_env(env: &Environment, time: f32, snap: f32) -> Vec<[f32; 4]> {
+/// Heightfield placement for the shaders: (min x, min z, spacing, samples per side).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct SeaField(pub Vec4);
+
+impl Default for SeaField {
+    fn default() -> Self {
+        Self(Vec4::new(-1.0, -1.0, 1.0, 2.0))
+    }
+}
+
+/// Packs [`Environment`] into the std430 vec4 layout of `Globals` in `glade.wesl`
+/// (`glade_prepass.wesl` mirrors the first 9 slots).
+pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4) -> Vec<[f32; 4]> {
     let v = |a: Vec3, w: f32| [a.x, a.y, a.z, w];
+    let s = &env.sea;
     vec![
         v(env.sun_dir.normalize_or(Vec3::Y), env.night.clamp(0.0, 1.0)),
         v(env.sun_color, env.wetness.clamp(0.0, 1.0)),
-        v(env.ambient_sky, env.snow.clamp(0.0, 1.0)),
-        v(env.ambient_ground, env.flash.clamp(0.0, 1.0)),
-        v(env.shadow_tint, env.fog_density.max(0.0)),
+        v(env.fill_color, env.snow.clamp(0.0, 1.0)),
+        v(env.shadow_tint, env.flash.clamp(0.0, 1.0)),
+        v(env.rim_color, env.fog_density.max(0.0)),
         v(env.fog_color, FOG_START),
         v(env.sky_top, time),
         v(env.sky_horizon, snap.max(0.0)),
-        [env.wind.x, env.wind.y, 0.0, 0.0],
+        [env.wind.x, env.wind.y, env.tide, env.lit_rot],
+        v(s[0], env.storm.clamp(0.0, 1.0)),
+        v(s[1], env.sea_fog.clamp(0.0, 1.0)),
+        v(s[2], env.fog_top),
+        v(s[3], if env.tide_falling { 1.0 } else { 0.0 }),
+        v(s[4], env.dark.clamp(0.0, 1.0)),
+        v(s[5], env.wind.length()),
+        v(env.outline, 0.0),
+        field.to_array(),
+        v(env.ambient_sky, 0.0),
     ]
 }
 
@@ -58,10 +84,11 @@ pub fn globals_from_env(env: &Environment, time: f32, snap: f32) -> Vec<[f32; 4]
 pub(super) fn sync_globals(
     env: Res<Environment>,
     snap: Res<VertexSnap>,
+    field: Res<SeaField>,
     time: Res<Time>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
-    let data = globals_from_env(&env, time.elapsed_secs_wrapped(), snap.0);
+    let data = globals_from_env(&env, time.elapsed_secs_wrapped(), snap.0, field.0);
     if let Some(mut buf) = buffers.get_mut(&GLOBALS) {
         buf.clear();
         buf.extend(data);
@@ -75,18 +102,21 @@ fn is_prepass(descriptor: &RenderPipelineDescriptor) -> bool {
 }
 
 /// Shared vertex layouts: main pass (pos 0, normal 1, uv 2, uv1 3, colour 5) and
-/// prepass/shadow pass (pos 0, uv1 2, normal 3).
+/// prepass/shadow pass (pos 0, uv1 2, normal 3, uv 4).
 fn specialize_solid(
     descriptor: &mut RenderPipelineDescriptor,
     layout: &MeshVertexBufferLayoutRef,
-    fragment_entry: Option<&'static str>,
+    vertex_entry: &'static str,
+    fragment_entry: &'static str,
 ) -> Result<(), SpecializedMeshPipelineError> {
     if is_prepass(descriptor) {
         descriptor.vertex.buffers = vec![layout.0.get_layout(&[
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             Mesh::ATTRIBUTE_UV_1.at_shader_location(2),
             Mesh::ATTRIBUTE_NORMAL.at_shader_location(3),
+            Mesh::ATTRIBUTE_UV_0.at_shader_location(4),
         ])?];
+        descriptor.vertex.entry_point = Some(vertex_entry.into());
         return Ok(());
     }
     descriptor.vertex.buffers = vec![layout.0.get_layout(&[
@@ -96,9 +126,9 @@ fn specialize_solid(
         Mesh::ATTRIBUTE_UV_1.at_shader_location(3),
         Mesh::ATTRIBUTE_COLOR.at_shader_location(5),
     ])?];
-    descriptor.vertex.entry_point = Some("vertex".into());
+    descriptor.vertex.entry_point = Some(vertex_entry.into());
     if let Some(frag) = descriptor.fragment.as_mut() {
-        frag.entry_point = Some(fragment_entry.unwrap_or("fragment").into());
+        frag.entry_point = Some(fragment_entry.into());
     }
     Ok(())
 }
@@ -132,11 +162,11 @@ impl Material for GladeMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        specialize_solid(descriptor, layout, None)
+        specialize_solid(descriptor, layout, "vertex", "fragment")
     }
 }
 
-/// Water colours (linear RGB, w unused).
+/// Lagoon colours (linear RGB, w unused): `deep` = lagoon ≥ 0.6 m, `shallow` = lagoon.
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct WaterParams {
     pub deep: Vec4,
@@ -145,19 +175,23 @@ pub struct WaterParams {
 
 impl Default for WaterParams {
     fn default() -> Self {
-        let lin = |c: Color| c.to_linear().to_vec4();
-        Self { deep: lin(Color::srgb_u8(0x2f, 0x7f, 0x96)), shallow: lin(Color::srgb_u8(0x6c, 0xc4, 0xc8)) }
+        use cairn_cove_core::palette;
+        Self { deep: palette::lagoon_deep().extend(1.0), shallow: palette::lagoon().extend(1.0) }
     }
 }
 
-/// Opaque animated water (flat surface, quantised ripple bands, sky tint). Meshes
-/// from [`super::to_bevy_mesh`] (any surface id; vertex colour tints the water).
+/// Lagoons and tide pools (`Scene::water`): flat `lagoon` / `lagoon_deep` by depth with the
+/// Water tile's caustics and a `lagoon_rim` edge. Water at mean sea level is left to the sea.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct WaterMaterial {
     #[storage(0, read_only)]
     pub globals: Handle<ShaderBuffer>,
+    #[texture(1)]
+    pub atlas: Handle<Image>,
     #[uniform(2)]
     pub params: WaterParams,
+    #[texture(3, sample_type = "float", filterable = false)]
+    pub heightfield: Handle<Image>,
 }
 
 impl Material for WaterMaterial {
@@ -182,7 +216,45 @@ impl Material for WaterMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        specialize_solid(descriptor, layout, Some("water_fragment"))
+        specialize_solid(descriptor, layout, "vertex", "water_fragment")
+    }
+}
+
+/// The open sea (DESIGN A6): one big grid at `SEA_LEVEL + tide` with snapped vertex waves,
+/// depth bands from the sea-bed heightfield, foam, glints and whitecaps.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct SeaMaterial {
+    #[storage(0, read_only)]
+    pub globals: Handle<ShaderBuffer>,
+    #[texture(1)]
+    pub atlas: Handle<Image>,
+    #[texture(3, sample_type = "float", filterable = false)]
+    pub heightfield: Handle<Image>,
+}
+
+impl Material for SeaMaterial {
+    fn vertex_shader() -> ShaderRef {
+        SHADER.into()
+    }
+    fn fragment_shader() -> ShaderRef {
+        SHADER.into()
+    }
+    fn prepass_vertex_shader() -> ShaderRef {
+        PREPASS_SHADER.into()
+    }
+    fn prepass_fragment_shader() -> ShaderRef {
+        PREPASS_SHADER.into()
+    }
+    fn enable_shadows() -> bool {
+        false
+    }
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        specialize_solid(descriptor, layout, "sea_vertex", "sea_fragment")
     }
 }
 
@@ -237,10 +309,12 @@ mod tests {
 
     #[test]
     fn globals_layout() {
-        let g = globals_from_env(&Environment::default(), 1.5, 0.5);
-        assert_eq!(g.len(), 9);
+        let g = globals_from_env(&Environment::default(), 1.5, 0.5, Vec4::new(-40.0, -40.0, 0.5, 161.0));
+        assert_eq!(g.len(), 18);
         assert_eq!(g[6][3], 1.5);
         assert_eq!(g[7][3], 0.5);
         assert_eq!(g[5][3], FOG_START);
+        assert_eq!(g[16], [-40.0, -40.0, 0.5, 161.0]);
+        assert!(g.iter().flatten().all(|v| v.is_finite()));
     }
 }

@@ -34,6 +34,8 @@ pub enum ParticleKind {
     Bird = 3,
     /// Bright dot with dithered halo (fireflies, sparks), unlit, less fog.
     Spark = 4,
+    /// Snowflake: 1 low-res px of the colour over 1 px of lilac (`#9CADFF`).
+    Snow = 5,
 }
 
 /// One particle. `color` is linear RGB + opacity (screen-door dithered).
