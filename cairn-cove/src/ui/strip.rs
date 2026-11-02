@@ -18,6 +18,8 @@ pub struct Opt {
     pub set: fn(&mut S),
     pub sel: fn(&S) -> bool,
     pub en: fn(&S) -> bool,
+    /// Shown at all (a hidden option is never enabled either).
+    pub show: fn(&S) -> bool,
 }
 
 /// A slider bound to one `f32` field. `zero` replaces the readout at 0 (`AUTO` for stilts).
@@ -50,12 +52,15 @@ macro_rules! o {
         o!($l, $f = $v, yes)
     };
     ($l:expr, $f:ident = $v:expr, $en:expr) => {
-        Opt { l: $l, set: |s| s.$f = $v, sel: |s| s.$f == $v, en: $en }
+        Opt { l: $l, set: |s| s.$f = $v, sel: |s| s.$f == $v, en: $en, show: yes }
     };
 }
 macro_rules! tog {
     ($l:expr, $f:ident) => {
-        C::Tog(Opt { l: $l, set: |s| s.$f = !s.$f, sel: |s| s.$f, en: yes })
+        tog!($l, $f, yes)
+    };
+    ($l:expr, $f:ident, $en:expr) => {
+        C::Tog(Opt { l: $l, set: |s| s.$f = !s.$f, sel: |s| s.$f, en: $en, show: yes })
     };
 }
 macro_rules! sld {
@@ -71,11 +76,23 @@ fn rope(s: &S) -> bool {
 fn not_beacon(s: &S) -> bool {
     !s.ghost_beacon
 }
+fn beacon(s: &S) -> bool {
+    s.ghost_beacon
+}
+// Trim swatches follow what each variant's model really paints with the trim colour: net floats
+// (not driftwood or wattle), palisade stake tips (not dry stone or turf), the rope ladder
+// (not stone or log steps), and the props below (not firepit, cairn, rock or woodpile).
 fn painted_fence(s: &S) -> bool {
-    matches!(s.fence, FenceKind::Driftwood | FenceKind::NetLine)
+    s.fence == FenceKind::NetLine
+}
+fn palisade(s: &S) -> bool {
+    s.wall_kind == WallKind::Palisade
+}
+fn ladder(s: &S) -> bool {
+    s.stairs == StairKind::RopeLadder
 }
 fn painted_prop(s: &S) -> bool {
-    matches!(s.clutter, ClutterKind::Canoe | ClutterKind::StandingStone | ClutterKind::CarvedPole | ClutterKind::Baskets | ClutterKind::Pennant | ClutterKind::CrabPots)
+    !matches!(s.clutter, ClutterKind::Firepit | ClutterKind::Cairn | ClutterKind::Rock | ClutterKind::Woodpile)
 }
 /// Dye after a Shift+click pick: only the picked structure's material control stays live.
 fn dye_hut(s: &S) -> bool {
@@ -92,7 +109,17 @@ fn mat(en: fn(&S) -> bool) -> C {
 fn roofs(round: bool) -> C {
     // Round footprints fall back from Boat to a thatch cone.
     let boat: fn(&S) -> bool = if round { no } else { yes };
-    C::Seg("", vec![o!("THATCH", roof = RoofStyle::Thatch), o!("TURF", roof = RoofStyle::Turf), o!("HIDE", roof = RoofStyle::Hide), o!("BOAT", roof = RoofStyle::Boat, boat)])
+    let mut v = vec![o!("THATCH", roof = RoofStyle::Thatch), o!("TURF", roof = RoofStyle::Turf), o!("HIDE", roof = RoofStyle::Hide), o!("BOAT", roof = RoofStyle::Boat, boat)];
+    if round {
+        // A beacon has only two roofs: the thatch cone over the fire, or open (the model reads any
+        // non-thatch style as open; hide stands for it). The four round roofs give way to the two.
+        for o in &mut v {
+            o.show = not_beacon;
+        }
+        v.push(Opt { l: "CONE", set: |s| s.roof = RoofStyle::Thatch, sel: |s| s.roof == RoofStyle::Thatch, en: yes, show: beacon });
+        v.push(Opt { l: "OPEN", set: |s| s.roof = RoofStyle::Hide, sel: |s| s.roof != RoofStyle::Thatch, en: yes, show: beacon });
+    }
+    C::Seg("", v)
 }
 fn weathering() -> C {
     sld!("WEATHER", weathering, 0.0, 1.0, 0.05, 2, "")
@@ -123,7 +150,7 @@ fn railing(n: u8, l: &'static str) -> Opt {
     // `n` is baked in through a match so the fn pointers stay capture-free.
     macro_rules! r {
         ($n:expr) => {
-            Opt { l, set: |s| s.bridge = BridgeKind::Rope { railing: $n }, sel: |s| s.bridge == BridgeKind::Rope { railing: $n }, en: rope }
+            Opt { l, set: |s| s.bridge = BridgeKind::Rope { railing: $n }, sel: |s| s.bridge == BridgeKind::Rope { railing: $n }, en: rope, show: yes }
         };
     }
     match n {
@@ -146,7 +173,7 @@ pub fn rows(tool: Tool) -> (Vec<C>, Vec<C>) {
                 sld!("FOOTING", footing, 0.0, 2.0, 0.1, 1, "M"),
                 weathering(),
             ],
-            vec![sw_trim(yes)],
+            vec![sw_trim(palisade)],
         ),
         Tool::Windbreak => (
             vec![seg("", vec![o!("WATTLE", fence = FenceKind::Wattle), o!("DRIFTWOOD", fence = FenceKind::Driftwood), o!("NETS", fence = FenceKind::NetLine), o!("REED", fence = FenceKind::Reed)])],
@@ -165,7 +192,7 @@ pub fn rows(tool: Tool) -> (Vec<C>, Vec<C>) {
             vec![sw_roof(), sw_wall(), sw_trim(yes)],
         ),
         Tool::Roundhouse => (
-            vec![mat(not_beacon), roofs(true), tog!("CARVED", carved), tog!("HANGINGS", hangings), weathering()],
+            vec![mat(not_beacon), roofs(true), tog!("CARVED", carved), tog!("HANGINGS", hangings, not_beacon), weathering()],
             vec![sw_roof(), sw_wall(), sw_trim(yes)],
         ),
         Tool::Track => (
@@ -175,14 +202,14 @@ pub fn rows(tool: Tool) -> (Vec<C>, Vec<C>) {
             ],
             vec![],
         ),
-        Tool::Steps => (vec![seg("", vec![o!("STONE", stairs = StairKind::Stone), o!("LOG", stairs = StairKind::Log), o!("LADDER", stairs = StairKind::RopeLadder)])], vec![sw_trim(yes)]),
+        Tool::Steps => (vec![seg("", vec![o!("STONE", stairs = StairKind::Stone), o!("LOG", stairs = StairKind::Log), o!("LADDER", stairs = StairKind::RopeLadder)])], vec![sw_trim(ladder)]),
         Tool::Jetty => (vec![], vec![sw_trim(yes)]),
         Tool::Bridge => (
             vec![
                 seg(
                     "",
                     vec![
-                        Opt { l: "ROPE", set: |s| if !rope(s) { s.bridge = BridgeKind::Rope { railing: 0 } }, sel: rope, en: yes },
+                        Opt { l: "ROPE", set: |s| if !rope(s) { s.bridge = BridgeKind::Rope { railing: 0 } }, sel: rope, en: yes, show: yes },
                         o!("LOG", bridge = BridgeKind::Log),
                         o!("CAUSEWAY", bridge = BridgeKind::Causeway),
                     ],
@@ -285,17 +312,15 @@ pub fn tool_group(t: Tool) -> usize {
 pub const GROUPS: [&str; 4] = ["BUILD", "DRESS", "LAND", "EDIT"];
 
 /// Noon shadow hex of each swatch (DESIGN A1 "noon shadow" column), by palette slot (0 roof,
-/// 1 wall, 2 trim). Mirrors `palette::*_SHADES`; the HUD shows lit over shadow in every chip.
+/// 1 wall, 2 trim), read from `palette::*_SHADES`. The HUD shows lit over shadow in every chip.
 pub fn shadow(slot: u8, i: usize) -> u32 {
-    const ROOF: [u32; 6] = [0xAD3A29, 0xB56B63, 0xA51952, 0x3119C5, 0x0873A5, 0x9C19A5];
-    const WALL: [u32; 5] = [0x847BBD, 0xAD3A29, 0xA51942, 0x3131C5, 0xB552B5];
-    const TRIM: [u32; 5] = [0xB52163, 0xA519AD, 0x2910C5, 0xB54219, 0x1973AD];
-    let t: &[u32] = match slot {
-        0 => &ROOF,
-        1 => &WALL,
-        _ => &TRIM,
+    use cairn_cove_core::palette::{ROOF_SHADES, TRIM_SHADES, WALL_SHADES};
+    let t: &[(u32, u32)] = match slot {
+        0 => &ROOF_SHADES,
+        1 => &WALL_SHADES,
+        _ => &TRIM_SHADES,
     };
-    t.get(i).copied().unwrap_or(0x2910C5)
+    t.get(i).map_or(0x2910C5, |s| s.1)
 }
 
 /// (key chip, description) lines, at most 6 (the name plate is the first line).
@@ -451,6 +476,59 @@ mod tests {
         assert!(rail.iter().all(|o| (o.en)(&s)));
         s.bridge = BridgeKind::Log;
         assert!(rail.iter().all(|o| !(o.en)(&s)));
+    }
+
+    #[test]
+    fn beacon_roundhouse_offers_cone_or_open_and_no_hangings() {
+        let (a, _) = rows(Tool::Roundhouse);
+        let C::Seg(_, roofs) = &a[1] else { panic!() };
+        let C::Tog(hang) = &a[3] else { panic!() };
+        let mut s = S::default();
+        let shown = |s: &S| roofs.iter().filter(|o| (o.show)(s)).map(|o| o.l).collect::<Vec<_>>();
+        assert_eq!(shown(&s), ["THATCH", "TURF", "HIDE", "BOAT"]);
+        assert!((hang.en)(&s));
+        s.ghost_beacon = true;
+        assert_eq!(shown(&s), ["CONE", "OPEN"]);
+        assert!(!(hang.en)(&s), "no hangings on a beacon");
+        let (cone, open) = (&roofs[4], &roofs[5]);
+        (open.set)(&mut s);
+        assert!((open.sel)(&s) && !(cone.sel)(&s));
+        (cone.set)(&mut s);
+        assert!((cone.sel)(&s) && !(open.sel)(&s));
+    }
+
+    #[test]
+    fn trim_swatches_follow_what_each_variant_paints() {
+        let trim_en = |t: Tool, f: &dyn Fn(&mut S)| {
+            let (_, b) = rows(t);
+            let C::Sw(2, _, en) = b.iter().find(|c| matches!(c, C::Sw(2, ..))).unwrap() else { panic!() };
+            let mut s = S::default();
+            f(&mut s);
+            en(&s)
+        };
+        assert!(trim_en(Tool::Windbreak, &|s| s.fence = FenceKind::NetLine));
+        for k in [FenceKind::Wattle, FenceKind::Driftwood, FenceKind::Reed] {
+            assert!(!trim_en(Tool::Windbreak, &|s| s.fence = k), "{k:?}");
+        }
+        assert!(trim_en(Tool::Dyke, &|s| s.wall_kind = WallKind::Palisade));
+        assert!(!trim_en(Tool::Dyke, &|s| s.wall_kind = WallKind::DryStone) && !trim_en(Tool::Dyke, &|s| s.wall_kind = WallKind::Turf));
+        assert!(trim_en(Tool::Steps, &|s| s.stairs = StairKind::RopeLadder) && !trim_en(Tool::Steps, &|s| s.stairs = StairKind::Stone));
+        for k in [ClutterKind::DryingRack, ClutterKind::NetRack, ClutterKind::LanternPost, ClutterKind::Bush, ClutterKind::Canoe] {
+            assert!(trim_en(Tool::Prop, &|s| s.clutter = k), "{k:?}");
+        }
+        for k in [ClutterKind::Firepit, ClutterKind::Cairn, ClutterKind::Rock, ClutterKind::Woodpile] {
+            assert!(!trim_en(Tool::Prop, &|s| s.clutter = k), "{k:?}");
+        }
+    }
+
+    #[test]
+    fn chip_shadows_come_from_the_palette() {
+        use cairn_cove_core::palette::{ROOF_SHADES, TRIM_SHADES, WALL_SHADES};
+        for (slot, t) in [(0u8, &ROOF_SHADES[..]), (1, &WALL_SHADES[..]), (2, &TRIM_SHADES[..])] {
+            for (i, (_, shadow_hex)) in t.iter().enumerate() {
+                assert_eq!(shadow(slot, i), *shadow_hex, "slot {slot} swatch {i}");
+            }
+        }
     }
 
     #[test]

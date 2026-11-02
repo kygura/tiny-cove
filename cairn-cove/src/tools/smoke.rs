@@ -405,7 +405,8 @@ fn steps() -> Vec<Step> {
         "dye click applies",
         with(vec![set(|s| { s.material = Material::Plank; s.colors.wall = 2; s.weathering = 0.7; })], click(block_c(1), 3.0)),
         |b, a, _| {
-            let dyed = |d: &Document| count(d, |s| matches!(s, Structure::House(h) if h.material == Material::Plank && h.roof == RoofStyle::Boat && h.colors.wall == 2 && (h.weathering - 0.7).abs() < 1e-3));
+            // The hut keeps its own (hide) roof: the Dye strip has no roof control.
+            let dyed = |d: &Document| count(d, |s| matches!(s, Structure::House(h) if h.material == Material::Plank && h.roof == RoofStyle::Hide && h.colors.wall == 2 && (h.weathering - 0.7).abs() < 1e-3));
             ok_if(dyed(a) == dyed(b) + 1 && a.structures.len() == b.structures.len(), || format!("dyed {} -> {}", dyed(b), dyed(a)))
         },
     ));
@@ -461,6 +462,49 @@ fn steps() -> Vec<Step> {
     v.push(step("erase", with(vec![key(Tool::Erase)], click(slot(5), 0.5)), |b, a, _| {
         let basket = |d: &Document| count(d, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Baskets)));
         ok_if(a.structures.len() + 1 == b.structures.len() && basket(a) + 1 == basket(b), || format!("{} -> {}", b.structures.len(), a.structures.len()))
+    }));
+
+    // Erase takes exactly one structure per click, however many frames the button is held: two
+    // cairns stacked on one spot, a 12-frame press, one cairn gone (and the other still there).
+    let pile = slot(20);
+    let cairns = |d: &Document| count(d, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Cairn)));
+    v.push(step("stack two cairns", with(vec![key(Tool::Prop), set(|s| s.clutter = ClutterKind::Cairn)], with(click(pile, 0.0), click(pile, 0.0))), move |b, a, _| {
+        ok_if(cairns(a) == cairns(b) + 2, || format!("cairns {} -> {}", cairns(b), cairns(a)))
+    }));
+    v.push(step("erase held 12 frames takes one", vec![key(Tool::Erase), Act::Aim(pile, 0.5), Act::Wait(1), Act::Press, Act::Wait(12), Act::Release], move |b, a, _| {
+        ok_if(a.structures.len() + 1 == b.structures.len() && cairns(a) + 1 == cairns(b), || format!("{} -> {} structures", b.structures.len(), a.structures.len()))
+    }));
+    v.push(step("erase held takes the other on a second click", vec![Act::Aim(pile, 0.5), Act::Wait(1), Act::Press, Act::Wait(8), Act::Release], move |b, a, _| {
+        ok_if(a.structures.len() + 1 == b.structures.len() && cairns(a) + 1 == cairns(b), || format!("{} -> {} structures", b.structures.len(), a.structures.len()))
+    }));
+
+    // Dye recolours only: a click on a prop, a causeway and a firepit keeps their kinds.
+    v.push(step(
+        "dye click keeps prop and bridge kinds",
+        with(
+            vec![key(Tool::Dye), set(|s| { s.clutter = ClutterKind::Canoe; s.bridge = BridgeKind::Rope { railing: 0 }; s.hanging = Hanging::Lanterns; s.tree = TreeKind::Palm; s.colors.trim = 3; s.dye = None; })],
+            with(click(slot(7), 0.5), click(sd(5.0, -16.5), 0.5)),
+        ),
+        |b, a, _| {
+            ok_if(a.structures.len() == b.structures.len() && a != b, || "nothing dyed".into())?;
+            for ((_, x), (_, y)) in b.structures.iter().zip(&a.structures) {
+                match (x, y) {
+                    (Structure::Placed(p), Structure::Placed(q)) => ok_if(p.kind == q.kind, || format!("prop {:?} -> {:?}", p.kind, q.kind))?,
+                    (Structure::Bridge(p), Structure::Bridge(q)) => ok_if(p.kind == q.kind && p.hanging == q.hanging, || format!("bridge {:?} -> {:?}", p.kind, q.kind))?,
+                    _ => {}
+                }
+            }
+            ok_if(count(a, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Firepit) && p.colors.trim == 3)) == 1, || "firepit not recoloured".into())
+        },
+    ));
+
+    // Tree drag scatters trees along the path; one undo takes the whole scatter back.
+    let trees_in = |d: &Document| count(d, |s| matches!(s, Structure::Placed(p) if matches!(p.kind, PropKind::Tree(_))));
+    v.push(step("tree drag scatters", with(vec![key(Tool::Tree), set(|s| s.tree = TreeKind::Cypress)], drag(&[sd(26.0, -18.0), sd(26.0, -6.0)])), move |b, a, _| {
+        ok_if(trees_in(a) >= trees_in(b) + 3 && a.structures.len() == b.structures.len() + (trees_in(a) - trees_in(b)), || format!("trees {} -> {}", trees_in(b), trees_in(a)))
+    }));
+    v.push(step("tree scatter is one undo", vec![Act::Undo, Act::Wait(2)], move |b, a, _| {
+        ok_if(trees_in(b) >= trees_in(a) + 3 && a.structures.len() < b.structures.len(), || format!("trees {} -> {}", trees_in(b), trees_in(a)))
     }));
 
     // Terrain brushes.
