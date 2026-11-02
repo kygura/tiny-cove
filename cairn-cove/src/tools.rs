@@ -314,10 +314,10 @@ const OPENING_GRAB: f32 = 0.8;
 const MIN_BRIDGE: f32 = 3.0;
 /// Steepest rise / run for non-ladder stairs (~51°).
 const MAX_STAIR_SLOPE: f32 = 1.25;
-/// Default raise heights.
+/// Default raise heights. The jetty deck height is measured above the highest ground or water under it.
 const BLOCK_HEIGHT: f32 = 2.4;
 const ROUND_HEIGHT: f32 = 3.0;
-const DECK_HEIGHT: f32 = 1.5;
+const DECK_HEIGHT: f32 = 0.8;
 /// An RMB press that moves less than this (px) is a tap = cancel.
 const RMB_TAP_PX: f32 = 6.0;
 

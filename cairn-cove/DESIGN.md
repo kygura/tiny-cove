@@ -406,7 +406,7 @@ Spacing, `UiScale` and the region anchors are unchanged from the fork:
 
 - Spacing scale is 2/4/6/8/12/16. Screen margin 16, panel padding 8 (6 on the toolbar).
 - `UiScale = clamp(min(round(h/720·4)/4, floor(w/1200·4)/4), 0.75, 2.0)`.
-- The middle 60% of the screen is never covered.
+- The middle 60% of the screen is never covered, with one exception: the variant strip (B4) may rise into the bottom of that band while a tool is active. The toolbar plus one strip row cannot fit in the bottom 20%.
 
 Bevy default font only. Labels, buttons, plates and group names are UPPERCASE. Hint descriptions and tooltip second lines are sentence case. Line height is 1.25.
 
@@ -446,7 +446,7 @@ Bevy default font only. Labels, buttons, plates and group names are UPPERCASE. H
 |---|---|---|
 | `ToolBar` | bottom-centre, 16 from bottom | 18 buttons 58×56 in 4 groups, ≈ 1127 × 84 |
 | `VariantStrip` | 8 above ToolBar (bottom 110), centred | auto width, max 1000; 44 per row, 1 or 2 rows; Prop grid 88 + swatch row |
-| `WeatherPanel` | top-right | 244 wide; ≈ 196 open, 44 collapsed |
+| `WeatherPanel` | top-right | 244 wide; ≈ 240 open (the B7 rows need it), 44 collapsed |
 | `UndoRedo` | top-left | two 72×36 buttons, gap 4 |
 | `HintsPanel` | top-left, 8 under UndoRedo | 272 wide, ≤ 7 lines; collapsed = 32×32 `?` tab |
 | `Tooltip` | 12 above the hovered button, clamped | auto, max 260 |
