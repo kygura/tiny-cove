@@ -19,6 +19,7 @@ struct PostSettings {
     disc_pos: vec4<f32>,    // xy uv, z radius px, w night
     ycoef: vec4<f32>,       // world y = x + y*ndc_x + z*ndc_y + w*dist
     bank: vec4<f32>,        // x sea-fog strength, y bank top
+    rim: vec4<f32>,         // xyz rim colour, w ridge-rim strength (storm)
 }
 
 @group(0) @binding(0) var screen: texture_2d<f32>;
@@ -66,22 +67,20 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
     return c.z - c.z * s * max(min(min(k, 4.0 - k), vec3(1.0)), vec3(0.0));
 }
 
-// DESIGN A3 direction rule: positive when 60 <= h < t, else the warm (negative) path.
+// Hue where the cool path of the A3 direction rule starts (palette::WARM_EDGE).
+const WARM_EDGE: f32 = 70.0;
+
+// DESIGN A3 direction rule: positive when WARM_EDGE <= h < t, else the warm (negative) path.
 fn rotate_toward(h: f32, t: f32, amount: f32) -> f32 {
-    if h >= 60.0 && h < t {
+    if h >= WARM_EDGE && h < t {
         return h + min(amount, t - h);
     }
     let dist = modp(h - t, 360.0);
     return modp(h - min(amount, dist), 360.0);
 }
 
-// Fog mix that never greys (DESIGN A0.3, A0.5, A4 sea fog): a linear mix, but where it
-// would drop below the blend of the two saturations (capped at A4's S 0.30 floor, so it only
-// steps in against grey), saturation is held there and the hue walks from the
-// object's hue toward the fog's along the A3 direction rule (analogous path, never through
-// the complement). A pale fog (pearl sea fog, snow) barely turns the hue, so things keep
-// their identity behind the veil; a saturated fog (storm, dusk, night) pulls them all the
-// way. Linear in, linear out.
+// Fog mix that never greys: mirrors glade.wesl `fog_mix` (a pale fog lends its own hue to
+// whatever it holds at the saturation floor; a saturated fog walks the hue along A3).
 fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
     let m = mix(c, fog, k);
     if k <= 0.001 {
@@ -94,12 +93,12 @@ fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
     if o.y >= s_min {
         return m;
     }
-    // The mix's own hue is kept while it still carries one (analogous inputs); only a
-    // near-grey mix (complementary inputs) takes the walked hue.
     var h = select(f.x, o.x, o.y >= 0.5 * s_min);
-    if a.y > 0.08 && o.y < 0.5 * s_min {
+    if f.y < 0.3 {
+        h = f.x;
+    } else if a.y > 0.08 && o.y < 0.5 * s_min {
         var dist = modp(a.x - f.x, 360.0);
-        if a.x >= 60.0 && a.x < f.x {
+        if a.x >= WARM_EDGE && a.x < f.x {
             dist = f.x - a.x;
         }
         h = rotate_toward(a.x, f.x, dist * k * smoothstep(0.1, 0.5, f.y));
@@ -133,13 +132,14 @@ fn class_of(a: f32) -> i32 {
     return i32(round(a * 3.0));
 }
 
-// Three hard sky bands (zenith / mid / horizon) with an 8 px Bayer seam at each boundary.
+// Three hard sky bands (zenith / mid / horizon) with a 4 px Bayer seam at each boundary, so
+// the bands stay distinct even when the sky is a short strip.
 fn sky(uv: vec2<f32>, p: vec2<i32>, size: vec2<i32>) -> vec3<f32> {
     let line = max(s.sky_mid.w, 0.05);
     let ypx = uv.y * f32(size.y);
     let b1 = line * 0.40 * f32(size.y);
     let b2 = line * 0.78 * f32(size.y);
-    let dz = bayer4(vec2<u32>(p)) * 8.0;
+    let dz = bayer4(vec2<u32>(p)) * 4.0;
     var c = s.sky_top.xyz;
     if ypx + dz > b2 {
         c = s.sky_horizon.xyz;
@@ -198,21 +198,30 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let n = nsample.xyz * 2.0 - 1.0;
         let cls = class_of(nsample.a);
         let sea = cls == 1 && n.y > 0.5;
-        var silhouette = false;
+        var sil = array<bool, 4>(false, false, false, false);
         var crease = false;
         let offs = array<vec2<i32>, 4>(vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1));
+        // Neighbour view depths (1e9 = background or off-screen).
+        var dqs = array<f32, 4>(1e9, 1e9, 1e9, 1e9);
+        for (var i = 0; i < 4; i++) {
+            let q = p + offs[i];
+            if all(q >= vec2(0)) && all(q < size) && textureLoad(depth_tex, q, 0).r > 0.0 {
+                dqs[i] = dist_at(q);
+            }
+        }
         for (var i = 0; i < 4; i++) {
             let q = p + offs[i];
             if any(q < vec2(0)) || any(q >= size) {
                 continue;
             }
-            let qraw = textureLoad(depth_tex, q, 0).r;
-            let dq = select(1e9, dist_at(q), qraw > 0.0);
-            let qs = textureLoad(normals, q, 0);
-            if dq - d > s.depth.z {
-                silhouette = true;
-            } else if abs(dq - d) <= s.depth.z {
-                let nq = qs.xyz * 2.0 - 1.0;
+            let dq = dqs[i];
+            // A slope seen at a grazing angle steps in depth evenly from pixel to pixel; only
+            // a step bigger than the one on the other side (a real edge) is a silhouette.
+            let even = max(d - dqs[i ^ 1], 0.0);
+            if dq - d > s.depth.z + even {
+                sil[i] = true;
+            } else if abs(dq - d) <= s.depth.z + even {
+                let nq = textureLoad(normals, q, 0).xyz * 2.0 - 1.0;
                 // Nearer side only; on exact ties the +x / +y neighbour pair draws.
                 let nearer = dq > d + 0.02 || (abs(dq - d) <= 0.02 && i % 2 == 0);
                 let both_up = n.y > 0.6 && nq.y > 0.6;
@@ -221,6 +230,13 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
                 }
             }
         }
+        // A body's edge is inked; a feature only 1 px across (open on both opposite sides: a
+        // post, stake or rope at far zoom) keeps its own colour, so thin things never turn
+        // into a net of ink.
+        let silhouette = sil[0] != sil[1] || sil[2] != sil[3];
+        // Top edge against something well behind it (open above, solid below): the storm's
+        // cyan ridge hairline (DESIGN A4).
+        let ridge = sil[3] && !sil[2] && dqs[3] - d > 3.0;
         // Contact foam: sea pixels within R px of something standing in the water.
         var foam_k = 99;
         if sea {
@@ -266,9 +282,20 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         }
         let dist_fog = 1.0 - exp(-s.fog.w * max(d - s.sky_top.w, 0.0));
         let fog = 1.0 - (1.0 - dist_fog) * (1.0 - bank * s.bank.x);
-        let ink = fog_mix(s.outline.xyz, s.fog.xyz, fog);
+        var ink = fog_mix(s.outline.xyz, s.fog.xyz, fog);
+        // Ink is always darker than what it outlines (a storm-dark cliff keeps a dark line,
+        // never a light hairline over a darker fill).
+        var iv = rgb2hsv(to_srgb(ink));
+        let cv = rgb2hsv(to_srgb(col)).z;
+        if iv.z > cv * 0.7 {
+            iv.z = cv * 0.7;
+            ink = to_linear(hsv2rgb(iv));
+        }
         if silhouette && cls != 1 {
             col = ink;
+            if ridge && cls == 3 && s.rim.w > 0.0 {
+                col = mix(ink, s.rim.xyz, s.rim.w * (1.0 - fog));
+            }
         } else if crease && cls == 3 {
             col = mix(col, ink, s.depth.w);
         }

@@ -22,7 +22,7 @@ import bevy_pbr::render::{
 // Mirrors `globals_from_env` in material.rs. Rig colours (sun, fill, tint, rim) are sRGB
 // multipliers; every other colour is linear.
 struct Globals {
-    sun_dir_night: vec4<f32>,   // 0  xyz towards sun/moon, w emissive strength (night)
+    sun_dir_night: vec4<f32>,   // 0  xyz towards sun/moon, w lantern / window weight (world::warm_light)
     sun_wet: vec4<f32>,         // 1  sun sRGB x intensity, w wetness
     fill_snow: vec4<f32>,       // 2  fill sRGB x intensity, w snow
     tint_flash: vec4<f32>,      // 3  shadow tint sRGB, w lightning
@@ -41,7 +41,7 @@ struct Globals {
     field: vec4<f32>,           // 16 heightfield min x, min z, spacing, samples per side
     amb: vec4<f32>,             // 17 ambient sky (particles)
     n_lights: vec4<f32>,        // 18 x = number of lit lanterns / fires in `lights`
-    lights: array<vec4<f32>>,   // 19.. xyz position of each lit lantern / fire
+    lights: array<vec4<f32>>,   // 19.. xyz position of each lit light, w = weight (+2 for a fire)
 }
 
 struct WaterParams {
@@ -72,6 +72,8 @@ const S_WATER: u32 = 24u;
 const TILE: u32 = 32u;
 const COLS: u32 = 8u;
 const SEA_LEVEL: f32 = 0.0;
+// Hue where the cool path of the A3 direction rule starts (cairn_cove_core::palette::WARM_EDGE).
+const WARM_EDGE: f32 = 70.0;
 const TIDE_RANGE: f32 = 0.3;
 
 struct Vertex {
@@ -134,9 +136,9 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
     return c.z - c.z * s * max(min(min(k, 4.0 - k), vec3(1.0)), vec3(0.0));
 }
 
-// DESIGN A3 direction rule: positive when 60 <= h < t, else the warm (negative) path.
+// DESIGN A3 direction rule: positive when WARM_EDGE <= h < t, else the warm (negative) path.
 fn rotate_toward(h: f32, t: f32, amount: f32) -> f32 {
-    if h >= 60.0 && h < t {
+    if h >= WARM_EDGE && h < t {
         return h + min(amount, t - h);
     }
     let dist = modp(h - t, 360.0);
@@ -155,7 +157,7 @@ fn shade_band(c: vec3<f32>, band: u32, tint: vec3<f32>) -> vec3<f32> {
         a.x = t;
         a.y = max(a.y, floor_white);
     } else {
-        let warm = !(a.x >= 60.0 && a.x < t);
+        let warm = !(a.x >= WARM_EDGE && a.x < t);
         let amt = select(select(20.0, 14.0, warm), select(36.0, 25.0, warm), shadow);
         a.x = rotate_toward(a.x, t, amt);
     }
@@ -185,15 +187,16 @@ fn rot_lit(c: vec3<f32>, tint: vec3<f32>, deg: f32) -> vec3<f32> {
 }
 
 fn tint_dist(h: f32, t: f32) -> f32 {
-    if h >= 60.0 && h < t {
+    if h >= WARM_EDGE && h < t {
         return t - h;
     }
     return modp(h - t, 360.0);
 }
 
-// DESIGN A3 anti-mud floor: low-chroma darks pulled toward the tint hue; dark ochres and
-// olives (hue 30-100, V < 0.45: a warm albedo under a cool storm / night light) turned toward
-// it too; V >= 0.22. CPU port: cairn_cove_core::palette::anti_mud.
+// DESIGN A3 anti-mud floor: low-chroma darks pulled toward the tint hue; dark browns, ochres
+// and olives (hue 15-100, V < 0.45: a warm albedo under a cool storm / night light) turned toward
+// the tint, and mid-value olives (hue 50-75) pushed to ochre-gold or lime; V >= 0.22.
+// CPU port: cairn_cove_core::palette::anti_mud.
 fn anti_mud(c: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
     var a = rgb2hsv(c);
     let t = rgb2hsv(tint).x;
@@ -202,10 +205,13 @@ fn anti_mud(c: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
         a.x = rotate_toward(a.x, t, tint_dist(a.x, t) * k);
         a.y = 0.35;
     }
-    if a.z < 0.45 && a.x >= 30.0 && a.x < 100.0 {
+    if a.z < 0.45 && a.x >= 15.0 && a.x < 100.0 {
         let k = 0.25 + 0.5 * (0.45 - a.z) / 0.45;
         a.x = rotate_toward(a.x, t, tint_dist(a.x, t) * k);
         a.y = max(a.y, 0.4);
+    } else if a.x >= 50.0 && a.x < 75.0 && a.y > 0.4 && a.z >= 0.45 && a.z < 0.8 {
+        // Olive guard (palette::olive_guard): out of the olive band, to ochre-gold or lime.
+        a.x = select(80.0 + (a.x - 62.0) * 0.5, 42.0 + (a.x - 50.0) * 0.5, a.x < 62.0);
     }
     a.z = max(a.z, 0.22);
     return hsv2rgb(a);
@@ -213,11 +219,11 @@ fn anti_mud(c: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
 
 // Fog mix that never greys (DESIGN A0.3, A0.5, A4 sea fog): a linear mix, but where it
 // would drop below the blend of the two saturations (capped at A4's S 0.30 floor, so it only
-// steps in against grey), saturation is held there and the hue walks from the
-// object's hue toward the fog's along the A3 direction rule (analogous path, never through
-// the complement). A pale fog (pearl sea fog, snow) barely turns the hue, so things keep
-// their identity behind the veil; a saturated fog (storm, dusk, night) pulls them all the
-// way. Linear in, linear out.
+// steps in against grey), saturation is held there. A pale fog (pearl sea fog, snow haze) is
+// the veil's own colour, so the held pixel takes the fog's hue: a plum cliff foot reads as
+// mint haze, never a pink smear. Under a saturated fog (storm, dusk, night) the hue walks from
+// the object's toward the fog's along the A3 direction rule (analogous path, never through
+// the complement). Linear in, linear out. Mirrored in post.wesl.
 fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
     let m = mix(c, fog, k);
     if k <= 0.001 {
@@ -233,9 +239,11 @@ fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
     // The mix's own hue is kept while it still carries one (analogous inputs); only a
     // near-grey mix (complementary inputs) takes the walked hue.
     var h = select(f.x, o.x, o.y >= 0.5 * s_min);
-    if a.y > 0.08 && o.y < 0.5 * s_min {
+    if f.y < 0.3 {
+        h = f.x;
+    } else if a.y > 0.08 && o.y < 0.5 * s_min {
         var dist = modp(a.x - f.x, 360.0);
-        if a.x >= 60.0 && a.x < f.x {
+        if a.x >= WARM_EDGE && a.x < f.x {
             dist = f.x - a.x;
         }
         h = rotate_toward(a.x, f.x, dist * k * smoothstep(0.1, 0.5, f.y));
@@ -246,20 +254,41 @@ fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
 }
 
 // Lantern / fire pool: the warm light adds to the albedo (2 hard bands from
-// point_lights), but a pool that lands in the yellow-green zone below V 0.8 (olive / khaki,
-// DESIGN A0.3 "no mud", A3 "grass never goes olive") is pushed to a bright amber-gold
-// instead. `c` sRGB, `albedo` and `pl` linear; returns sRGB.
+// point_lights), but a pool that lands in the yellow / yellow-green zone below V 0.85
+// (mustard, olive, khaki: DESIGN A0.3 "no mud", A3 "grass never goes olive") is turned to
+// the lantern's amber-orange (#FFA542 is H 32) instead. It keeps the lit pixel's own value
+// (lifted to a glow), so the pool still shows the ground's texture and the two light bands.
+// `c` sRGB, `albedo` and `pl` linear; returns sRGB.
 fn lamp_pool(c: vec3<f32>, albedo: vec3<f32>, pl: vec3<f32>) -> vec3<f32> {
     if max(pl.r, max(pl.g, pl.b)) <= 0.01 {
         return c;
     }
     var o = rgb2hsv(to_srgb(to_linear(c) + albedo * pl));
-    if o.x > 50.0 && o.x < 105.0 && o.z < 0.8 {
-        o.x = 45.0 + (o.x - 50.0) * 0.2;
-        o.y = max(o.y, 0.6);
-        o.z = max(o.z, 0.7);
+    if o.x > 38.0 && o.x < 110.0 && o.z < 0.85 {
+        o.x = 30.0 + (o.x - 38.0) * 0.1;
+        o.y = max(o.y, 0.72);
+        o.z = clamp(o.z * 1.3, 0.62, 0.95);
     }
     return hsv2rgb(o);
+}
+
+// Strength (0..1) of a `g.lights` entry: w is the warm_light weight, +2 for a fire.
+fn light_weight(w: f32) -> f32 {
+    return select(w, w - 2.0, w >= 2.0);
+}
+
+// Weight of the lit fire (beacon basket, firepit) burning within 1.2 m of `p`, else 0: the
+// basket rim glows iron_hot only while its own fire burns (world::warm_light).
+fn fire_near(p: vec3<f32>) -> f32 {
+    let n = min(u32(max(g.n_lights.x, 0.0)), arrayLength(&g.lights));
+    var k = 0.0;
+    for (var i = 0u; i < n; i++) {
+        let l = g.lights[i];
+        if l.w >= 2.0 && distance(l.xyz, p) < 1.2 {
+            k = max(k, l.w - 2.0);
+        }
+    }
+    return k;
 }
 
 fn hex_lin(r: f32, gg: f32, b: f32) -> vec3<f32> {
@@ -483,7 +512,9 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     }
     let s = in.surface;
     let world = in.world_pos;
-    let night = g.sun_dir_night.w;
+    // Window slots and lantern glass follow world::warm_light(Lantern): the clock only, so a
+    // daytime storm or sea fog lights the beacons and nothing else (DESIGN A4, A8).
+    let lantern = clamp(g.sun_dir_night.w, 0.0, 1.0);
     let wet = g.sun_wet.w;
     let snow = g.fill_snow.w;
     let sun_dir = normalize(g.sun_dir_night.xyz);
@@ -504,6 +535,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     let hot = tex.a > 0.8 && tex.a < 0.95;
     let emissive_texel = tex.a >= 0.95;
     var albedo = tex.rgb * in.color.rgb;
+    var fire = 0.0;
     if accent {
         albedo = tex.rgb;
         // Trim sentinel: a deeper cut of the vertex tint. (Vertex alpha is the pennant
@@ -511,9 +543,10 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         if max(tex.r, max(tex.g, tex.b)) < 0.002 {
             albedo = in.color.rgb * 0.82;
         }
-        // The basket rim is plain iron by day and glows iron_hot while fires burn.
+        // The basket rim is plain iron and glows iron_hot only while its own fire burns.
         if hot {
-            albedo = mix(in.color.rgb, tex.rgb, clamp(g.sun_dir_night.w, 0.0, 1.0));
+            fire = fire_near(world.xyz);
+            albedo = mix(in.color.rgb, tex.rgb, fire);
         }
     }
     // Window slot: outline ink by day, emissive window light at night.
@@ -522,10 +555,14 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         albedo = hex_lin(49.0, 33.0, 123.0);
     }
     if s == S_GLOW {
-        // Flames and lantern glass: always emissive, untinted, hard bands.
-        let fog = fog_amount(view_depth(world), world.y);
-        let c = select(tex.rgb * in.color.rgb, tex.rgb, emissive_texel);
-        return vec4(fog_mix(c * (1.0 + 0.4 * g.tint_flash.w), g.fog_start.xyz, fog * 0.5), 1.0);
+        if lantern >= 0.5 {
+            // Lit lantern glass: emissive, untinted, hard bands.
+            let fog = fog_amount(view_depth(world), world.y);
+            let c = select(tex.rgb * in.color.rgb, tex.rgb, emissive_texel);
+            return vec4(fog_mix(c * (1.0 + 0.4 * g.tint_flash.w), g.fog_start.xyz, fog * 0.5), 1.0);
+        }
+        // Unlit: pale sea-glass (lagoon_rim), shaded like everything else.
+        albedo = hex_lin(206.0, 255.0, 247.0);
     }
 
     var a = to_srgb(albedo);
@@ -550,11 +587,18 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         a = hsv2rgb(w);
     }
 
+    // Rain-soaked sand darkens to wet honey (DESIGN A8 dusk rain), already as dark as wet
+    // sand gets. Under a storm's cold light honey would go brown: storm sand stays sand and
+    // takes the slate-blue of the storm.
+    let honey = s == S_SAND && n.y > 0.5 && wet > 0.0 && g.sea0.w < 0.5;
+    if honey {
+        a = mix(a, vec3(222.0, 165.0, 74.0) / 255.0, clamp(wet, 0.0, 1.0));
+    }
     // Rain: wet things get richer, not duller (V x 0.82, S x 1.15).
     if wet > 0.0 && !slot {
         var w = rgb2hsv(a);
         w.y = min(w.y * (1.0 + 0.15 * wet), 1.0);
-        w.z *= 1.0 - 0.18 * wet;
+        w.z *= 1.0 - select(0.18, 0.0, honey) * wet;
         a = hsv2rgb(w);
     }
 
@@ -605,14 +649,14 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     c = lamp_pool(c, albedo, point_lights(world, n, in.clip));
     var col = to_linear(c);
 
-    // Emissive: window slots and hot iron glow at night.
+    // Emissive: window slots at night, hot iron while its fire burns.
     var emissive = vec3(0.0);
     if slot {
-        let lit = clamp(night * 1.2, 0.0, 1.0);
+        let lit = clamp(lantern * 1.2, 0.0, 1.0);
         emissive = tex.rgb * lit;
         col = mix(col, vec3(0.0), lit);
     } else if hot {
-        emissive = albedo * clamp(night, 0.0, 1.0) * 0.8;
+        emissive = albedo * fire * 0.8;
     }
 
     let fog = fog_amount(view_depth(world), world.y);
@@ -718,7 +762,7 @@ fn light_streaks(world: vec4<f32>, frag: vec4<f32>) -> f32 {
     let tide = g.wind_tide.z;
     for (var i = 0u; i < n; i++) {
         let lp = g.lights[i].xyz;
-        if length(lp.xz - world.xz) > 18.0 {
+        if light_weight(g.lights[i].w) < 0.5 || length(lp.xz - world.xz) > 18.0 {
             continue;
         }
         let top = to_screen(lp);
@@ -794,8 +838,13 @@ fn sea_fragment(in: VertexOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // Storm whitecaps on 1 in 6 crests.
-    if storm > 0.3 && depth > 1.0 && wv > 0.7 && hash2(floor(p * 0.4)) < 0.17 * storm {
+    // Storm whitecaps: a 1-2 px white cap line along the top of 1 in 6 wave crests. Crests
+    // are picked per travelling crest of the main wave and per 4 m stretch along it; the line
+    // sits on the crest's lee side only.
+    let along = (dot(p, dir) * 1.1 - t * 1.4) / 6.2831853;
+    let crest = vec2(floor(along + 0.25), floor(dot(p, vec2(-dir.y, dir.x)) / 4.0));
+    let falling = wave(p + dir * 0.25, t) < wv;
+    if storm > 0.3 && depth > 1.0 && falling && abs(wv - 0.78) < fwidth(wv) * 0.9 && hash2(crest + 3.7) < 0.17 * storm {
         out = foam;
         lit_px = true;
     }
@@ -817,15 +866,22 @@ fn sea_fragment(in: VertexOut) -> @location(0) vec4<f32> {
 
     // Lantern / fire light on the water and its broken reflection streak.
     out += col * point_lights(world, vec3(0.0, 1.0, 0.0), in.clip) * 0.6;
-    if g.sun_dir_night.w > 0.3 && light_streaks(world, in.clip) > 0.5 {
+    if light_streaks(world, in.clip) > 0.5 {
         out = hex_lin(255.0, 123.0, 25.0);
         lit_px = true;
     }
 
     // Fog: distance fog plus the low bank (turquoise shows only near the shore).
+    // In sea fog the bank swallows the open sea in the fog's pearl (DESIGN A8): turquoise
+    // shows only in the shallows near the shore.
     var fog = fog_amount(view_depth(world), 0.0);
-    if g.sea1.w > 0.05 && depth < 1.5 {
-        fog *= 0.55;
+    let bank = g.sea1.w;
+    if bank > 0.05 {
+        if depth < 1.5 {
+            fog *= 0.55;
+        } else {
+            fog = max(fog, mix(0.72, 0.88, smoothstep(2.0, 6.0, depth)) * bank);
+        }
     }
     if lit_px {
         fog *= 0.7;

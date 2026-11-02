@@ -10,6 +10,7 @@
 //! heightfield (R32Float, see [`super::sea`]).
 
 use crate::env::Environment;
+use crate::world::{BuiltScene, WarmLight, warm_light};
 use bevy::{
     asset::uuid_handle,
     mesh::MeshVertexBufferLayoutRef,
@@ -56,15 +57,41 @@ impl Default for SeaField {
 /// Most lit lanterns / fires whose reflection streaks the sea (`Globals::lights`).
 pub const MAX_STREAK_LIGHTS: usize = 48;
 
+/// The lit warm lights of `scene` by the one rule, [`warm_light`]: fires (beacon baskets,
+/// firepits) first, then lanterns, each group nearest to `focus` first, at most
+/// [`MAX_STREAK_LIGHTS`]. Each is `(position, weight)` with 2 added to a fire's weight, as
+/// `Globals::lights` stores it (sea streaks, fog halos, the beacon basket's hot rim).
+pub fn lit_warm_lights(markers: &[cairn_cove_core::Marker], terrain: &cairn_cove_core::terrain::Terrain, focus: Vec3, env: &Environment) -> Vec<Vec4> {
+    use cairn_cove_core::MarkerKind;
+    let weight = |k: WarmLight| warm_light(k, env.hour, env.storm, env.sea_fog);
+    let mut lit: Vec<(bool, f32, Vec4)> = markers
+        .iter()
+        .filter_map(|m| {
+            let kind = match m.kind {
+                MarkerKind::Fire => WarmLight::of_fire(m.pos, terrain),
+                MarkerKind::Lantern => WarmLight::Lantern,
+                _ => return None,
+            };
+            let w = weight(kind);
+            let fire = kind != WarmLight::Lantern;
+            (w > 0.01 && m.pos.is_finite()).then(|| (!fire, (m.pos - focus).xz().length_squared(), m.pos.extend(w + if fire { 2.0 } else { 0.0 })))
+        })
+        .collect();
+    lit.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    lit.into_iter().take(MAX_STREAK_LIGHTS).map(|l| l.2).collect()
+}
+
 /// Packs [`Environment`] into the std430 vec4 layout of `Globals` in `glade.wesl`
 /// (`glade_prepass.wesl` mirrors the fixed head). `horizon` = distance (m) from the island
-/// centre where the open sea is cut away for the sky; `lights` = positions of the lit
-/// lanterns and fires (at most [`MAX_STREAK_LIGHTS`] are kept).
-pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4, horizon: f32, lights: &[Vec3]) -> Vec<[f32; 4]> {
+/// centre where the open sea is cut away for the sky; `lights` = the lit lanterns and fires
+/// from [`lit_warm_lights`] (at most [`MAX_STREAK_LIGHTS`] are kept). Slot 0's w is the
+/// lantern / window weight, `warm_light(Lantern)`: the clock only, never the weather.
+pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4, horizon: f32, lights: &[Vec4]) -> Vec<[f32; 4]> {
     let v = |a: Vec3, w: f32| [a.x, a.y, a.z, w];
     let s = &env.sea;
+    let lantern = warm_light(WarmLight::Lantern, env.hour, env.storm, env.sea_fog).clamp(0.0, 1.0);
     let mut g = vec![
-        v(env.sun_dir.normalize_or(Vec3::Y), env.night.clamp(0.0, 1.0)),
+        v(env.sun_dir.normalize_or(Vec3::Y), lantern),
         v(env.sun_color, env.wetness.clamp(0.0, 1.0)),
         v(env.fill_color, env.snow.clamp(0.0, 1.0)),
         v(env.shadow_tint, env.flash.clamp(0.0, 1.0)),
@@ -83,7 +110,7 @@ pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4, ho
         field.to_array(),
         v(env.ambient_sky, 0.0),
     ];
-    let lights: Vec<[f32; 4]> = lights.iter().filter(|p| p.is_finite()).take(MAX_STREAK_LIGHTS).map(|p| v(*p, 1.0)).collect();
+    let lights: Vec<[f32; 4]> = lights.iter().filter(|p| p.is_finite()).take(MAX_STREAK_LIGHTS).map(|p| p.to_array()).collect();
     g.push([lights.len() as f32, 0.0, 0.0, 0.0]);
     // A runtime-sized array binding needs at least one element.
     if lights.is_empty() {
@@ -94,18 +121,21 @@ pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4, ho
 }
 
 /// Uploads the globals every frame (time changes every frame anyway).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn sync_globals(
     env: Res<Environment>,
     snap: Res<VertexSnap>,
     field: Res<SeaField>,
     horizon: Res<super::sea::Horizon>,
+    built: Option<Res<BuiltScene>>,
     camera: Query<&Transform, With<super::GameCamera>>,
     time: Res<Time>,
-    point_lights: Query<(&PointLight, &GlobalTransform, &InheritedVisibility)>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
-    let lit: Vec<Vec3> = point_lights.iter().filter(|(l, _, v)| l.intensity > 1.0 && v.get()).map(|(_, tf, _)| tf.translation()).collect();
-    let fwd = camera.single().map_or(Vec3::NEG_Z, |tf| tf.forward().as_vec3());
+    let tf = camera.single().ok();
+    let fwd = tf.map_or(Vec3::NEG_Z, |tf| tf.forward().as_vec3());
+    let focus = tf.map_or(Vec3::ZERO, |tf| crate::weather::ground_focus(tf.translation, fwd));
+    let lit = built.as_ref().and_then(|b| b.0.as_ref()).map(|s| lit_warm_lights(&s.markers, &s.terrain, focus, &env)).unwrap_or_default();
     let data = globals_from_env(&env, time.elapsed_secs_wrapped(), snap.0, field.0, horizon.distance(fwd), &lit);
     if let Some(mut buf) = buffers.get_mut(&GLOBALS) {
         buf.clear();
@@ -339,12 +369,39 @@ mod tests {
         assert_eq!(g[16], [-40.0, -40.0, 0.5, 161.0]);
         assert!(g.iter().flatten().all(|v| v.is_finite()));
         // Lights are appended after the count, capped, and non-finite ones dropped.
-        let mut lights = vec![Vec3::new(1.0, 2.0, 3.0), Vec3::NAN];
-        lights.extend(std::iter::repeat_n(Vec3::ONE, 100));
+        let mut lights = vec![Vec4::new(1.0, 2.0, 3.0, 1.0), Vec4::NAN];
+        lights.extend(std::iter::repeat_n(Vec4::ONE, 100));
         let g = globals_from_env(&Environment::default(), 0.0, 0.5, Vec4::ONE, f32::NAN, &lights);
         assert_eq!(g[18][0] as usize, MAX_STREAK_LIGHTS);
         assert_eq!(g.len(), 19 + MAX_STREAK_LIGHTS);
         assert_eq!(g[19], [1.0, 2.0, 3.0, 1.0]);
         assert!(g.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    /// RG-01: in a daytime storm or sea fog only beacons are warm: windows and lantern glass
+    /// (slot 0 w) stay dark, and the light list holds beacon fires only.
+    #[test]
+    fn daytime_storm_lights_only_beacons() {
+        use crate::weather::{WeatherKind, WeatherMix, environment};
+        let scene = cairn_cove_core::build(&cairn_cove_core::demo::demo_document(7));
+        for kind in [WeatherKind::Storm, WeatherKind::Fog] {
+            let env = environment(14.0, &WeatherMix::settled(kind));
+            let lit = lit_warm_lights(&scene.markers, &scene.terrain, Vec3::ZERO, &env);
+            assert!(!lit.is_empty() && lit.iter().all(|l| l.w > 2.5), "{kind:?}: {lit:?}");
+            let beacon = |p: Vec3| WarmLight::of_fire(p, &scene.terrain) == WarmLight::Beacon;
+            assert!(lit.iter().all(|l| beacon(l.truncate())), "{kind:?}: a firepit is lit");
+            let g = globals_from_env(&env, 0.0, 0.5, Vec4::ONE, 40.0, &lit);
+            assert_eq!(g[0][3], 0.0, "{kind:?}: windows / lantern glass glow");
+        }
+        // Night: windows full, lanterns listed after the fires.
+        let env = environment(23.0, &WeatherMix::settled(WeatherKind::Clear));
+        let lit = lit_warm_lights(&scene.markers, &scene.terrain, Vec3::ZERO, &env);
+        let first_lantern = lit.iter().position(|l| l.w < 2.0).expect("lanterns lit at night");
+        assert!(lit[..first_lantern].iter().all(|l| l.w >= 2.0) && lit[first_lantern..].iter().all(|l| l.w < 2.0));
+        assert_eq!(globals_from_env(&env, 0.0, 0.5, Vec4::ONE, 40.0, &lit)[0][3], 1.0);
+        // 18:30 clear: firepits burn (RG-03: they are in the list though env.night is 0).
+        let env = environment(18.5, &WeatherMix::settled(WeatherKind::Clear));
+        assert_eq!(env.night, 0.0);
+        assert!(lit_warm_lights(&scene.markers, &scene.terrain, Vec3::ZERO, &env).iter().any(|l| l.w > 2.5));
     }
 }

@@ -1,16 +1,15 @@
-//! The open sea (DESIGN A6) and fire lights.
+//! The open sea (DESIGN A6) and its horizon.
 //!
 //! - One big grid mesh ([`sea_mesh`]) drawn with [`SeaMaterial`]. Its vertices are moved in
 //!   the vertex shader to `tide + waves`, so the CPU mesh is static and flat at y = 0.
 //! - The sea-bed heightfield ([`heightfield`]) is sampled from the built scene's terrain into
 //!   an `R32Float` texture whenever the scene changes; the sea and lagoon shaders read it for
 //!   depth bands, foam contours and wave damping near the shore.
-//! - [`fire_lights`] recolours the lantern pool's lights that sit on `Fire` markers to the
-//!   hot-orange fire light with a stepped ±12 % flicker at 8 Hz; lantern lights get the
-//!   lantern colour.
+//! - [`Horizon`] says where the open sea is cut for the sky: never inside the buildable square.
+//! - [`flicker`] / [`FIRE_LUMENS`] are the fire light's stepped flicker and strength; the one
+//!   writer of the light pool is `world::update_lanterns` (by `world::warm_light`).
 
 use super::{GladeAssets, SeaField};
-use crate::env::Environment;
 use crate::world::BuiltScene;
 use bevy::{
     asset::RenderAssetUsages,
@@ -19,7 +18,7 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use cairn_cove_core::{MarkerKind, MeshData, Surface, terrain::Terrain};
+use cairn_cove_core::{GLADE_HALF, MeshData, Surface, terrain::Terrain};
 
 /// Half size of the sea plane (m). Far beyond the island so the view never sees its edge.
 pub const SEA_HALF: f32 = 150.0;
@@ -31,18 +30,23 @@ pub const FIELD_SPACING: f32 = 0.5;
 /// Fire light intensity (lumens before the night factor), cf. `world::LANTERN_LUMENS`.
 pub const FIRE_LUMENS: f32 = 1800.0;
 
-/// Horizon distance (m) before any scene is built.
-pub const DEFAULT_HORIZON: f32 = 46.0;
+/// Horizon distance (m) before any scene is built: the buildable square's far corner.
+pub const DEFAULT_HORIZON: f32 = (GLADE_HALF + BUILD_MARGIN) * std::f32::consts::SQRT_2;
 /// Sea kept behind the farthest land / shallows (foam rings, the turquoise wedge) before the
 /// horizon line cuts the open sea for the sky.
 const HORIZON_MARGIN: f32 = 6.0;
+/// Sea kept around the buildable square (`±GLADE_HALF`): canoes, jetties and stilt huts
+/// built at its edge never stand on sky.
+pub const BUILD_MARGIN: f32 = 2.0;
 /// Seabed height above which a sample counts as shore (the shallow band, DESIGN A6).
 const SHORE_DEPTH: f32 = -1.5;
 
 /// Where the open sea ends and the post pass paints the sky (DESIGN A4/A8: sky above the
 /// sea line). Holds the land and shallow-water points of the built terrain; the horizon sits
-/// [`HORIZON_MARGIN`] behind the farthest of them along the camera's ground-forward axis, so
-/// the island, its shallows and the sea stacks always stay in front of it at any yaw.
+/// [`HORIZON_MARGIN`] behind the farthest of them along the camera's ground-forward axis, and
+/// never nearer than the far edge of the buildable square plus [`BUILD_MARGIN`], so the
+/// island, its shallows, the sea stacks and anything built on the glade's sea stay in front
+/// of it at any yaw, pan and zoom.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct Horizon {
     pub points: Vec<Vec2>,
@@ -65,8 +69,11 @@ impl Horizon {
     /// ground projection is used).
     pub fn distance(&self, fwd: Vec3) -> f32 {
         let f = Vec2::new(fwd.x, fwd.z).normalize_or(Vec2::NEG_Y);
-        let far = self.points.iter().map(|p| p.dot(f)).fold(f32::NEG_INFINITY, f32::max);
-        if far.is_finite() { (far + HORIZON_MARGIN).clamp(12.0, SEA_HALF - 10.0) } else { DEFAULT_HORIZON }
+        let f = if f.is_finite() { f } else { Vec2::NEG_Y };
+        // Farthest corner of the buildable square (+ margin) along the view.
+        let square = (GLADE_HALF + BUILD_MARGIN) * (f.x.abs() + f.y.abs());
+        let shore = self.points.iter().map(|p| p.dot(f) + HORIZON_MARGIN).fold(f32::NEG_INFINITY, f32::max);
+        shore.max(square).clamp(12.0, SEA_HALF - 10.0)
     }
 }
 
@@ -177,34 +184,6 @@ pub(super) fn update_heightfield(
     field.0 = f;
 }
 
-/// Fire markers burn hot orange with a stepped flicker; lanterns glow lantern orange.
-pub(super) fn fire_lights(
-    built: Option<Res<BuiltScene>>,
-    env: Res<Environment>,
-    time: Res<Time>,
-    mut fires: Local<Vec<Vec3>>,
-    mut lights: Query<(&mut PointLight, &Transform, &Visibility)>,
-) {
-    if let Some(b) = built.as_ref().filter(|b| b.is_changed()) {
-        *fires = b.0.iter().flat_map(|s| s.markers.iter()).filter(|m| m.kind == MarkerKind::Fire).map(|m| m.pos).collect();
-    }
-    let t = time.elapsed_secs();
-    let fire = Color::srgb_u8(0xFF, 0x8C, 0x29);
-    let lantern = Color::srgb_u8(0xFF, 0xA5, 0x42);
-    for (i, (mut light, tf, vis)) in lights.iter_mut().enumerate() {
-        if *vis == Visibility::Hidden {
-            continue;
-        }
-        let is_fire = fires.iter().any(|f| f.distance_squared(tf.translation) < 1e-4);
-        if is_fire {
-            light.color = fire;
-            light.intensity = FIRE_LUMENS * env.night * flicker(t, i as u32);
-        } else if light.color != lantern {
-            light.color = lantern;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,9 +246,28 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Horizon::default().distance(Vec3::NEG_Z), DEFAULT_HORIZON);
+        assert_eq!(Horizon::default().distance(Vec3::NEG_Z), GLADE_HALF + BUILD_MARGIN);
         let bad = Horizon::from_heightfield(&[f32::NAN; 4], Vec4::new(f32::NAN, 0.0, 1.0, 2.0));
-        assert_eq!(bad.distance(Vec3::new(f32::NAN, 0.0, 1.0)), DEFAULT_HORIZON);
+        assert_eq!(bad.distance(Vec3::new(f32::NAN, 0.0, 1.0)), GLADE_HALF + BUILD_MARGIN);
+    }
+
+    /// The cut never reaches the buildable square (+ a margin): every point of it, even a
+    /// corner, stays in front of the horizon for every view direction, whatever the shore.
+    #[test]
+    fn horizon_never_cuts_the_buildable_square() {
+        let small = Horizon { points: vec![Vec2::ZERO, Vec2::new(5.0, -3.0)] };
+        let half = GLADE_HALF + BUILD_MARGIN - 0.01;
+        let corners = [Vec2::new(half, half), Vec2::new(-half, half), Vec2::new(half, -half), Vec2::new(-half, -half)];
+        for h in [small, Horizon::default()] {
+            for yaw in 0..64 {
+                let a = yaw as f32 * std::f32::consts::TAU / 64.0;
+                let fwd = Vec3::new(a.sin(), -0.57, a.cos());
+                let r = h.distance(fwd);
+                for c in corners {
+                    assert!(c.dot(Vec2::new(a.sin(), a.cos())) < r, "corner {c} behind the horizon {r} at yaw {yaw}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -238,10 +238,21 @@ fn mix_toward(c: Vec3, target: u32, k: f32) -> Vec3 {
     c.lerp(h(target), k)
 }
 
+/// How much of the warm golden / dusk / dawn light survives a weather change at `hour`
+/// (0 at noon and at night, 1 around golden hour and dusk, ramping in from 15:30 and out by
+/// 20:30; at dawn from 05:00 to 08:30).
+pub fn warm_hour(hour: f32) -> f32 {
+    let x = hour.rem_euclid(24.0);
+    let eve = smooth(15.5, 17.5, x) * (1.0 - smooth(19.5, 20.5, x));
+    let dawn = smooth(4.5, 5.5, x) * (1.0 - smooth(7.0, 8.5, x));
+    eve.max(dawn)
+}
+
 /// Applies weather `kind`'s A4 modifiers to the time row `base`. `day` (0..1) fades the
 /// absolute replacements (sky, fill, fog) toward the time row at night, so a rainy night
-/// stays an ultramarine night.
-pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
+/// stays an ultramarine night. `warm` ([`warm_hour`]) keeps part of a golden / dusk / dawn
+/// row under rain: a warm horizon band in the sky and a warmer fill (DESIGN A8 dusk rain).
+pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig {
     let mut r = *base;
     let set = |c: Vec3, hex: u32| c.lerp(h(hex), day);
     // Absolute intensities (DESIGN "Fill #… × k") fade to the time row at night too.
@@ -266,24 +277,34 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32) -> Rig {
             r.fog_density = 0.006;
         }
         WeatherKind::Rain => {
-            r.sun_i *= 0.45;
-            r.fill = set(r.fill, 0x8C9CF7);
-            r.fill_i = seti(r.fill_i, 1.0);
+            // At golden hour and dusk the rain keeps the hour's warmth: the horizon band and
+            // half the mid band stay sunset, the fill stays half pink-violet, and the outline
+            // goes to night ink so it stays darker than the wet, dimmer land.
+            let keep = warm.clamp(0.0, 1.0);
+            r.sun_i *= 0.45 + 0.35 * keep;
+            r.fill = base.fill.lerp(h(0x8C9CF7), day * (1.0 - 0.6 * keep));
+            r.fill_i = seti(r.fill_i, 1.0 + 0.2 * keep);
             r.tint = set(r.tint, 0x4A3AB5);
-            sky(&mut r, [0x4A6BD6, 0x6B94EF, 0x9CB5FF]);
+            for (i, (c, hx)) in r.sky.iter_mut().zip([0x4A6BD6, 0x6B94EF, 0x9CB5FF]).enumerate() {
+                let hold = [0.0, 0.45, 0.85][i] * keep;
+                *c = c.lerp(h(hx), day * (1.0 - hold));
+            }
             r.fog = set(r.fog, 0x6B9CE6);
             r.fog_density *= 2.0;
             r.sea[1] = set(r.sea[1], 0x08A5C5);
+            r.outline = r.outline.lerp(h(OUTLINE_NIGHT), 0.5 * day);
         }
         WeatherKind::Storm => {
-            // DESIGN: sun ×0.30, fill ×0.90. Lifted a little (×0.45, ×1.0) so the storm
-            // frame stays readable at 240p instead of sinking into near-black.
+            // DESIGN: sun ×0.30, fill ×0.90. Lifted (×0.45, ×1.3) so the storm frame stays
+            // readable at 240p: warm albedos go plum and slate, not near-black mud.
             r.sun = set(r.sun, 0x8CEFE6);
             r.sun_i = base.sun_i * 0.45;
             r.fill = set(r.fill, 0x5A7BDE);
-            r.fill_i = seti(r.fill_i, 1.0);
+            r.fill_i = seti(r.fill_i, 1.3);
             r.tint = set(r.tint, 0x31107B);
             r.rim = h(0x42FFE6);
+            // Night ink: the day keyline (#31217B) is lighter than the storm-dark land.
+            r.outline = h(OUTLINE_NIGHT);
             sky(&mut r, [0x29107B, 0x2952BD, 0x19A5AD]);
             r.fog = set(r.fog, 0x29639C);
             for (i, hx) in [0x10C5B5, 0x1084AD, 0x103A9C, 0x10216B].into_iter().enumerate() {
@@ -408,7 +429,7 @@ pub fn rain_velocity(wind: Vec2, speed: f32, right_h: Vec2, fwd_h: Vec2, pitch_s
     vel
 }
 /// Precipitation density: particles per m² of ground box (rain, snow) and caps.
-const RAIN_PER_M2: f32 = 450.0 / 1600.0;
+const RAIN_PER_M2: f32 = 320.0 / 1600.0;
 const SNOW_PER_M2: f32 = 800.0 / 1600.0;
 const MAX_RAIN: f32 = 7000.0;
 const MAX_SNOW: f32 = 5000.0;
@@ -456,6 +477,7 @@ pub fn environment(hour: f32, m: &WeatherMix) -> Environment {
     let base = rig_at(hour);
     let nw = night_weight(hour);
     let day = 1.0 - nw;
+    let warm = warm_hour(hour);
     let sum: f32 = m.w.iter().sum::<f32>().max(1e-4);
     let mut rig = base;
     let mut acc: Option<Rig> = None;
@@ -465,7 +487,7 @@ pub fn environment(hour: f32, m: &WeatherMix) -> Environment {
         if wk <= 0.0 {
             continue;
         }
-        let r = apply_weather(&base, k, day);
+        let r = apply_weather(&base, k, day, warm);
         acc = Some(match acc {
             None => r,
             Some(a) => a.lerp(&r, wk / (acc_w + wk)),
@@ -708,12 +730,16 @@ fn particles(
         st.mesh = Some(h);
     }
     let fwd3 = cam.forward().as_vec3();
-    let focus = ground_focus(cam.translation(), fwd3);
-    // Fill the whole view (not a column around the focus): a box in the camera's ground axes.
-    let half_view = match projection {
-        Projection::Orthographic(o) => o.area.half_size(),
-        _ => Vec2::new(crate::render::VIEW_HEIGHT * 0.89, crate::render::VIEW_HEIGHT * 0.5),
+    // Fill the whole view (not a column around the focus): a box in the camera's ground axes,
+    // centred on the ground point at the middle of the frame (the focus sits below it, see
+    // `render::VIEW_ORIGIN_Y`).
+    let view = match projection {
+        Projection::Orthographic(o) => o.area,
+        _ => Rect::from_center_half_size(Vec2::ZERO, Vec2::new(crate::render::VIEW_HEIGHT * 0.89, crate::render::VIEW_HEIGHT * 0.5)),
     };
+    let half_view = view.half_size();
+    let centre = cam.translation() + cam.right().as_vec3() * view.center().x + cam.up().as_vec3() * view.center().y;
+    let focus = ground_focus(centre, fwd3);
     let fwd_h = Vec2::new(fwd3.x, fwd3.z).normalize_or(Vec2::NEG_Y);
     let right_h = Vec2::new(-fwd_h.y, fwd_h.x);
     let pitch_sin = -fwd3.y;
@@ -894,6 +920,21 @@ mod tests {
         // Night rain stays a night.
         let nr = environment(23.0, &WeatherMix::settled(WeatherKind::Rain));
         assert_eq!(nr.sky_top, environment(23.0, &WeatherMix::settled(WeatherKind::Clear)).sky_top);
+        // Storm keylines are night ink, darker than the storm-lit land.
+        assert_eq!(unit_to_hex(fog_unit(storm.outline)), 0x10104A);
+    }
+
+    /// RL-5: a dusk rain keeps a warm sky band and a warm fill; a noon rain is all rain.
+    #[test]
+    fn dusk_rain_keeps_its_warmth() {
+        let hue = |lin: Vec3| rgb_to_hsv(fog_unit(lin)).x;
+        let warm = |hue: f32| !(60.0..=280.0).contains(&hue);
+        let dusk = environment(18.5, &WeatherMix::settled(WeatherKind::Rain));
+        assert!(warm(hue(dusk.sky_horizon)), "dusk-rain horizon {:06X}", unit_to_hex(fog_unit(dusk.sky_horizon)));
+        assert!(dusk.fill_color.x > dusk.fill_color.y, "dusk-rain fill is warm: {}", dusk.fill_color);
+        let noon = environment(12.0, &WeatherMix::settled(WeatherKind::Rain));
+        assert_eq!(unit_to_hex(fog_unit(noon.sky_horizon)), 0x9CB5FF);
+        assert_eq!((warm_hour(12.0), warm_hour(23.0), warm_hour(18.5)), (0.0, 0.0, 1.0));
     }
 
     fn fog_unit(lin: Vec3) -> Vec3 {
