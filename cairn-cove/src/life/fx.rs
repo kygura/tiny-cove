@@ -4,27 +4,7 @@
 use crate::render::{Particle, ParticleKind};
 use crate::weather::WeatherKind;
 use bevy::prelude::*;
-use cairn_cove_core::{mesh::hash_f, terrain::Terrain};
-
-/// DESIGN.md §Art "Fire and light" / "Water, sky, ink and life" tokens (linear RGB).
-pub mod tok {
-    use bevy::prelude::Vec3;
-    use cairn_cove_core::palette::srgb;
-    pub fn flame_white() -> Vec3 { srgb(0xFFF7AD) }
-    pub fn glow_core() -> Vec3 { srgb(0xFFE65A) }
-    pub fn glow_fire() -> Vec3 { srgb(0xFF7B19) }
-    pub fn glow_ember() -> Vec3 { srgb(0xFF3A31) }
-    pub fn ember_fade() -> Vec3 { srgb(0x84195A) }
-    pub fn smoke() -> Vec3 { srgb(0xE6DEF7) }
-    pub fn smoke_shade() -> Vec3 { srgb(0xA59CDE) }
-    pub fn smoke_night() -> Vec3 { srgb(0x5A4A9C) }
-    pub fn firefly() -> Vec3 { srgb(0xDEFF5A) }
-    pub fn gull() -> Vec3 { srgb(0xF7EFDE) }
-    pub fn gull_tip() -> Vec3 { srgb(0x31217B) }
-    pub fn crab() -> Vec3 { srgb(0xFF5A31) }
-    pub fn fish() -> Vec3 { srgb(0x9CEFFF) }
-    pub fn foam() -> Vec3 { srgb(0xFFFFFF) }
-}
+use cairn_cove_core::{mesh::hash_f, palette, terrain::Terrain};
 
 /// Flames per fire (DESIGN §A7: 6-10) and the life of one flame particle (s).
 pub const FLAMES: usize = 8;
@@ -58,10 +38,10 @@ pub fn fire_lit(kind: FireKind, hour: f32, weather: WeatherKind) -> bool {
 /// Flame life stage 0..=3: flame_white, glow_core, glow_fire, glow_ember in four equal steps.
 pub fn flame_color(stage: usize) -> Vec3 {
     match stage {
-        0 => tok::flame_white(),
-        1 => tok::glow_core(),
-        2 => tok::glow_fire(),
-        _ => tok::glow_ember(),
+        0 => palette::flame_white(),
+        1 => palette::glow_core(),
+        2 => palette::glow_fire(),
+        _ => palette::glow_ember(),
     }
 }
 
@@ -82,7 +62,7 @@ pub fn flame_particles(pos: Vec3, kind: FireKind, t: f32, salt: f32, wind: Vec2,
         let u = (t / 1.4 + j as f32 * 0.5 + salt * 0.21).fract();
         let drift = wind * u * 1.6;
         let p = pos + Vec3::new(drift.x + (u * 7.0 + j as f32).sin() * 0.15, 0.5 * k + u * 1.8, drift.y);
-        out.push(Particle::new(ParticleKind::Spark, p, 0.15, tok::glow_ember().lerp(tok::ember_fade(), u).extend(1.0 - u)));
+        out.push(Particle::new(ParticleKind::Spark, p, 0.15, palette::glow_ember().lerp(palette::ember_fade(), u).extend(1.0 - u)));
     }
 }
 
@@ -93,7 +73,7 @@ pub fn smoke_particles(pos: Vec3, n: usize, scale: f32, t: f32, salt: f32, wind:
         let age = (t / 3.0 + i as f32 / n as f32 + salt * 0.37).fract();
         let drift = wind * age * 2.2;
         let p = pos + Vec3::new(drift.x + (age * 9.0 + i as f32).sin() * 0.12, age * 3.2, drift.y);
-        let c = tok::smoke().lerp(tok::smoke_shade(), age * 0.7).lerp(tok::smoke_night(), night);
+        let c = palette::smoke().lerp(palette::smoke_shade(), age * 0.7).lerp(palette::smoke_night(), night);
         out.push(Particle::new(ParticleKind::Puff, p, (0.35 + age * 0.9) * scale, c.extend((1.3 - 1.2 * age).clamp(0.0, 1.0))));
     }
 }
@@ -114,7 +94,7 @@ pub fn leap_particles(from: Vec2, dir: Vec2, level: f32, age: f32, out: &mut Vec
                 continue;
             }
             let fade = 1.0 - k as f32 * 0.22;
-            out.push(Particle::new(ParticleKind::Spark, leap_pos(from, dir, level, a), 0.3 * fade, tok::fish().extend(fade)));
+            out.push(Particle::new(ParticleKind::Spark, leap_pos(from, dir, level, a), 0.3 * fade, palette::fish().extend(fade)));
         }
     }
     if age < 0.5 {
@@ -133,7 +113,7 @@ fn ring(c: Vec2, level: f32, age: f32, out: &mut Vec<Particle>) {
     for i in 0..8 {
         let a = i as f32 / 8.0 * std::f32::consts::TAU;
         let p = Vec3::new(c.x + a.cos() * r, level + 0.05 + age * 0.3 * fade, c.y + a.sin() * r);
-        out.push(Particle::new(ParticleKind::Puff, p, 0.28, tok::foam().extend(fade)));
+        out.push(Particle::new(ParticleKind::Puff, p, 0.28, palette::foam().extend(fade)));
     }
 }
 
@@ -149,7 +129,7 @@ pub fn firefly_particles(homes: &[Vec3], t: f32, night: f32, out: &mut Vec<Parti
                     (t * 0.27 + s * 1.7).cos() * 1.1,
                 );
             let blink = (0.5 + 0.7 * (t * 1.7 + s * 2.3).sin()).clamp(0.0, 1.0);
-            out.push(Particle::new(ParticleKind::Spark, p, 0.3, tok::firefly().extend(blink * night)));
+            out.push(Particle::new(ParticleKind::Spark, p, 0.3, palette::firefly().extend(blink * night)));
         }
     }
 }
@@ -177,8 +157,8 @@ mod tests {
 
     #[test]
     fn flames_step_through_hot_colours() {
-        assert_eq!(flame_color(0), tok::flame_white());
-        assert_eq!(flame_color(3), tok::glow_ember());
+        assert_eq!(flame_color(0), palette::flame_white());
+        assert_eq!(flame_color(3), palette::glow_ember());
         let mut ps = Vec::new();
         flame_particles(Vec3::new(1.0, 2.0, 3.0), FireKind::Pit, 1.234, 0.5, Vec2::new(1.0, 0.0), &mut ps);
         assert_eq!(ps.len(), FLAMES + 2);

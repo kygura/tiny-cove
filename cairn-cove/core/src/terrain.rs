@@ -515,8 +515,7 @@ impl Terrain {
         if n.y < 40f32.to_radians().cos() {
             // Cliff strata: an ochre stripe every 1.2 m of height.
             let band = (c.y / 1.2).rem_euclid(1.0) < 0.3;
-            let base = palette::rock().lerp(palette::dirt(), 0.3);
-            let col = if band { palette::rock().lerp(palette::hay(), 0.55) } else { base };
+            let col = if band { palette::cliff_band() } else { palette::cliff() };
             (Surface::Rock, col * jit)
         } else if wet > 0.5 || c.y < SEA_LEVEL - 0.1 {
             // Lagoon beds and the seabed: wet honey sand.

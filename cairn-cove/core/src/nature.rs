@@ -1,9 +1,8 @@
 //! Trees, clutter props and painted ground scatter.
 //!
 //! Objects are built in a local frame (origin on the ground, +y up), then scaled, rotated by
-//! `Placed::angle` in the x,z plane and stood on the terrain. Colours come from the shared
-//! `palette` fns where one exists; plant, fibre and flower tokens that have no palette fn yet
-//! use the DESIGN.md §Art hex values through `palette::srgb`.
+//! `Placed::angle` in the x,z plane and stood on the terrain. Colours come from the
+//! DESIGN.md tokens in `palette.rs`.
 
 use crate::geom;
 use crate::mesh::{hash2, Marker, MarkerKind, MeshData, Rng, Surface};
@@ -15,42 +14,6 @@ use std::f32::consts::{PI, TAU};
 
 const V: fn(f32, f32, f32) -> Vec3 = Vec3::new;
 
-/// DESIGN.md §Art tokens (sRGB hex → linear) that `palette.rs` has no named fn for.
-mod tok {
-    use super::{palette, Vec3};
-    fn c(hex: u32) -> Vec3 {
-        palette::srgb(hex)
-    }
-    pub fn leaf_sea_pine() -> Vec3 { c(0x21AD73) }
-    pub fn leaf_palm() -> Vec3 { c(0x8CDE3A) }
-    pub fn leaf_cypress() -> Vec3 { c(0x108C63) }
-    pub fn leaf_fig() -> Vec3 { c(0x42C54A) }
-    pub fn fig_fruit() -> Vec3 { c(0xB5317B) }
-    pub fn snag() -> Vec3 { c(0xEFE6CE) }
-    pub fn grain() -> Vec3 { c(0xC5A5C5) }
-    pub fn palm_trunk() -> Vec3 { c(0xCE8C4A) }
-    pub fn bark() -> Vec3 { c(0x8C4231) }
-    pub fn bark_hi() -> Vec3 { c(0xB55A42) }
-    pub fn timber() -> Vec3 { c(0xBD6329) }
-    pub fn rope() -> Vec3 { c(0xEFC56B) }
-    pub fn reed() -> Vec3 { c(0xD6C54A) }
-    pub fn clay() -> Vec3 { c(0xDE7342) }
-    pub fn ember() -> Vec3 { c(0x84195A) }
-    pub fn sailcloth() -> Vec3 { c(0xF7E6AD) }
-    pub fn fish() -> Vec3 { c(0x9CEFFF) }
-    pub fn nacre() -> Vec3 { c(0xFFADA5) }
-    pub fn stone_alt() -> Vec3 { c(0xBDA5EF) }
-    pub fn pebble_lilac() -> Vec3 { c(0xA59CEF) }
-    pub fn pebble_rose() -> Vec3 { c(0xEFB59C) }
-    pub fn marram() -> Vec3 { c(0xDEE65A) }
-    pub fn grass_tip() -> Vec3 { c(0xADEF4A) }
-    pub fn sea_pink() -> Vec3 { c(0xFF5AB5) }
-    pub fn sea_pink_deep() -> Vec3 { c(0xE63A9C) }
-    pub fn gorse() -> Vec3 { c(0xFFD619) }
-    pub fn flax() -> Vec3 { c(0x5A8CFF) }
-    pub fn wrack(i: usize) -> Vec3 { c([0x7B8C10, 0xCE9C10, 0x5A7310][i % 3]) }
-    pub fn flower(i: usize) -> Vec3 { c([0xFF5AB5, 0xFFD619, 0x5A8CFF, 0xF7EFDE, 0xFF5A4A][i % 5]) }
-}
 
 // ---------------------------------------------------------------------------------------------
 // Small helpers
@@ -229,7 +192,7 @@ fn pad(m: &mut MeshData, c: Vec3, r: f32, h: f32, col: Vec3) {
 }
 
 fn sea_pine(m: &mut MeshData, rng: &mut Rng) {
-    let bark = tint(tok::bark(), rng, 0.2);
+    let bark = tint(palette::bark(), rng, 0.2);
     // Trunk bent downwind (+x): the wind-sculpted lean of a coastal pine.
     let lean = rng.range(0.8, 1.3);
     let pts: Vec<Vec3> = (0..=6)
@@ -238,22 +201,22 @@ fn sea_pine(m: &mut MeshData, rng: &mut Rng) {
             V(lean * 1.2 * t * t, 3.4 * t, 0.18 * (t * 5.0).sin())
         })
         .collect();
-    tube(m, &pts, &|i| 0.30 - 0.19 * (i as f32 / 6.0), 6, &|i| if i % 2 == 0 { bark } else { tok::bark_hi() }, Surface::Bark);
+    tube(m, &pts, &|i| 0.30 - 0.19 * (i as f32 / 6.0), 6, &|i| if i % 2 == 0 { bark } else { palette::bark_hi() }, Surface::Bark);
     let top = pts[6];
     // Branches reaching the lower pads.
     let low = V(top.x * 0.35 - 0.7, 2.2, 0.3);
     let side = V(top.x + 0.9, 3.0, -0.4);
     log(m, pts[3], low, 0.07, bark, Surface::Bark);
     log(m, pts[4], side, 0.07, bark, Surface::Bark);
-    let pine = tok::leaf_sea_pine();
+    let pine = palette::leaf_sea_pine();
     // Three umbrella layers, lopsided downwind, each lit a little brighter than the one below.
     pad(m, low + V(0.0, 0.0, 0.0), 1.15, 0.36, tint(dim(pine, 0.85), rng, 0.2));
     pad(m, side + V(0.0, 0.0, 0.0), 1.2, 0.38, tint(pine, rng, 0.2));
-    pad(m, top + V(0.2, 0.0, 0.0), 1.75, 0.42, tint(pine.lerp(tok::grass_tip(), 0.12), rng, 0.2));
+    pad(m, top + V(0.2, 0.0, 0.0), 1.75, 0.42, tint(pine.lerp(palette::grass_tip(), 0.12), rng, 0.2));
 }
 
 fn palm(m: &mut MeshData, rng: &mut Rng) {
-    let trunk = tint(tok::palm_trunk(), rng, 0.2);
+    let trunk = tint(palette::palm_trunk(), rng, 0.2);
     let lean = rng.range(0.9, 1.4);
     let n = 9usize;
     let pts: Vec<Vec3> = (0..=n)
@@ -266,7 +229,7 @@ fn palm(m: &mut MeshData, rng: &mut Rng) {
     let ringed = |i: usize| (0.21 - 0.09 * (i as f32 / n as f32)) * if i % 2 == 0 { 1.0 } else { 0.86 };
     tube(m, &pts, &ringed, 6, &|i| if i % 2 == 0 { trunk } else { dim(trunk, 0.82) }, Surface::Bark);
     let crown = pts[n] - V(0.0, 0.05, 0.0);
-    let leaf = tok::leaf_palm();
+    let leaf = palette::leaf_palm();
     let k = 9 + (rng.f() * 2.0) as usize;
     let y0 = rng.f() * TAU;
     for i in 0..k {
@@ -277,35 +240,35 @@ fn palm(m: &mut MeshData, rng: &mut Rng) {
     // Young upright fronds in the middle of the crown.
     for i in 0..2 {
         let yaw = y0 + i as f32 * PI;
-        frond(m, crown, yaw, 0.9, 1.1, 0.35, 0.12, leaf, tok::grass_tip(), Surface::Leaves);
+        frond(m, crown, yaw, 0.9, 1.1, 0.35, 0.12, leaf, palette::grass_tip(), Surface::Leaves);
     }
     // Coconuts under the crown.
     for i in 0..3 {
         let a = y0 + i as f32 * TAU / 3.0;
         let c = crown + V(a.cos() * 0.17, -0.2, a.sin() * 0.17);
-        blob(m, c, Vec3::splat(0.12), 0.1, tint(tok::bark(), rng, 0.2), Surface::Bark, rng, None);
+        blob(m, c, Vec3::splat(0.12), 0.1, tint(palette::bark(), rng, 0.2), Surface::Bark, rng, None);
     }
 }
 
 fn cypress(m: &mut MeshData, rng: &mut Rng) {
-    let bark = tok::bark();
+    let bark = palette::bark();
     cyl(m, Vec3::ZERO, 0.16, 0.1, 0.7, 6, (false, false), bark, Surface::Bark);
     // Six stacked cones: fat in the lower third, narrowing to a flame tip that sways a little.
     const R: [f32; 6] = [0.95, 1.0, 0.86, 0.68, 0.47, 0.28];
     let sway = rng.range(-0.15, 0.15);
     for (k, r) in R.iter().enumerate() {
         let t = k as f32 / 5.0;
-        let col = tint(tok::leaf_cypress(), rng, 0.15).lerp(tok::leaf_palm(), 0.1 * t);
+        let col = tint(palette::leaf_cypress(), rng, 0.15).lerp(palette::leaf_palm(), 0.1 * t);
         cyl(m, V(sway * t * t, 0.45 + 0.88 * k as f32, 0.0), *r, 0.0, 1.45, 7, (false, true), col, Surface::Leaves);
     }
 }
 
 fn fig(m: &mut MeshData, rng: &mut Rng) {
-    let bark = tint(tok::bark(), rng, 0.2);
+    let bark = tint(palette::bark(), rng, 0.2);
     let pts = [V(0.0, 0.0, 0.0), V(0.05, 0.6, 0.0), V(0.0, 1.2, 0.05)];
     tube(m, &pts, &|i| 0.3 - 0.07 * i as f32, 6, &|_| bark, Surface::Bark);
     // Multi-lobe canopy: a crown lobe and four around it, wide rather than tall.
-    let leaf = tok::leaf_fig();
+    let leaf = palette::leaf_fig();
     let mut lobes = vec![(V(0.0, 2.55, 0.0), 1.25)];
     let a0 = rng.f() * TAU;
     for i in 0..4 {
@@ -323,14 +286,14 @@ fn fig(m: &mut MeshData, rng: &mut Rng) {
         let (th, ph) = (rng.f() * TAU, rng.range(0.6, 1.9));
         let d = V(th.cos() * ph.sin(), ph.cos(), th.sin() * ph.sin());
         let p = c + d * V(r, r * 0.78, r) * 0.98;
-        m.aabb(p - Vec3::splat(0.07), p + Vec3::splat(0.07), tok::fig_fruit(), Surface::Petal, 1.0);
+        m.aabb(p - Vec3::splat(0.07), p + Vec3::splat(0.07), palette::fig_fruit(), Surface::Petal, 1.0);
     }
 }
 
 fn snag(m: &mut MeshData, rng: &mut Rng) {
     // Bleached driftwood: lilac-grained cream, twisted trunk and bare branches.
-    let wood = tint(tok::snag(), rng, 0.15);
-    let grain = tok::grain().lerp(wood, 0.5);
+    let wood = tint(palette::snag(), rng, 0.15);
+    let grain = palette::grain().lerp(wood, 0.5);
     let n = 8usize;
     let (ph, amp) = (rng.f() * TAU, rng.range(0.18, 0.3));
     let pts: Vec<Vec3> = (0..=n)
@@ -385,7 +348,7 @@ fn canoe(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
     const N: usize = 8;
     const L: f32 = 1.75;
     let hull = tint(palette::wood(), rng, 0.15);
-    let inner = tint(tok::timber().lerp(tok::rope(), 0.35), rng, 0.1);
+    let inner = tint(palette::timber().lerp(palette::rope(), 0.35), rng, 0.1);
     let half = |x: f32| 0.02 + 0.33 * (1.0 - (x / L).abs().powf(2.2)).max(0.0).sqrt();
     let gunwale = |x: f32| 0.36 + 0.38 * (x / L).abs().powi(3);
     let keel = |x: f32| 0.06 + 0.3 * (x / L).abs().powi(3);
@@ -406,15 +369,15 @@ fn canoe(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
         m.quad(p(x0, k0 + 0.05, 0.0), p(x1, k1 + 0.05, 0.0), p(x1, g1 - 0.02, -iw1), p(x0, g0 - 0.02, -iw0), inner, Surface::Boards, 1.0);
         m.quad(p(x1, k1 + 0.05, 0.0), p(x0, k0 + 0.05, 0.0), p(x0, g0 - 0.02, iw0), p(x1, g1 - 0.02, iw1), inner, Surface::Boards, 1.0);
         // Gunwale rims.
-        m.quad(p(x1, g1, -w1), p(x0, g0, -w0), p(x0, g0 - 0.02, -iw0), p(x1, g1 - 0.02, -iw1), tok::timber(), Surface::Timber, 1.0);
-        m.quad(p(x0, g0, w0), p(x1, g1, w1), p(x1, g1 - 0.02, iw1), p(x0, g0 - 0.02, iw0), tok::timber(), Surface::Timber, 1.0);
+        m.quad(p(x1, g1, -w1), p(x0, g0, -w0), p(x0, g0 - 0.02, -iw0), p(x1, g1 - 0.02, -iw1), palette::timber(), Surface::Timber, 1.0);
+        m.quad(p(x0, g0, w0), p(x1, g1, w1), p(x1, g1 - 0.02, iw1), p(x0, g0 - 0.02, iw0), palette::timber(), Surface::Timber, 1.0);
     }
     // Carved prow post with a painted tip, thwarts, a bundle of paddles.
     let tipx = L + 0.02;
     log(m, V(tipx - 0.1, gunwale(L) - 0.05, 0.0), V(tipx + 0.1, gunwale(L) + 0.32, 0.0), 0.05, trim, Surface::Carving);
     for x in [-0.7f32, 0.0, 0.7] {
         let w = half(x) - 0.02;
-        m.beam(V(x, gunwale(x) - 0.06, -w), V(x, gunwale(x) - 0.06, w), 0.1, 0.05, tok::timber(), Surface::Timber, 1.0);
+        m.beam(V(x, gunwale(x) - 0.06, -w), V(x, gunwale(x) - 0.06, w), 0.1, 0.05, palette::timber(), Surface::Timber, 1.0);
     }
     // Outrigger: spindle float on +z, joined to the hull by two booms.
     let fz = 1.35;
@@ -422,7 +385,7 @@ fn canoe(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
     let radii = [0.02f32, 0.09, 0.1, 0.09, 0.02];
     tube(m, &float, &|i| radii[i], 6, &|_| inner, Surface::Timber);
     for x in [-0.55f32, 0.55] {
-        log(m, V(x, gunwale(x) - 0.02, half(x) - 0.03), V(x, 0.22, fz), 0.035, tok::timber(), Surface::Timber);
+        log(m, V(x, gunwale(x) - 0.02, half(x) - 0.03), V(x, 0.22, fz), 0.035, palette::timber(), Surface::Timber);
     }
 }
 
@@ -456,7 +419,7 @@ fn drying_rack(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
             1 => (V(x, 1.03, 0.246), rng.range(0.45, 0.6)),
             _ => (V(x, 1.03, -0.246), rng.range(0.45, 0.6)),
         };
-        let col = if i % 2 == 0 { tok::fish() } else { palette::shell() };
+        let col = if i % 2 == 0 { palette::fish() } else { palette::shell() };
         fish(m, top, len, rng.range(-0.5, 0.5), col * rng.range(0.92, 1.0));
     }
 }
@@ -466,14 +429,14 @@ fn firepit(m: &mut MeshData, rng: &mut Rng) -> Vec<Marker> {
     for i in 0..8usize {
         let a = i as f32 / 8.0 * TAU;
         let col = match i % 3 {
-            2 => tok::stone_alt(),
+            2 => palette::stone_alt(),
             0 => palette::rock(),
             _ => palette::dry_stone(),
         };
         blob(m, V(a.cos() * 0.62, 0.13, a.sin() * 0.62), V(0.2, 0.15, 0.2), 0.22, tint(col, rng, 0.15), Surface::Rock, rng, Some(0.0));
     }
     // Ember bed and crossed logs.
-    cyl(m, V(0.0, 0.0, 0.0), 0.5, 0.45, 0.07, 8, (true, false), tok::ember(), Surface::Dirt);
+    cyl(m, V(0.0, 0.0, 0.0), 0.5, 0.45, 0.07, 8, (true, false), palette::ember(), Surface::Dirt);
     let wood = palette::driftwood();
     for i in 0..3usize {
         let a = i as f32 * PI / 3.0 + rng.range(-0.15, 0.15);
@@ -486,7 +449,7 @@ fn firepit(m: &mut MeshData, rng: &mut Rng) -> Vec<Marker> {
 fn cairn(m: &mut MeshData, rng: &mut Rng) {
     // 5-9 rounded stones, tapering as they climb.
     let n = 5 + (rng.next_u64() % 5) as usize;
-    let cols = [palette::rock(), tok::stone_alt(), palette::dry_stone(), tok::pebble_rose(), tok::pebble_lilac()];
+    let cols = [palette::rock(), palette::stone_alt(), palette::dry_stone(), palette::pebble_rose(), palette::pebble_lilac()];
     let mut y = 0.0f32;
     let shift = rng.f() * TAU;
     for k in 0..n {
@@ -514,7 +477,7 @@ fn standing_stone(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
     m.quad(t(-1.0, -1.0, tops[3]), t(-1.0, 1.0, tops[0]), t(1.0, 1.0, tops[1]), t(1.0, -1.0, tops[2]), stone * 1.05, Surface::Rock, 0.8);
     // Wedge stones at the foot.
     blob(m, V(0.4, 0.1, 0.25), V(0.28, 0.2, 0.22), 0.2, tint(palette::dry_stone(), rng, 0.15), Surface::Rock, rng, Some(0.0));
-    blob(m, V(-0.35, 0.09, -0.2), V(0.22, 0.17, 0.2), 0.2, tint(tok::stone_alt(), rng, 0.15), Surface::Rock, rng, Some(0.0));
+    blob(m, V(-0.35, 0.09, -0.2), V(0.22, 0.17, 0.2), 0.2, tint(palette::stone_alt(), rng, 0.15), Surface::Rock, rng, Some(0.0));
     // Carved spiral (about 1.5 turns, outwards) and a zigzag below, painted in pigment.
     let zf = move |y: f32| db + (dt - db) * (y / h) + 0.012;
     let (cx, cy) = (0.0, h * 0.62);
@@ -571,7 +534,7 @@ fn net_rack(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
     log(m, V(-1.5, 1.95, 0.0), V(1.5, 1.95, 0.0), 0.05, pole, Surface::Timber);
     // The net drapes in a sagging belly from the top rope: 6 x 2 cells.
     const C: usize = 6;
-    let net = tok::rope();
+    let net = palette::rope();
     let at = |i: usize, j: usize| {
         let u = i as f32 / C as f32;
         let sag = (u * PI).sin();
@@ -597,7 +560,7 @@ fn net_rack(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
 }
 
 fn baskets(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
-    let reed = tok::reed();
+    let reed = palette::reed();
     // Woven baskets: flaring frusta with a dark open mouth and a trim-coloured rim band.
     for &(x, z, r, h) in &[(-0.35f32, 0.0f32, 0.34f32, 0.5f32), (0.28, 0.32, 0.26, 0.38)] {
         let col = tint(reed, rng, 0.15);
@@ -607,7 +570,7 @@ fn baskets(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
     }
     // Clay jars: belly, shoulder, neck, with a painted band.
     for &(x, z, s) in &[(0.45f32, -0.3f32, 1.0f32), (-0.05, -0.5, 0.8), (0.0, 0.6, 0.65)] {
-        let clay = tint(tok::clay(), rng, 0.15);
+        let clay = tint(palette::clay(), rng, 0.15);
         cyl(m, V(x, 0.0, z), 0.13 * s, 0.26 * s, 0.22 * s, 7, (false, false), clay, Surface::Dirt);
         cyl(m, V(x, 0.22 * s, z), 0.26 * s, 0.17 * s, 0.2 * s, 7, (false, false), clay, Surface::Dirt);
         cyl(m, V(x, 0.42 * s, z), 0.1 * s, 0.1 * s, 0.14 * s, 7, (false, false), dim(clay, 0.92), Surface::Dirt);
@@ -627,7 +590,7 @@ fn lantern_post(m: &mut MeshData, rng: &mut Rng, trim: Vec3) -> Vec<Marker> {
     m.aabb(V(0.6, 2.26, -0.04), V(0.68, 2.34, 0.04), trim, Surface::Carving, 1.0);
     // Hanging lantern: cord, iron cap and base, glowing glass.
     let iron = palette::metal();
-    m.aabb(V(0.6 - 0.01, 2.14, -0.01), V(0.62 + 0.01, 2.3, 0.01), tok::rope(), Surface::Fiber, 1.0);
+    m.aabb(V(0.6 - 0.01, 2.14, -0.01), V(0.62 + 0.01, 2.3, 0.01), palette::rope(), Surface::Fiber, 1.0);
     m.aabb(V(0.5, 2.1, -0.12), V(0.72, 2.15, 0.12), iron, Surface::Metal, 1.0);
     m.aabb(V(0.5, 1.8, -0.12), V(0.72, 1.85, 0.12), iron, Surface::Metal, 1.0);
     m.aabb(V(0.53, 1.85, -0.09), V(0.69, 2.1, 0.09), palette::glow(), Surface::Glow, 1.0);
@@ -639,7 +602,7 @@ fn pennant(m: &mut MeshData, rng: &mut Rng, colors: Colors) -> Vec<Marker> {
     let trim = palette::trim(colors);
     cyl(m, Vec3::ZERO, 0.13, 0.06, 5.5, 6, (true, false), pole, Surface::Timber);
     for y in [0.5f32, 1.4, 4.2] {
-        cyl(m, V(0.0, y, 0.0), 0.14 - 0.012 * y, 0.14 - 0.012 * y, 0.07, 6, (false, false), tok::rope(), Surface::Fiber);
+        cyl(m, V(0.0, y, 0.0), 0.14 - 0.012 * y, 0.14 - 0.012 * y, 0.07, 6, (false, false), palette::rope(), Surface::Fiber);
     }
     speck(m, V(0.0, 5.5, 0.0), 0.08, 0.3, 5, trim, Surface::Carving);
     // Long streaming pennant in sailcloth with bands of pigment, tapering to a swallow tail.
@@ -647,7 +610,7 @@ fn pennant(m: &mut MeshData, rng: &mut Rng, colors: Colors) -> Vec<Marker> {
     let seg = 7;
     let len = 2.9;
     let wave = |t: f32| V(0.1 + len * t, 0.0, 0.2 * (t * 7.0).sin() * t);
-    let band = |i: usize| if i % 2 == 0 { tok::sailcloth() } else { palette::pigment(colors.trim as u32 + (i as u32 / 2)) };
+    let band = |i: usize| if i % 2 == 0 { palette::sailcloth() } else { palette::pigment(colors.trim as u32 + (i as u32 / 2)) };
     for i in 0..seg {
         let (t0, t1) = (i as f32 / seg as f32, (i + 1) as f32 / seg as f32);
         let (p0, p1) = (wave(t0), wave(t1));
@@ -664,7 +627,7 @@ fn rock(m: &mut MeshData, rng: &mut Rng) {
     let c = tint(palette::rock(), rng, 0.2);
     blob(m, V(0.0, 0.34, 0.0), V(1.0, 0.7, 0.85), 0.28, c, Surface::Rock, rng, Some(0.0));
     if rng.f() < 0.6 {
-        blob(m, V(0.9, 0.17, 0.35), V(0.48, 0.34, 0.42), 0.25, tint(tok::stone_alt().lerp(c, 0.6), rng, 0.15), Surface::Rock, rng, Some(0.0));
+        blob(m, V(0.9, 0.17, 0.35), V(0.48, 0.34, 0.42), 0.25, tint(palette::stone_alt().lerp(c, 0.6), rng, 0.15), Surface::Rock, rng, Some(0.0));
     }
     if rng.f() < 0.5 {
         blob(m, V(-0.7, 0.14, -0.55), V(0.38, 0.28, 0.34), 0.25, c * 0.97, Surface::Rock, rng, Some(0.0));
@@ -674,7 +637,7 @@ fn rock(m: &mut MeshData, rng: &mut Rng) {
 fn bush(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
     // Flowering gorse: green lumps studded with saffron (and the odd flax or trim) flower specks.
     let n = 3 + (rng.f() * 2.0) as usize;
-    let leaf = tok::leaf_fig();
+    let leaf = palette::leaf_fig();
     for _ in 0..n {
         let c = V(rng.range(-0.4, 0.4), 0.0, rng.range(-0.4, 0.4));
         let r = rng.range(0.45, 0.62);
@@ -685,9 +648,9 @@ fn bush(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
             let (th, ph) = (rng.f() * TAU, rng.range(0.2, 1.2));
             let d = V(th.cos() * ph.sin(), ph.cos(), th.sin() * ph.sin());
             let col = match rng.next_u64() % 8 {
-                0 => tok::flax(),
+                0 => palette::flax(),
                 1 => trim,
-                _ => tok::gorse(),
+                _ => palette::gorse(),
             };
             speck(m, cc + d * V(r, ry, r) * 0.92, 0.075, 0.09, 4, col, Surface::Petal);
         }
@@ -695,24 +658,24 @@ fn bush(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
 }
 
 fn crab_pots(m: &mut MeshData, rng: &mut Rng, trim: Vec3) {
-    let reed = tok::reed();
+    let reed = palette::reed();
     let mut pot = |m: &mut MeshData, c: Vec3| {
         let col = tint(reed, rng, 0.15);
         cyl(m, c, 0.4, 0.3, 0.5, 8, (false, true), col, Surface::Fiber);
         // Timber hoops and the funnel mouth.
-        cyl(m, c + V(0.0, 0.04, 0.0), 0.405, 0.405, 0.05, 8, (false, false), tok::timber(), Surface::Timber);
-        cyl(m, c + V(0.0, 0.4, 0.0), 0.325, 0.31, 0.05, 8, (false, false), tok::timber(), Surface::Timber);
+        cyl(m, c + V(0.0, 0.04, 0.0), 0.405, 0.405, 0.05, 8, (false, false), palette::timber(), Surface::Timber);
+        cyl(m, c + V(0.0, 0.4, 0.0), 0.325, 0.31, 0.05, 8, (false, false), palette::timber(), Surface::Timber);
         cyl(m, c + V(0.0, 0.5, 0.0), 0.18, 0.18, 0.0, 6, (true, false), dim(col, 0.5), Surface::Fiber);
     };
     pot(m, V(-0.42, 0.0, 0.0));
     pot(m, V(0.42, 0.0, 0.1));
     pot(m, V(0.0, 0.5, 0.04));
     // Rope from the top pot to a trim-coloured buoy, clay weight on the ground.
-    let rope = tok::rope();
+    let rope = palette::rope();
     m.beam(V(0.1, 0.95, 0.05), V(0.65, 0.5, 0.65), 0.04, 0.04, rope, Surface::Fiber, 1.0);
     m.beam(V(0.65, 0.5, 0.65), V(0.75, 0.16, 0.95), 0.04, 0.04, rope, Surface::Fiber, 1.0);
     cyl(m, V(0.75, 0.0, 0.95), 0.12, 0.1, 0.2, 6, (true, false), trim, Surface::Carving);
-    cyl(m, V(-0.2, 0.0, -0.55), 0.1, 0.08, 0.1, 6, (true, false), tok::clay(), Surface::Dirt);
+    cyl(m, V(-0.2, 0.0, -0.55), 0.1, 0.08, 0.1, 6, (true, false), palette::clay(), Surface::Dirt);
 }
 
 fn woodpile(m: &mut MeshData, rng: &mut Rng) {
@@ -723,7 +686,7 @@ fn woodpile(m: &mut MeshData, rng: &mut Rng) {
             let len = rng.range(0.5, 0.65);
             let sh = rng.range(-0.1, 0.1);
             let col = tint(palette::driftwood(), rng, 0.2);
-            prism(m, V(-len + sh, y, z), V(len + sh, y, z), 0.14 + rng.range(-0.02, 0.01), 5, col, tok::grain(), Surface::Bark);
+            prism(m, V(-len + sh, y, z), V(len + sh, y, z), 0.14 + rng.range(-0.02, 0.01), 5, col, palette::grain(), Surface::Bark);
         }
     }
 }
@@ -939,7 +902,7 @@ fn tuft(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
         let h = rng.range(0.22, 0.45);
         let lean = V(rng.range(-0.08, 0.08), 0.0, rng.range(-0.08, 0.08));
         let base = at + V(rng.range(-0.05, 0.05), -0.02, rng.range(-0.05, 0.05));
-        blade(m, base, dir, 0.035, base + lean + Vec3::Y * h, dim(base_col, 0.75), base_col.lerp(tok::grass_tip(), 0.4), Surface::Grass);
+        blade(m, base, dir, 0.035, base + lean + Vec3::Y * h, dim(base_col, 0.75), base_col.lerp(palette::grass_tip(), 0.4), Surface::Grass);
     }
 }
 
@@ -950,23 +913,23 @@ fn flower(m: &mut MeshData, at: Vec3, idx: usize, rng: &mut Rng) {
     let stem = palette::grass();
     let top = at + V(rng.range(-0.03, 0.03), h, rng.range(-0.03, 0.03));
     blade(m, at - Vec3::Y * 0.02, dir, 0.012, top, dim(stem, 0.7), stem, Surface::Grass);
-    cyl(m, top - Vec3::Y * 0.02, 0.09, 0.0, 0.06, 4, (false, false), tok::flower(idx) * rng.range(0.92, 1.0), Surface::Petal);
+    cyl(m, top - Vec3::Y * 0.02, 0.09, 0.0, 0.06, 4, (false, false), palette::wildflower(idx) * rng.range(0.92, 1.0), Surface::Petal);
 }
 
 /// Thrift cushion: a low pink dome with deeper magenta centres.
 fn thrift(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
     let r = rng.range(0.22, 0.34);
     let base = at - Vec3::Y * 0.02;
-    cyl(m, base, r, r * 0.5, 0.15, 6, (true, false), tok::sea_pink() * rng.range(0.9, 1.0), Surface::Petal);
+    cyl(m, base, r, r * 0.5, 0.15, 6, (true, false), palette::sea_pink() * rng.range(0.9, 1.0), Surface::Petal);
     for _ in 0..3 {
         let o = V(rng.range(-0.6, 0.6), 0.0, rng.range(-0.6, 0.6)) * r * 0.6;
-        speck(m, base + o + Vec3::Y * 0.12, 0.05, 0.07, 3, tok::sea_pink_deep(), Surface::Petal);
+        speck(m, base + o + Vec3::Y * 0.12, 0.05, 0.07, 3, palette::sea_pink_deep(), Surface::Petal);
     }
 }
 
 /// Marram tuft: a fan of tall arching blades.
 fn marram(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
-    let col = tok::marram() * rng.range(0.88, 1.0);
+    let col = palette::marram() * rng.range(0.88, 1.0);
     let n = 5;
     let y0 = rng.f() * TAU;
     for k in 0..n {
@@ -983,7 +946,7 @@ fn marram(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
 fn wrack_strands(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
     let strands = 2 + (rng.f() * 2.0) as usize;
     for k in 0..strands {
-        let col = tok::wrack((rng.next_u64() % 3) as usize);
+        let col = palette::wrack_strand((rng.next_u64() % 3) as usize);
         let mut yaw = rng.f() * TAU;
         let w = rng.range(0.03, 0.05);
         let mut p = at + V(rng.range(-0.15, 0.15), 0.025 + 0.002 * k as f32, rng.range(-0.15, 0.15));
@@ -1002,7 +965,7 @@ fn wrack_strands(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
 /// Small flattened stone: jittered octahedron in lilac or rose.
 fn pebble(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
     let (rx, rz, h) = (rng.range(0.04, 0.1), rng.range(0.04, 0.1), rng.range(0.03, 0.06));
-    let col = if rng.f() < 0.5 { tok::pebble_lilac() } else { tok::pebble_rose() } * rng.range(0.9, 1.05);
+    let col = if rng.f() < 0.5 { palette::pebble_lilac() } else { palette::pebble_rose() } * rng.range(0.9, 1.05);
     let c = at + Vec3::Y * (h * 0.4);
     let ring = [V(rx, 0.0, 0.0), V(0.0, 0.0, rz * 1.2), V(-rx, 0.0, 0.0), V(0.0, 0.0, -rz)];
     for i in 0..4 {
@@ -1014,7 +977,7 @@ fn pebble(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
 
 /// Little scallop shell: a flat five-sided cone, white or pink nacre.
 fn shell(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
-    let col = if rng.f() < 0.4 { tok::nacre() } else { palette::shell() };
+    let col = if rng.f() < 0.4 { palette::nacre() } else { palette::shell() };
     speck(m, at + V(0.0, -0.005, 0.0), rng.range(0.04, 0.07), 0.03, 5, col, Surface::Shell);
 }
 

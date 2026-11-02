@@ -58,47 +58,6 @@ const SEA_STEP: f32 = 0.5;
 const STATION: f32 = 1.0;
 
 // ---------------------------------------------------------------------------------------------
-// Tokens (DESIGN.md §A1) not exposed by name in palette.rs yet; palette fns are used elsewhere.
-// ---------------------------------------------------------------------------------------------
-
-mod tok {
-    use crate::palette::srgb;
-    use glam::Vec3;
-    /// Every third dyke stone is lilac slate.
-    pub fn dry_stone_alt() -> Vec3 {
-        srgb(0xBDA5EF)
-    }
-    /// Joints and undercuts in coursed stone.
-    pub fn stone_joint() -> Vec3 {
-        srgb(0x84529C)
-    }
-    /// Sod bands on turf dykes.
-    pub fn sod() -> Vec3 {
-        srgb(0x9C4A29)
-    }
-    /// Lashings, rope rails and nets.
-    pub fn rope() -> Vec3 {
-        srgb(0xEFC56B)
-    }
-    /// Rope twist and weave crossings.
-    pub fn fiber_dark() -> Vec3 {
-        srgb(0xB58C29)
-    }
-    /// Second lichen colour.
-    pub fn lichen_yellow() -> Vec3 {
-        srgb(0xEFE63A)
-    }
-    /// Weathering lerp target for wood (never pure white: that is reserved for foam).
-    pub fn salt_bleach() -> Vec3 {
-        srgb(0xF7EFD6)
-    }
-    /// Thrift cushion tip.
-    pub fn grass_tip() -> Vec3 {
-        srgb(0xADEF4A)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------------------------
 
@@ -129,10 +88,10 @@ fn jit(c: Vec3, r: &mut Rng, amt: f32) -> Vec3 {
 
 /// Stone weathering: a little salt bleach plus lichen blotches on `0.35·w` of the stones.
 fn weather_stone(c: Vec3, w: f32, r: &mut Rng) -> Vec3 {
-    let c = c.lerp(tok::salt_bleach(), 0.2 * w);
+    let c = c.lerp(palette::salt_bleach(), 0.2 * w);
     let (roll, which) = (r.f(), r.f());
     if roll < 0.35 * w {
-        c.lerp(if which < 0.67 { palette::lichen() } else { tok::lichen_yellow() }, 0.75)
+        c.lerp(if which < 0.67 { palette::lichen() } else { palette::lichen_yellow() }, 0.75)
     } else {
         c
     }
@@ -140,10 +99,10 @@ fn weather_stone(c: Vec3, w: f32, r: &mut Rng) -> Vec3 {
 
 /// Wood weathering: salt bleach by `0.6·w`, occasional lichen.
 fn weather_wood(c: Vec3, w: f32, r: &mut Rng) -> Vec3 {
-    let c = c.lerp(tok::salt_bleach(), 0.6 * w);
+    let c = c.lerp(palette::salt_bleach(), 0.6 * w);
     let (roll, which) = (r.f(), r.f());
     if roll < 0.2 * w {
-        c.lerp(if which < 0.67 { palette::lichen() } else { tok::lichen_yellow() }, 0.45)
+        c.lerp(if which < 0.67 { palette::lichen() } else { palette::lichen_yellow() }, 0.45)
     } else {
         c
     }
@@ -520,7 +479,7 @@ impl<'a> Dyke<'a> {
     }
 
     fn stone_col(&self, r: &mut Rng) -> Vec3 {
-        let c = if r.f() < 0.33 { tok::dry_stone_alt() } else { palette::dry_stone() };
+        let c = if r.f() < 0.33 { palette::dry_stone_alt() } else { palette::dry_stone() };
         weather_stone(jit(c, r, 0.06), self.weather, r)
     }
 
@@ -793,7 +752,7 @@ impl<'a> Dyke<'a> {
 
     /// Recessed joint core behind the stones: shows through joints, dips and slits.
     fn core(&self, spans: &[Span], cap: Option<f32>, m: &mut MeshData) {
-        let col = tok::stone_joint();
+        let col = palette::stone_joint();
         for sp in spans {
             let bands = sp.hole.bands();
             if bands.is_empty() {
@@ -956,7 +915,7 @@ impl<'a> Dyke<'a> {
                             let bt = [v3(a.p + na * wa, a.base + l0), v3(a.p - na * wa, a.base + l0), v3(b.p - nb * wb, b.base + l1), v3(b.p + nb * wb, b.base + l1)];
                             let tp = [v3(a.p + na * wa, a.base + t0), v3(a.p - na * wa, a.base + t0), v3(b.p - nb * wb, b.base + t1), v3(b.p + nb * wb, b.base + t1)];
                             let mut r = self.rng(71 + j as u64, (a.p + b.p) * 0.5);
-                            let col = jit(if j % 2 == 0 { tok::sod() } else { palette::turf() }, &mut r, 0.06);
+                            let col = jit(if j % 2 == 0 { palette::sod() } else { palette::turf() }, &mut r, 0.06);
                             hexa(m, bt, tp, F_SIDES | ends, col, Surface::Turf, UV);
                         }
                         j += 1;
@@ -994,7 +953,7 @@ impl<'a> Dyke<'a> {
             let mut r = self.rng(81, p);
             let c = p + nlv(d) * r.range(-0.15, 0.15) * self.half;
             let cushion = r.range(0.1, 0.16);
-            boulder(m, v3(c, y + 0.02), cushion, 0.6, 4, &mut r, tok::grass_tip(), Surface::Grass);
+            boulder(m, v3(c, y + 0.02), cushion, 0.6, 4, &mut r, palette::grass_tip(), Surface::Grass);
             let col = if r.f() < 0.6 { palette::flower(0) } else { palette::flower(1) };
             cone(m, v3(c, y + cushion * 0.5), v3(c, y + cushion * 0.5 + r.range(0.12, 0.2)), cushion * 0.8, 4, r.range(0.0, TAU), col, Surface::Petal);
         }
@@ -1071,7 +1030,7 @@ impl<'a> Dyke<'a> {
     fn rails(&self, spans: &[Span], m: &mut MeshData) {
         let (rows, r) = self.stake_layout();
         let reach = rows.iter().fold(0.0_f32, |a, &o| a.max(o.abs())) * self.half + r + 0.03;
-        let rope = tok::rope();
+        let rope = palette::rope();
         for sp in spans {
             let bands = sp.hole.bands();
             if bands.is_empty() {
@@ -1398,7 +1357,7 @@ fn build_fence(f: &Fence, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshD
         for &(pt, _) in &posts {
             let mut r = Rng::at(seed ^ 0x9057, pt.base.x, pt.base.z);
             let col = match f.kind {
-                FenceKind::Driftwood => jit(palette::driftwood().lerp(tok::salt_bleach(), r.range(0.0, 0.35)), &mut r, 0.05),
+                FenceKind::Driftwood => jit(palette::driftwood().lerp(palette::salt_bleach(), r.range(0.0, 0.35)), &mut r, 0.05),
                 _ => jit(palette::wood(), &mut r, 0.06),
             };
             post(m, pt.base, pt.top, pr, pr * 0.85, 5, r.range(0.0, TAU), true, col, Surface::Timber);
@@ -1423,7 +1382,7 @@ fn build_fence(f: &Fence, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshD
                     for frac in [0.42, 0.86] {
                         let (ra, rb) = (p0.at(g0, frac), p1.at(g1, frac));
                         let kink = (ra + rb) * 0.5 + v3(n * r.range(-0.07, 0.07), r.range(-0.06, 0.04));
-                        let col = jit(palette::driftwood().lerp(tok::salt_bleach(), r.range(0.0, 0.35)), &mut r, 0.05);
+                        let col = jit(palette::driftwood().lerp(palette::salt_bleach(), r.range(0.0, 0.35)), &mut r, 0.05);
                         m.beam(ra - Vec3::Y * 0.04, kink - Vec3::Y * 0.04, 0.09, 0.08, col, Surface::Timber, UV);
                         m.beam(kink - Vec3::Y * 0.04, rb - Vec3::Y * 0.04, 0.09, 0.08, col, Surface::Timber, UV);
                     }
@@ -1444,7 +1403,7 @@ fn wattle(m: &mut MeshData, (q0, g0): (Vec2, f32), (q1, g1): (Vec2, f32), n: Vec
     let th = 0.045;
     for j in 0..STRIPS {
         let (y0, y1) = (0.12 + j as f32 * 0.17, 0.12 + j as f32 * 0.17 + 0.15);
-        let col = jit(if (j + bay) % 2 == 0 { palette::hay() } else { tok::fiber_dark() }, r, 0.05);
+        let col = jit(if (j + bay) % 2 == 0 { palette::hay() } else { palette::fiber_dark() }, r, 0.05);
         for (half, (a, ga, b, gb)) in [(q0, g0, qm, gm), (qm, gm, q1, g1)].into_iter().enumerate() {
             let off = if (j + bay + half) % 2 == 0 { 0.035 } else { -0.035 };
             let (la, ra) = (a + n * (off + th), a + n * (off - th));
@@ -1470,12 +1429,12 @@ fn net(m: &mut MeshData, (p0, g0): (Post, f32), (p1, g1): (Post, f32), colors: C
         let b = Vec3::new(ta.x + (tb.x - ta.x) * t, g0 + (g1 - g0) * t + 0.38, ta.z + (tb.z - ta.z) * t);
         b - Vec3::Y * (0.12 * 4.0 * t * (1.0 - t))
     };
-    let rope = tok::rope();
+    let rope = palette::rope();
     for i in 0..K {
         let (a, b, c, d) = (bot(i), bot(i + 1), top(i + 1), top(i));
         m.quad(a, b, c, d, rope, Surface::Fiber, 1.0);
         m.quad(b, a, d, c, rope, Surface::Fiber, 1.0);
-        m.beam(top(i) - Vec3::Y * 0.02, top(i + 1) - Vec3::Y * 0.02, 0.04, 0.04, tok::fiber_dark(), Surface::Fiber, UV);
+        m.beam(top(i) - Vec3::Y * 0.02, top(i + 1) - Vec3::Y * 0.02, 0.04, 0.04, palette::fiber_dark(), Surface::Fiber, UV);
     }
     for i in 1..K {
         let col = if (i + bay) % 2 == 0 { palette::trim(colors) } else { palette::pigment(colors.trim as u32 + 3) };
@@ -1500,7 +1459,7 @@ fn reed(m: &mut MeshData, terr: &Terrain, (q0, g0): (Vec2, f32), (q1, g1): (Vec2
     for y in [0.45, 1.1] {
         for side in [1.0_f32, -1.0] {
             let (a, b) = (q0 + n * side * 0.11, q1 + n * side * 0.11);
-            m.beam(v3(a, g0 + y), v3(b, g1 + y), 0.04, 0.07, tok::fiber_dark(), Surface::Fiber, UV);
+            m.beam(v3(a, g0 + y), v3(b, g1 + y), 0.04, 0.07, palette::fiber_dark(), Surface::Fiber, UV);
         }
     }
 }
@@ -1620,7 +1579,7 @@ mod tests {
         let (m, _) = wall_mesh(&wall(line20()), &[], &t, 3);
         // Many individual stones: lilac slate among the buff, joint core behind.
         assert!(tris(&m) > 400, "{}", tris(&m));
-        assert!(has_col(&m, tok::stone_joint()));
+        assert!(has_col(&m, palette::stone_joint()));
         assert!(m.colors.iter().any(|k| k[2] > k[0]), "lilac slate stones");
         // Honours height: top at ground (1.0) + 3.0.
         let top = m.positions.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
@@ -1666,7 +1625,7 @@ mod tests {
         let (m, _) = wall_mesh(&w, &[], &t, 4);
         assert!(has(&m, Surface::DryStone) && has(&m, Surface::Turf) && has(&m, Surface::Grass));
         let near = |c: Vec3| m.colors.iter().any(|k| (Vec3::new(k[0], k[1], k[2]) - c).abs().max_element() < 0.07 * c.max_element());
-        assert!(near(tok::sod()) && near(palette::turf()));
+        assert!(near(palette::sod()) && near(palette::turf()));
         let stone_top = top_near(&m, 0.0, 10.0, Some(Surface::DryStone));
         assert!(stone_top < 1.0 + 1.0, "stone base only at the foot: {stone_top}");
         let grass_top = top_near(&m, 0.0, 10.0, Some(Surface::Grass));
@@ -1680,7 +1639,7 @@ mod tests {
         w.kind = WallKind::Palisade;
         let (m, _) = wall_mesh(&w, &[], &t, 4);
         assert!(has(&m, Surface::Timber) && has(&m, Surface::Fiber), "stakes and rope rail");
-        assert!(has_col(&m, tok::rope()));
+        assert!(has_col(&m, palette::rope()));
         // Varied stake heights.
         let tops: Vec<f32> = (-9..=9).map(|x| top_near(&m, x as f32, 0.2, None)).collect();
         let (lo, hi) = tops.iter().fold((f32::MAX, f32::MIN), |(l, h), &y| (l.min(y), h.max(y)));
@@ -1736,7 +1695,7 @@ mod tests {
         let lichen = |m: &MeshData| {
             m.colors.iter().filter(|k| {
                 let c = Vec3::new(k[0], k[1], k[2]);
-                c.distance(palette::lichen()) < 0.25 || c.distance(tok::lichen_yellow()) < 0.25
+                c.distance(palette::lichen()) < 0.25 || c.distance(palette::lichen_yellow()) < 0.25
             })
             .count()
         };
@@ -1748,7 +1707,7 @@ mod tests {
         assert!(lichen(&old) > 50, "{}", lichen(&old));
         // Palisade wood drifts toward salt bleach.
         let bleach = |m: &MeshData| {
-            let d: f32 = m.colors.iter().zip(&m.surfaces).filter(|(_, s)| **s == Surface::Timber as u8).map(|(k, _)| Vec3::new(k[0], k[1], k[2]).distance(tok::salt_bleach())).sum();
+            let d: f32 = m.colors.iter().zip(&m.surfaces).filter(|(_, s)| **s == Surface::Timber as u8).map(|(k, _)| Vec3::new(k[0], k[1], k[2]).distance(palette::salt_bleach())).sum();
             d / m.surfaces.iter().filter(|s| **s == Surface::Timber as u8).count().max(1) as f32
         };
         w.kind = WallKind::Palisade;
@@ -1888,7 +1847,7 @@ mod tests {
             assert!(g.positions.iter().any(|p| p[0].abs() < 1.4), "{k:?} end posts");
             assert!(has(&m, Surface::Timber), "{k:?} posts");
             match k {
-                FenceKind::Wattle => assert!(has(&m, Surface::Fiber) && has_col(&m, tok::fiber_dark())),
+                FenceKind::Wattle => assert!(has(&m, Surface::Fiber) && has_col(&m, palette::fiber_dark())),
                 FenceKind::Driftwood => assert!(!has(&m, Surface::Fiber)),
                 FenceKind::NetLine => {
                     assert!(has(&m, Surface::Fiber) && has(&m, Surface::Carving), "net + floats");

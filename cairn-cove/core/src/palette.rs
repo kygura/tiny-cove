@@ -362,6 +362,14 @@ pub fn sea_pink_deep() -> Vec3 {
 pub fn strata() -> Vec3 {
     cliff_band()
 }
+/// Wild flower heads scattered in grass: the three petal tokens, `star` cream, poppy red.
+pub fn wildflower(i: usize) -> Vec3 {
+    [petal_sea_pink(), petal_gorse(), petal_flax(), star(), srgb(0xFF5A4A)][i % 5]
+}
+/// Wrack strand colours: the amber `wrack` token between two olive kelps.
+pub fn wrack_strand(i: usize) -> Vec3 {
+    [srgb(0x7B8C10), wrack(), srgb(0x5A7310)][i % 3]
+}
 
 // ---- cel band function (DESIGN A3), CPU port of glade.wesl `shade_band` -----------------
 

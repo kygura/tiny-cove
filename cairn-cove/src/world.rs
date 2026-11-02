@@ -237,8 +237,11 @@ fn update_lanterns(
 ) {
     let focus = rig.map_or(Vec3::ZERO, |r| r.focus);
     if built.is_changed() || (picked.0 - focus).length() > REPICK_DISTANCE {
-        let pts = built.0.iter().flat_map(|s| s.markers.iter()).filter(|m| matches!(m.kind, MarkerKind::Lantern | MarkerKind::Fire)).map(|m| m.pos);
-        *picked = (focus, nearest_points(pts, focus, MAX_LANTERNS));
+        // Fires (beacons, firepits) first, so a far beacon keeps its light and water streak.
+        let of = |k: MarkerKind| built.0.iter().flat_map(|s| s.markers.iter()).filter(move |m| m.kind == k).map(|m| m.pos);
+        let mut pts = nearest_points(of(MarkerKind::Fire), focus, MAX_LANTERNS);
+        pts.extend(nearest_points(of(MarkerKind::Lantern), focus, MAX_LANTERNS - pts.len()));
+        *picked = (focus, pts);
     }
     let on = env.night > 0.01;
     for (i, (mut light, mut tf, mut vis)) in lights.iter_mut().enumerate() {

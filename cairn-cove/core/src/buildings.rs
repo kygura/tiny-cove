@@ -419,11 +419,7 @@ struct Look {
 
 /// Lerp toward salt bleach (DESIGN: `0.6·w` on wood, daub, thatch and hide).
 fn bleach(c: Vec3, w: f32) -> Vec3 {
-    c.lerp(palette::shell(), 0.6 * w)
-}
-
-fn boards_color() -> Vec3 {
-    palette::driftwood().lerp(palette::wood(), 0.35)
+    c.lerp(palette::salt_bleach(), 0.6 * w)
 }
 
 impl Look {
@@ -432,7 +428,7 @@ impl Look {
         let c = house.colors;
         let (wall_s, wall_c, thick) = match house.material {
             Material::Wattle => (Surface::Daub, bleach(palette::daub(c), w), 0.24),
-            Material::Plank => (Surface::Plank, bleach(boards_color(), w), 0.18),
+            Material::Plank => (Surface::Plank, bleach(palette::boards(), w), 0.18),
             // Dry stone with a thin mortar wash in the wall colour.
             Material::Stone => (Surface::DryStone, palette::dry_stone().lerp(palette::wall(c), 0.15), 0.42),
         };
@@ -444,8 +440,8 @@ impl Look {
             trim: palette::trim(c),
             wood: bleach(palette::wood(), w),
             drift: bleach(palette::driftwood(), w),
-            boards: bleach(boards_color(), w),
-            rope: palette::hay(),
+            boards: bleach(palette::boards(), w),
+            rope: palette::rope(),
             stone: palette::stone(),
             hide: bleach(palette::hide(), w),
         }
@@ -1077,7 +1073,7 @@ fn slab(b: &mut B, poly: &[Vec2], top: f32, thick: f32, top_c: Vec3, top_s: Surf
 #[allow(clippy::too_many_arguments)]
 fn hangings(b: &mut B, edges: &[Edge], holes: &[Hole], look: &Look, ax: Option<Vec2>, seed: u64, c: Vec2) {
     let mut rng = pick(seed, SALT_HANG, c);
-    let fish = palette::sea_shallow().lerp(palette::shell(), 0.45);
+    let fish = palette::fish();
     for (i, e) in edges.iter().enumerate() {
         let eave_side = match ax {
             Some(a) => e.d.xz().dot(a).abs() > 0.7,
@@ -1263,8 +1259,8 @@ impl RoofCtx {
             trim: palette::trim(colors),
             wood: bleach(palette::wood(), w),
             drift: bleach(palette::driftwood(), w),
-            boards: bleach(boards_color(), w),
-            rope: palette::hay(),
+            boards: bleach(palette::boards(), w),
+            rope: palette::rope(),
             gable,
             carved,
             weathering: w,
@@ -1945,7 +1941,7 @@ mod tests {
         hs.colors.roof = 3;
         let (m, _) = house_mesh(&hs, &[], &t, 4);
         let swatch = palette::roof(hs.colors);
-        let boards = boards_color();
+        let boards = palette::boards();
         let strake = |c: Vec3| m.colors.iter().zip(&m.surfaces).any(|(k, s)| *s == Surface::Boards as u8 && (Vec3::new(k[0], k[1], k[2]) - c).length() < 1e-4);
         assert!(strake(swatch) && strake(boards));
     }

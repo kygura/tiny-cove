@@ -2,7 +2,6 @@
 //! meshes they are drawn with. Movement is plain data in / data out (no ECS), so it is
 //! deterministic and unit-tested; `life.rs` only moves entities to the results.
 
-use super::fx::tok;
 use super::{approach, turn_towards};
 use bevy::prelude::*;
 use cairn_cove_core::{
@@ -320,7 +319,7 @@ fn land_spot(terrain: &Terrain) -> Option<Vec2> {
 
 /// Gull body, facing +z with the origin at the body centre (about 0.6 m long).
 pub fn gull_body() -> MeshData {
-    let (white, tip, beak) = (tok::gull(), tok::gull_tip(), palette::pigment(3));
+    let (white, tip, beak) = (palette::gull(), palette::gull_tip(), palette::pigment(3));
     let mut m = MeshData::default();
     let mut bx = |c: Vec3, h: Vec3, col: Vec3| m.oriented_box(c, h, Vec3::X, col, Surface::Petal, 1.0);
     bx(Vec3::ZERO, Vec3::new(0.1, 0.085, 0.24), white);
@@ -338,15 +337,15 @@ pub fn gull_body() -> MeshData {
 /// One gull wing hinged at the origin, reaching along +x (about 0.7 m); the tip is indigo.
 pub fn gull_wing() -> MeshData {
     let mut m = MeshData::default();
-    let grey = tok::gull().lerp(palette::srgb(0xDDE6F2), 0.5);
+    let grey = palette::gull().lerp(palette::srgb(0xDDE6F2), 0.5);
     m.oriented_box(Vec3::new(0.3, 0.0, 0.0), Vec3::new(0.3, 0.014, 0.13), Vec3::X, grey, Surface::Petal, 1.0);
-    m.oriented_box(Vec3::new(0.7, 0.0, -0.03), Vec3::new(0.12, 0.013, 0.09), Vec3::X, tok::gull_tip(), Surface::Petal, 1.0);
+    m.oriented_box(Vec3::new(0.7, 0.0, -0.03), Vec3::new(0.12, 0.013, 0.09), Vec3::X, palette::gull_tip(), Surface::Petal, 1.0);
     m
 }
 
 /// A coral-red crab facing +z, about 0.4 m wide with two raised claws.
 pub fn crab_body() -> MeshData {
-    let (red, claw, eye) = (tok::crab(), palette::srgb(0xFF7B5E), tok::gull_tip());
+    let (red, claw, eye) = (palette::crab(), palette::srgb(0xFF7B5E), palette::gull_tip());
     let mut m = MeshData::default();
     let mut bx = |c: Vec3, h: Vec3, col: Vec3| m.oriented_box(c, h, Vec3::X, col, Surface::Petal, 1.0);
     bx(Vec3::new(0.0, 0.07, 0.0), Vec3::new(0.16, 0.05, 0.11), red);

@@ -80,7 +80,8 @@ fn seabed(p: vec2<f32>) -> f32 {
     let h01 = textureLoad(heightfield, i + vec2(0, 1), 0).r;
     let h11 = textureLoad(heightfield, i + vec2(1, 1), 0).r;
     let h = mix(mix(h00, h10, fr.x), mix(h01, h11, fr.x), fr.y);
-    let outside = length(max(abs(q - (n - 1.0) * 0.5) - (n - 1.0) * 0.5, vec2(0.0))) * f.z;
+    // Radial, not box, distance past the field edge, so the abyss step is a ring, not a square.
+    let outside = max(length(q - (n - 1.0) * 0.5) - (n - 1.0) * 0.5, 0.0) * f.z;
     return mix(h, min(h, -24.0), clamp(outside / 30.0, 0.0, 1.0));
 }
 

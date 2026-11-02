@@ -3,8 +3,7 @@
 //! All generators are deterministic (randomness comes from `Rng::at(seed, world x, z)`),
 //! NaN-free, and return empty meshes for degenerate input.
 //!
-//! Colours come from `palette.rs` where a named fn exists; the DESIGN.md tokens it does not
-//! name yet (boards, rope, slate, pebbles, ...) live in [`tok`] as 5-bit-exact hexes.
+//! Colours come from the DESIGN.md tokens in `palette.rs`.
 
 use crate::geom::{point_at, polyline_length};
 use crate::mesh::{Marker, MarkerKind, MeshData, Rng, Surface};
@@ -18,45 +17,6 @@ type Water<'a> = &'a dyn Fn(Vec2) -> Option<f32>;
 
 /// Ribbon height above the ground.
 const LIFT: f32 = 0.03;
-
-/// DESIGN.md §Art tokens used here that `palette.rs` has no named fn for.
-mod tok {
-    use crate::palette::srgb;
-    use glam::Vec3;
-    pub fn boards() -> Vec3 {
-        srgb(0xDE9C5A)
-    }
-    pub fn boards_hi() -> Vec3 {
-        srgb(0xEFBD7B)
-    }
-    pub fn rope() -> Vec3 {
-        srgb(0xEFC56B)
-    }
-    pub fn fiber_dark() -> Vec3 {
-        srgb(0xB58C29)
-    }
-    pub fn flagstone() -> Vec3 {
-        srgb(0x5A73CE)
-    }
-    pub fn flagstone_edge() -> Vec3 {
-        srgb(0x7B8CEF)
-    }
-    pub fn pebble_lilac() -> Vec3 {
-        srgb(0xA59CEF)
-    }
-    pub fn pebble_rose() -> Vec3 {
-        srgb(0xEFB59C)
-    }
-    pub fn shell_nacre() -> Vec3 {
-        srgb(0xFFADA5)
-    }
-    pub fn dry_stone_alt() -> Vec3 {
-        srgb(0xBDA5EF)
-    }
-    pub fn sailcloth() -> Vec3 {
-        srgb(0xF7E6AD)
-    }
-}
 
 fn v3(p: Vec2, y: f32) -> Vec3 {
     Vec3::new(p.x, y, p.y)
@@ -75,7 +35,7 @@ fn fin(v: f32, lo: f32, hi: f32, fallback: f32) -> f32 {
 }
 /// Every third stone of a course is lilac slate (DESIGN §A2 DryStone).
 fn course_stone(k: usize, r: &mut Rng) -> Vec3 {
-    if k % 3 == 2 { tint(tok::dry_stone_alt(), r, 0.08) } else { tint(palette::dry_stone(), r, 0.15) }
+    if k % 3 == 2 { tint(palette::dry_stone_alt(), r, 0.08) } else { tint(palette::dry_stone(), r, 0.15) }
 }
 /// Thin square-section line centred on `a`→`b`.
 fn thin(m: &mut MeshData, a: Vec3, b: Vec3, th: f32, c: Vec3, s: Surface) {
@@ -197,9 +157,9 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
     let wets: Vec<Option<f32>> = cs.iter().map(|&c| wet(c)).collect();
     let (surf, base_col) = match path.kind {
         PathKind::Shell => (Surface::Shell, palette::shell()),
-        PathKind::Pebble => (Surface::Pebble, tok::pebble_lilac()),
+        PathKind::Pebble => (Surface::Pebble, palette::pebble_lilac()),
         PathKind::Flagstone => (Surface::Grass, palette::grass()),
-        PathKind::Boardwalk | PathKind::Stepping => (Surface::Boards, tok::boards()),
+        PathKind::Boardwalk | PathKind::Stepping => (Surface::Boards, palette::boards()),
     };
     // Shell, pebble and the grass bed under flagstones are ribbons; the rest are loose pieces.
     let ribbon = matches!(path.kind, PathKind::Shell | PathKind::Pebble | PathKind::Flagstone);
@@ -229,7 +189,7 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
                     // Pebbles alternate lilac and rose; joints show the honey wet sand.
                     PathKind::Pebble => {
                         let pick = r.f();
-                        let base = if pick < 0.45 { tok::pebble_lilac() } else if pick < 0.9 { tok::pebble_rose() } else { palette::wet_sand() };
+                        let base = if pick < 0.45 { palette::pebble_lilac() } else if pick < 0.9 { palette::pebble_rose() } else { palette::wet_sand() };
                         tint(base, &mut r, 0.1)
                     }
                     // Shell fades to saffron-cream sand at the edge.
@@ -263,7 +223,7 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
                     let p = c + s * (r.range(-0.9, 0.9) * hw) + Vec2::new(r.f() - 0.5, r.f() - 0.5) * 0.3;
                     let rad = r.range(0.07, 0.13);
                     let pick = r.f();
-                    let base = if pick < 0.4 { tok::pebble_lilac() } else if pick < 0.8 { tok::pebble_rose() } else { palette::wet_sand() };
+                    let base = if pick < 0.4 { palette::pebble_lilac() } else if pick < 0.8 { palette::pebble_rose() } else { palette::wet_sand() };
                     let col = tint(base, &mut r, 0.2);
                     m.cylinder(v3(p, h(p) + LIFT - 0.01), rad, rad * 0.75, rad * 0.8, 5, true, false, col, Surface::Pebble, 1.0);
                 }
@@ -273,13 +233,13 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
                     let p = c + s * (r.range(-0.8, 0.8) * hw);
                     let sz = r.range(0.03, 0.06);
                     let y = h(p) + LIFT;
-                    m.aabb(v3(p, y), v3(p, y) + Vec3::new(sz, sz * 0.7, sz), tint(tok::shell_nacre(), &mut r, 0.2), Surface::Shell, 1.0);
+                    m.aabb(v3(p, y), v3(p, y) + Vec3::new(sz, sz * 0.7, sz), tint(palette::shell_nacre(), &mut r, 0.2), Surface::Shell, 1.0);
                 }
                 // Pebble kerb stones along both edges, alternating lilac and rose.
                 if i < n && wets[i + 1].is_none() {
                     for sg in [-1.0, 1.0] {
                         let p = c + s * (sg * (hw + 0.06));
-                        let base = if (i + (sg > 0.0) as usize) % 2 == 0 { tok::pebble_lilac() } else { tok::pebble_rose() };
+                        let base = if (i + (sg > 0.0) as usize) % 2 == 0 { palette::pebble_lilac() } else { palette::pebble_rose() };
                         let col = tint(base, &mut r, 0.2);
                         let half = Vec3::new(r.range(0.14, 0.2), r.range(0.05, 0.08), r.range(0.07, 0.1));
                         m.oriented_box(v3(p, h(p) + half.y - 0.01), half, flat(ts[i]), col, Surface::Pebble, 1.0);
@@ -297,7 +257,7 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
                         let ang = (rr.f() - 0.5) * 0.4;
                         let sx = Vec2::from_angle(ang).rotate(s);
                         let p = c + s * o + ts[i] * ((rr.f() - 0.5) * 0.15);
-                        let col = tint(tok::flagstone().lerp(tok::flagstone_edge(), rr.f() * 0.45), &mut rr, 0.1);
+                        let col = tint(palette::flagstone().lerp(palette::flagstone_edge(), rr.f() * 0.45), &mut rr, 0.1);
                         let half = Vec3::new(pitch * 0.5 - 0.06 - rr.f() * 0.04, 0.045, rr.range(0.3, 0.42));
                         m.oriented_box(v3(p, h(p) + LIFT + 0.03), half, flat(sx), col, Surface::Flagstone, 1.0);
                     }
@@ -313,7 +273,7 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
                         let mut rr = rng(seed, 6, c + s * o);
                         let p = c + s * (o + (rr.f() - 0.5) * 0.1 * pitch);
                         let rad = (pitch * 0.45).clamp(0.15, 0.45) * rr.range(0.85, 1.0);
-                        let col = tint(tok::flagstone().lerp(tok::flagstone_edge(), rr.f() * 0.4), &mut rr, 0.12);
+                        let col = tint(palette::flagstone().lerp(palette::flagstone_edge(), rr.f() * 0.4), &mut rr, 0.12);
                         m.cylinder(v3(p, h(p) - 0.04), rad * 1.08, rad * 0.95, 0.16, 7, true, false, col, Surface::Flagstone, 1.0);
                     }
                 }
@@ -325,7 +285,7 @@ fn build_path(path: &Path, seed: u64, h: Height, wet: Water) -> MeshData {
                 let top = ground + 0.12;
                 for o in [-0.125, 0.125] {
                     let p = c + ts[i] * o;
-                    let col = tint(if r.f() < 0.25 { tok::boards_hi() } else { tok::boards() }, &mut r, 0.14);
+                    let col = tint(if r.f() < 0.25 { palette::boards_hi() } else { palette::boards() }, &mut r, 0.14);
                     m.oriented_box(v3(p, top - 0.025), Vec3::new(hw, 0.025, 0.11), flat(s), col, Surface::Boards, 1.0);
                 }
                 if i % 3 == 0 {
@@ -367,7 +327,7 @@ fn rope_ladder(m: &mut MeshData, from: Vec3, to: Vec3, w: f32, side: Vec3, trim:
     }
     let off = side * (w * 0.5);
     for sg in [-1.0, 1.0] {
-        thin(m, from + off * sg, to + off * sg, 0.045, tok::rope(), Surface::Fiber);
+        thin(m, from + off * sg, to + off * sg, 0.045, palette::rope(), Surface::Fiber);
     }
     let rungs = ((len / 0.3).ceil() as usize).clamp(1, 200);
     for k in 1..rungs {
@@ -534,7 +494,7 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
     let jetty = over_sea || edges.iter().any(|e| e.sea);
 
     // Deck on two bearers running the long way.
-    m.oriented_box(v3(p.center, top - 0.07), Vec3::new(hx, 0.07, hz), ax3, tint(tok::boards(), &mut r, 0.08), Surface::Boards, 1.0);
+    m.oriented_box(v3(p.center, top - 0.07), Vec3::new(hx, 0.07, hz), ax3, tint(palette::boards(), &mut r, 0.08), Surface::Boards, 1.0);
     let by = top - 0.14 - 0.06;
     let bearer = tint(palette::wood(), &mut r, 0.1);
     if hx >= hz {
@@ -580,7 +540,7 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
             m.cylinder(v3(q, base), 0.14, 0.12, post_top - base, 7, true, false, tint(palette::wood(), &mut r, 0.15), Surface::Timber, 1.0);
             m.cylinder(v3(q, post_top), 0.16, 0.16, 0.07, 7, true, false, trim, Surface::Carving, 1.0);
             for (k, rad) in [0.21, 0.19, 0.21].into_iter().enumerate() {
-                m.cylinder(v3(q, top + 0.1 + 0.05 * k as f32), rad, rad, 0.045, 8, true, false, tint(tok::rope(), &mut r, 0.1), Surface::Fiber, 1.0);
+                m.cylinder(v3(q, top + 0.1 + 0.05 * k as f32), rad, rad, 0.045, 8, true, false, tint(palette::rope(), &mut r, 0.1), Surface::Fiber, 1.0);
             }
         }
     } else if height > 1.2 {
@@ -710,7 +670,7 @@ pub fn bridge_mesh(bridge: &Bridge, terrain: &Terrain, seed: u64) -> (MeshData, 
 
 fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, railing: u8, terrain: &Terrain, seed: u64) {
     let trim = palette::trim(br.colors);
-    let (rope, knot) = (tok::rope(), tok::fiber_dark());
+    let (rope, knot) = (palette::rope(), palette::fiber_dark());
     let sag = (f.len * 0.06).clamp(0.25, 3.0);
     let bell = |t: f32| 4.0 * t * (1.0 - t);
     let deck = |t: f32| f.base(t) - Vec3::Y * (sag * bell(t));
@@ -725,7 +685,7 @@ fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rail
     for k in 0..(f.len / pitch).floor() as usize {
         let (s0, s1) = (k as f32 * pitch, k as f32 * pitch + 0.27);
         let mut r = rng(seed, 41, f.xz(f.base(s0 / f.len)));
-        let base = if r.f() < 0.2 { tok::boards_hi() } else { tok::boards() };
+        let base = if r.f() < 0.2 { palette::boards_hi() } else { palette::boards() };
         m.beam(deck(s0 / f.len), deck((s1 / f.len).min(1.0)), f.w, 0.05, tint(base, &mut r, 0.16), Surface::Boards, 1.0);
     }
     for sg in [-1.0_f32, 1.0] {
@@ -756,7 +716,7 @@ fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rail
                     thin(m, e0.lerp(h0, 0.5), e1.lerp(h1, 0.5), 0.04, rope, Surface::Fiber);
                     for q in [0.0, 0.5] {
                         let b = e0.lerp(e1, q);
-                        m.oriented_box(b + Vec3::Y * (hh * 0.5), Vec3::new(0.03, hh * 0.5, 0.02), f.side, tint(tok::boards(), &mut rng(seed, 43, f.xz(b)), 0.15), Surface::Boards, 1.0);
+                        m.oriented_box(b + Vec3::Y * (hh * 0.5), Vec3::new(0.03, hh * 0.5, 0.02), f.side, tint(palette::boards(), &mut rng(seed, 43, f.xz(b)), 0.15), Surface::Boards, 1.0);
                     }
                 }
                 // Knotted rope: a knot on every span, painted floats hanging from every other.
@@ -799,7 +759,7 @@ fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rail
                 m.tri(p, tip, q, col, Surface::Hide, 1.0);
                 m.tri(p, q, tip, col, Surface::Hide, 1.0);
                 // A sailcloth heading strip along the line.
-                m.beam(p, q, 0.02, 0.05, tok::sailcloth(), Surface::Hide, 1.0);
+                m.beam(p, q, 0.02, 0.05, palette::sailcloth(), Surface::Hide, 1.0);
                 mk.push(Marker { kind: MarkerKind::Flag, pos: p, dir: Vec3::Y });
             }
         }
@@ -917,7 +877,7 @@ fn log_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, terra
         let (a, b) = (f.a + o - drop, f.b + o - drop);
         prism(m, a, b, r, 8, col, Surface::Timber);
         // Hewn flat top.
-        m.beam(f.a + o - Vec3::Y * 0.01, f.b + o - Vec3::Y * 0.01, r * 0.8, 0.03, tint(tok::boards(), &mut rr, 0.1), Surface::Boards, 1.0);
+        m.beam(f.a + o - Vec3::Y * 0.01, f.b + o - Vec3::Y * 0.01, r * 0.8, 0.03, tint(palette::boards(), &mut rr, 0.1), Surface::Boards, 1.0);
         // Branch stubs poking out of the sides.
         let stubs = (f.len / 1.6).floor() as usize;
         for k in 0..stubs {
@@ -954,7 +914,7 @@ fn log_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, terra
         let nseg = ((f.len / 1.5).ceil() as usize).max(1);
         for k in 0..nseg {
             let (t0, t1) = (k as f32 / nseg as f32, (k + 1) as f32 / nseg as f32);
-            thin(m, f.base(t0) + o + sagging(t0), f.base(t1) + o + sagging(t1), 0.05, tok::rope(), Surface::Fiber);
+            thin(m, f.base(t0) + o + sagging(t0), f.base(t1) + o + sagging(t1), 0.05, palette::rope(), Surface::Fiber);
         }
     }
     end_posts(m, mk, f, lat, 0.12, 1.15, 0.09, Surface::Timber, palette::wood(), Some(trim), terrain);
