@@ -2,7 +2,7 @@
 //! (paths cut portals through walls / doors through houses / gaps in fences; houses flatten the
 //! ground; closed wall rings can be roofed). Also ray picking against the result.
 
-use crate::buildings::{house_mesh, is_beacon, roof_mesh};
+use crate::buildings::{house_mesh, needs_stilts, roof_mesh};
 use crate::geom::{closed, closest_on_polyline, footprint_polygon, is_closed, polyline_crossings, signed_area};
 use crate::mesh::{hash2, Marker, MarkerKind, MeshData};
 use crate::model::{Document, Footprint, House, Structure, StructureId};
@@ -43,7 +43,7 @@ pub fn build(doc: &Document) -> Scene {
         let raw = Terrain::build(seed, &doc.terrain, &[]);
         houses
             .iter()
-            .filter(|h| !needs_stilts_fallback(h, &raw))
+            .filter(|h| !needs_stilts(h, &raw))
             .map(|h| FlattenRegion { poly: footprint_polygon(&h.footprint), height: None, margin: 1.5 })
             .collect()
     };
@@ -193,29 +193,6 @@ fn grow(poly: &[Vec2], d: f32) -> Vec<Vec2> {
     poly.iter().map(|p| *p + (*p - c).normalize_or_zero() * d).collect()
 }
 
-/// TEMPORARY stand-in for `buildings::needs_stilts` (same signature and rule, task B owns the
-/// real one; swap at merge): a hut stands on stilts when it has an explicit stilt height, any
-/// part of its footprint is over the sea or a lagoon, or the ground under it varies by more
-/// than 0.8 m. Beacons never do.
-pub fn needs_stilts_fallback(house: &House, terrain: &Terrain) -> bool {
-    if is_beacon(house) {
-        return false;
-    }
-    if house.stilts > 0.0 {
-        return true;
-    }
-    let poly = footprint_polygon(&house.footprint);
-    if poly.iter().any(|p| !p.is_finite()) {
-        return false;
-    }
-    let c = poly.iter().copied().sum::<Vec2>() / poly.len().max(1) as f32;
-    let samples: Vec<Vec2> = poly.iter().flat_map(|p| [*p, p.lerp(c, 0.5)]).chain([c]).collect();
-    if samples.iter().any(|p| terrain.water_level(*p).is_some()) {
-        return true;
-    }
-    let (lo, hi) = samples.iter().map(|p| terrain.height(*p)).fold((f32::MAX, f32::MIN), |(l, h), y| (l.min(y), h.max(y)));
-    hi - lo > 0.8
-}
 
 /// Result of a pick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -591,7 +568,7 @@ mod tests {
         for (_, st) in &doc.structures {
             let Structure::House(h) = st else { continue };
             let pts = ring(h.footprint);
-            if needs_stilts_fallback(h, &raw) {
+            if needs_stilts(h, &raw) {
                 assert!(pts.iter().all(|p| s.terrain.height(*p) == raw.height(*p)), "{:?}", h.footprint);
             } else {
                 let hs: Vec<f32> = pts.iter().map(|p| s.terrain.height(*p)).collect();
@@ -599,14 +576,14 @@ mod tests {
                 assert!(hi - lo < 0.05, "levelled {lo}..{hi}");
             }
         }
-        assert!(needs_stilts_fallback(&hut(over_water, 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
-        assert!(!needs_stilts_fallback(&hut(on_land, 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
+        assert!(needs_stilts(&hut(over_water, 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
+        assert!(!needs_stilts(&hut(on_land, 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
         // Steep ground: the headland's cliff edge.
         let head = raw.plan().headland;
         let cliff = (40..150).map(|i| head * i as f32 * 0.25).find(|p| raw.normal(*p).y < 0.5).unwrap();
-        assert!(needs_stilts_fallback(&hut(rect(cliff), 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
+        assert!(needs_stilts(&hut(rect(cliff), 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
         let beacon = hut(Footprint::Round { center: cliff, radius: 1.5 }, 6.0, RoofStyle::Thatch, Material::Stone);
-        assert!(!needs_stilts_fallback(&beacon, &raw));
+        assert!(!needs_stilts(&beacon, &raw));
     }
 
     /// Swimming birds go to lagoons first, then to the open sea.

@@ -351,7 +351,8 @@ pub fn demo_document(seed: u64) -> Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{build, needs_stilts_fallback};
+    use crate::buildings::needs_stilts;
+    use crate::scene::build;
     use crate::MarkerKind;
 
     #[test]
@@ -483,7 +484,7 @@ mod tests {
             match st {
                 Structure::Platform(p) => assert!(t.is_sea(p.center + Vec2::from_angle(p.angle) * p.half.x * 0.8), "jetty head over the sea"),
                 Structure::Wall(w) if w.footing > 0.4 => assert!(w.points.iter().skip(1).all(|p| t.is_sea(*p)), "breakwater over the sea"),
-                Structure::House(h) if needs_stilts_fallback(h, &raw) => {
+                Structure::House(h) if needs_stilts(h, &raw) => {
                     stilted += 1;
                     let poly = crate::geom::footprint_polygon(&h.footprint);
                     assert!(poly.iter().any(|p| t.is_sea(*p)));

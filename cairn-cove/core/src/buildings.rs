@@ -1767,8 +1767,11 @@ mod tests {
     use super::*;
     use crate::model::{Opening, TerrainDab, TerrainOp};
 
+    /// Level dry ground 1 m above the sea across the whole island, so geometry tests do not
+    /// depend on the island layout.
     fn ground() -> Terrain {
-        Terrain::build(1, &[], &[])
+        let poly = vec![Vec2::new(-40.0, -40.0), Vec2::new(40.0, -40.0), Vec2::new(40.0, 40.0), Vec2::new(-40.0, 40.0)];
+        Terrain::build(1, &[], &[crate::terrain::FlattenRegion { poly, height: Some(1.0), margin: 1.0 }])
     }
 
     fn rect(hx: f32, hz: f32) -> Footprint {
