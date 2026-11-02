@@ -1,5 +1,6 @@
-//! HUD (see DESIGN.md). Reads/writes `tools::ToolSettings`, reads `tools::ToolStatus`,
-//! sets `tools::PointerOverUi`, drives `weather::{Clock, Weather}` and `world::Glade` undo/redo.
+//! HUD, "Woad Cloth" (DESIGN.md part B). Reads/writes `tools::ToolSettings`, reads
+//! `tools::ToolStatus`, sets `tools::PointerOverUi`, drives `weather::{Clock, Weather}` and
+//! `world::Glade` undo/redo.
 //!
 //! Layout: static panels are spawned once in `spawn_hud`; the variant strip and the hint list are
 //! rebuilt when the tool changes. Every button carries an [`Action`]; `sync_btn` derives its
@@ -8,35 +9,54 @@
 
 mod strip;
 
+use crate::env::Tide;
 use crate::tools::{PointerOverUi, Tool, ToolSettings, ToolStatus};
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::Glade;
 use bevy::{prelude::*, text::LineHeight, ui::RelativeCursorPosition, ui::UiSystems, window::PrimaryWindow};
-use cairn_cove_core::{ClutterKind, Colors};
+use cairn_cove_core::{ClutterKind, Colors, TIDE_RANGE};
 use strip::{C, CLUTTER, GROUPS, Opt, Sl, yes};
 
-// ------------------------------------------------------------------ tokens
+// ------------------------------------------------------------------ tokens (DESIGN B1)
 const fn hex(h: u32) -> Color {
     Color::srgb(((h >> 16) & 255) as f32 / 255.0, ((h >> 8) & 255) as f32 / 255.0, (h & 255) as f32 / 255.0)
 }
 const fn hexa(h: u32, a: f32) -> Color {
     Color::srgba(((h >> 16) & 255) as f32 / 255.0, ((h >> 8) & 255) as f32 / 255.0, (h & 255) as f32 / 255.0, a)
 }
-const SLAB: Color = hexa(0x2F302D, 0.92);
-const DEEP: Color = hexa(0x262724, 0.94);
-const CAST: Color = hex(0x40413D);
-const LIT: Color = hex(0x4E4F4A);
-const PRESS: Color = hex(0x353632);
-const SEAM: Color = hex(0x5A5B56);
-const DRIP: Color = hexa(0x1B1C1A, 0.7);
-const CHALK: Color = hex(0xE6E3DA);
-const DIM: Color = hex(0xA4A29A);
-const MOSS: Color = hex(0x8DB360);
-const SODIUM: Color = hex(0xE8A33C);
-const DIS_TXT: Color = hex(0x6E6F69);
-const DIS_BG: Color = hex(0x3A3B37);
+/// Panel background.
+const CLOTH: Color = hexa(0x1C1A5C, 0.92);
+/// Tooltip, slider track, swatch well, name plate.
+const DEEP: Color = hexa(0x141244, 0.94);
+/// Button at rest.
+const TABLET: Color = hex(0x2A2878);
+/// Hover and active fill.
+const LIT: Color = hex(0x3A38A0);
+/// 80 ms press flash.
+const PRESS: Color = hex(0x221F66);
+/// 1-px borders, dividers, time ticks.
+const STITCH: Color = hex(0x5A56C8);
+/// Drip shadow under panels, swatch inner border.
+const WEFT: Color = hexa(0x0A0828, 0.7);
+/// Primary text, slider knob.
+const SHELL: Color = hex(0xFFF4DE);
+/// Key tags, group names, glyphs at rest, readouts.
+const DIM: Color = hex(0xB8B0E8);
+/// Selected, on or valid.
+const MALACHITE: Color = hex(0x2FE0A0);
+/// Attention, invalid or erase.
+const MADDER: Color = hex(0xFF5A4E);
+/// Time, plus the decorative thread.
+const SAFFRON: Color = hex(0xFFC21A);
+/// Selvedge second thread and the "now showing" auto-weather band.
+const COCHINEAL: Color = hex(0xE8399A);
+/// Tide gauge fill only.
+const TIDE: Color = hex(0x19E0D0);
+const DIS_TXT: Color = hex(0x6A6299);
+const DIS_BG: Color = hex(0x241D5A);
+const VEIL: Color = hexa(0x241D5A, 0.72);
 
-/// Swatch palettes (DESIGN 2.3), by slot (0 roof, 1 daub, 2 trim); tables live in core.
+/// Swatch palettes by slot (0 roof, 1 wall, 2 trim); tables live in core.
 fn palette(slot: u8) -> &'static [(&'static str, u32)] {
     use cairn_cove_core::palette::{ROOF_SWATCHES, TRIM_SWATCHES, WALL_SWATCHES};
     match slot {
@@ -78,23 +98,46 @@ struct Cond {
     sel: fn(&ToolSettings) -> bool,
     en: fn(&ToolSettings) -> bool,
 }
-/// Derived button state. `now` is the "now showing" marker of the auto weather.
+/// Derived button state. `now` is the "now showing" marker of the auto weather; `bad` is the
+/// invalid treatment (the active tool while its placement is invalid).
 #[derive(Component, Default, PartialEq, Clone, Copy)]
 struct Btn {
     sel: bool,
     en: bool,
     now: bool,
+    bad: bool,
 }
 #[derive(Component)]
 struct Flash(f32);
-#[derive(Component)]
-struct Band;
+/// Decoration child of a button, shown by `paint` according to the button's state.
+#[derive(Component, Clone, Copy, PartialEq)]
+enum Band {
+    /// 3-px band across the top: selected (malachite) or "now showing" (cochineal).
+    Top,
+    /// Row of three 4x3 madder squares: the invalid treatment, a broken thread.
+    Notch,
+    /// Filled square of a toggle, or the swatch under-band.
+    Fill,
+    /// Dimming overlay on a disabled swatch.
+    Veil,
+}
 #[derive(Component)]
 struct Lbl;
+/// Tool glyph text (also `Lbl`): painted separately from the label.
+#[derive(Component)]
+struct Glyph;
 #[derive(Component)]
 struct Tog;
+/// Swatch hit node: transparent, only its border shows the selection.
+#[derive(Component)]
+struct Chip;
 #[derive(Component)]
 struct Panel;
+/// Name plate text; the live text (BEACON, DYE: HUT) is set by `plate`.
+#[derive(Component)]
+struct Plate;
+#[derive(Component)]
+struct PlateBand;
 /// Segmented-row membership for Tab / Shift+Tab: (row, index).
 #[derive(Component)]
 struct Seg(u8, usize);
@@ -123,8 +166,11 @@ struct Ids {
     pause: Entity,
     status: Entity,
     invalid: Entity,
+    invalid_text: Entity,
     time_fill: Entity,
     time_knob: Entity,
+    tide_fill: Entity,
+    tide_text: Entity,
     weather_body: Entity,
     hints_full: Entity,
     hints_tab: Entity,
@@ -145,7 +191,7 @@ impl Plugin for UiPlugin {
             .init_resource::<LastSlider>()
             .add_systems(Startup, spawn_hud)
             .add_systems(PreUpdate, pointer_over.after(UiSystems::Focus))
-            .add_systems(Update, (ui_scale, rebuild_strip, rebuild_hints, keys, click, sliders, sync_btn, paint, sync_text, tooltip).chain());
+            .add_systems(Update, (ui_scale, rebuild_strip, rebuild_hints, keys, click, sliders, sync_btn, paint, sync_text, plate, tooltip).chain());
     }
 }
 
@@ -157,32 +203,47 @@ fn abs() -> Node {
     Node { position_type: PositionType::Absolute, ..default() }
 }
 fn slab(node: Node, bg: Color) -> impl Bundle {
-    (Node { border: UiRect::all(px(1)), ..node }, BackgroundColor(bg), BorderColor::all(SEAM), RelativeCursorPosition::default(), Panel)
+    (Node { border: UiRect::all(px(1)), ..node }, BackgroundColor(bg), BorderColor::all(STITCH), RelativeCursorPosition::default(), Panel)
 }
-/// Drip shadow and tie-holes.
+/// Panel decoration: selvedge (saffron + cochineal thread), two tie knots and the drip.
 fn deco(p: &mut ChildSpawnerCommands) {
-    p.spawn((Node { left: px(0), right: px(0), bottom: px(-3), height: px(2), ..abs() }, BackgroundColor(DRIP)));
+    p.spawn((Node { left: px(0), right: px(0), top: px(0), height: px(2), ..abs() }, BackgroundColor(SAFFRON)));
+    p.spawn((Node { left: px(0), right: px(0), top: px(3), height: px(1), ..abs() }, BackgroundColor(COCHINEAL)));
     for left in [true, false] {
-        let (l, r) = if left { (px(5), auto()) } else { (auto(), px(5)) };
-        p.spawn((Node { left: l, right: r, top: px(5), width: px(3), height: px(3), ..abs() }, BackgroundColor(DRIP)));
+        let (l, r) = if left { (px(6), auto()) } else { (auto(), px(6)) };
+        p.spawn((Node { left: l, right: r, top: px(4), width: px(4), height: px(4), ..abs() }, BackgroundColor(SAFFRON)));
     }
+    p.spawn((Node { left: px(0), right: px(0), bottom: px(-3), height: px(2), ..abs() }, BackgroundColor(WEFT)));
 }
 fn button(mut node: Node, a: Action) -> impl Bundle {
     if node.border == UiRect::default() {
         node.border = UiRect::all(px(1));
     }
-    node.justify_content = JustifyContent::Center;
-    node.align_items = AlignItems::Center;
-    (Node { border_radius: BorderRadius::all(px(2)), ..node }, BackgroundColor(CAST), BorderColor::all(SEAM), Interaction::None, Btn::default(), Flash(0.0), a)
+    // Centre the content unless the caller laid it out already (tool buttons stack key / glyph / label).
+    if node.justify_content == JustifyContent::default() {
+        node.justify_content = JustifyContent::Center;
+    }
+    if node.align_items == AlignItems::default() {
+        node.align_items = AlignItems::Center;
+    }
+    (Node { border_radius: BorderRadius::all(px(2)), ..node }, BackgroundColor(TABLET), BorderColor::all(STITCH), Interaction::None, Btn::default(), Flash(0.0), a)
 }
-fn band(n: Node) -> impl Bundle {
-    (Node { position_type: PositionType::Absolute, ..n }, BackgroundColor(MOSS), Visibility::Hidden, Band)
+fn band(kind: Band, c: Color, n: Node) -> impl Bundle {
+    (Node { position_type: PositionType::Absolute, ..n }, BackgroundColor(c), Visibility::Hidden, kind)
 }
 fn top_band() -> impl Bundle {
-    band(Node { left: px(0), right: px(0), top: px(0), height: px(3), ..default() })
+    band(Band::Top, MALACHITE, Node { left: px(0), right: px(0), top: px(0), height: px(3), ..default() })
+}
+/// Invalid notch: three 4x3 madder squares, 4 px apart, across the top-left.
+fn notch(p: &mut ChildSpawnerCommands) {
+    p.spawn((Node { left: px(3), top: px(0), column_gap: px(4), ..abs() }, BackgroundColor(Color::NONE), Visibility::Hidden, Band::Notch)).with_children(|n| {
+        for _ in 0..3 {
+            n.spawn((Node { width: px(4), height: px(3), ..default() }, BackgroundColor(MADDER)));
+        }
+    });
 }
 fn divider() -> impl Bundle {
-    (Node { width: px(1), align_self: AlignSelf::Stretch, margin: UiRect::vertical(px(6)), flex_shrink: 0.0, ..default() }, BackgroundColor(SEAM))
+    (Node { width: px(1), align_self: AlignSelf::Stretch, margin: UiRect::vertical(px(6)), flex_shrink: 0.0, ..default() }, BackgroundColor(STITCH))
 }
 fn row(gap: i32) -> Node {
     Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(gap), ..default() }
@@ -198,12 +259,12 @@ fn track(g: &mut ChildSpawnerCommands, w: Val, h: f32, fill_c: Color) -> (Entity
         .spawn((Node { width: w, height: px(h), flex_shrink: 0.0, ..default() }, Interaction::None, RelativeCursorPosition::default()))
         .with_children(|t| {
             let top = px((h - 4.0) / 2.0);
-            t.spawn((Node { left: px(0), right: px(0), top, height: px(4), border: UiRect::all(px(1)), ..abs() }, BackgroundColor(DEEP), BorderColor::all(SEAM)));
+            t.spawn((Node { left: px(0), right: px(0), top, height: px(4), border: UiRect::all(px(1)), ..abs() }, BackgroundColor(DEEP), BorderColor::all(STITCH)));
             ids[0] = t.spawn((Node { left: px(0), top, height: px(4), width: px(0), ..abs() }, BackgroundColor(fill_c))).id();
             ids[1] = t
                 .spawn((
                     Node { left: px(0), top: px((h - 16.0) / 2.0), width: px(8), height: px(16), margin: UiRect::left(px(-4)), border_radius: BorderRadius::all(px(2)), ..abs() },
-                    BackgroundColor(CHALK),
+                    BackgroundColor(SHELL),
                 ))
                 .id();
         })
@@ -214,13 +275,13 @@ fn track(g: &mut ChildSpawnerCommands, w: Val, h: f32, fill_c: Color) -> (Entity
 fn spawn_hud(mut commands: Commands) {
     let none = Entity::PLACEHOLDER;
     let mut ids = Ids {
-        clock: none, phase: none, pause: none, status: none, invalid: none, time_fill: none, time_knob: none, weather_body: none, hints_full: none, hints_tab: none,
-        hint_list: none, strip_root: none, strip_body: none, tip: none, tip_title: none, tip_sub: none,
+        clock: none, phase: none, pause: none, status: none, invalid: none, invalid_text: none, time_fill: none, time_knob: none, tide_fill: none, tide_text: none, weather_body: none,
+        hints_full: none, hints_tab: none, hint_list: none, strip_root: none, strip_body: none, tip: none, tip_title: none, tip_sub: none,
     };
 
     // ---- ToolBar
     commands.spawn(Node { left: px(0), right: px(0), bottom: px(16), justify_content: JustifyContent::Center, padding: UiRect::horizontal(px(16)), ..abs() }).with_children(|w| {
-        w.spawn(slab(Node { padding: UiRect::all(px(6)), column_gap: px(5), max_width: percent(100), ..default() }, SLAB)).with_children(|bar| {
+        w.spawn(slab(Node { padding: UiRect::all(px(6)), column_gap: px(5), max_width: percent(100), ..default() }, CLOTH)).with_children(|bar| {
             deco(bar);
             for (gi, name) in GROUPS.iter().enumerate() {
                 if gi > 0 {
@@ -231,17 +292,32 @@ fn spawn_hud(mut commands: Commands) {
                     g.spawn(row(2)).with_children(|r| {
                         for t in Tool::ALL.into_iter().filter(|t| strip::tool_group(*t) == gi) {
                             let key = t.hotkey().1;
+                            let (title, sub) = strip::tip(t);
                             r.spawn((
                                 button(
-                                    Node { width: px(58), min_width: px(52), height: px(52), flex_shrink: 1.0, flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd, padding: UiRect::bottom(px(6)), ..default() },
+                                    Node {
+                                        width: px(58),
+                                        min_width: px(52),
+                                        height: px(56),
+                                        flex_shrink: 1.0,
+                                        flex_direction: FlexDirection::Column,
+                                        justify_content: JustifyContent::FlexEnd,
+                                        row_gap: px(2),
+                                        padding: UiRect::bottom(px(4)),
+                                        ..default()
+                                    },
                                     Action::Tool(t),
                                 ),
-                                Tip(format!("{}  [{key}]", t.label()), strip::tip(t).into()),
+                                Tip(format!("{title}  [{key}]"), sub.into()),
                             ))
                             .with_children(|b| {
                                 b.spawn(top_band());
+                                notch(b);
                                 b.spawn((txt(key, 10.0, DIM), Node { left: px(3), top: px(1), ..abs() }));
-                                b.spawn((txt(t.label(), 12.0, CHALK), Lbl));
+                                b.spawn(Node { left: px(0), right: px(0), top: px(14), justify_content: JustifyContent::Center, ..abs() }).with_children(|gl| {
+                                    gl.spawn((txt(t.glyph(), 14.0, DIM), Lbl, Glyph));
+                                });
+                                b.spawn((txt(t.label(), 12.0, SHELL), Lbl));
                             });
                         }
                     });
@@ -251,37 +327,42 @@ fn spawn_hud(mut commands: Commands) {
     });
 
     // ---- VariantStrip (content rebuilt by `rebuild_strip`)
-    commands.spawn(Node { left: px(0), right: px(0), bottom: px(104), justify_content: JustifyContent::Center, padding: UiRect::horizontal(px(16)), ..abs() }).with_children(|w| {
-        ids.strip_root = w.spawn(slab(Node { padding: UiRect::all(px(8)), max_width: px(1000), display: Display::None, ..default() }, SLAB)).with_children(|p| {
-            deco(p);
-            ids.strip_body = p.spawn(col(4)).id();
-        }).id();
+    commands.spawn(Node { left: px(0), right: px(0), bottom: px(110), justify_content: JustifyContent::Center, padding: UiRect::horizontal(px(16)), ..abs() }).with_children(|w| {
+        ids.strip_root = w
+            .spawn(slab(Node { padding: UiRect::all(px(8)), max_width: px(1000), display: Display::None, ..default() }, CLOTH))
+            .with_children(|p| {
+                deco(p);
+                ids.strip_body = p.spawn(Node { margin: UiRect::top(px(3)), ..col(4) }).id();
+            })
+            .id();
     });
 
     // ---- WeatherPanel
     commands.spawn(Node { right: px(16), top: px(16), ..abs() }).with_children(|w| {
-        w.spawn(slab(Node { width: px(244), padding: UiRect::all(px(8)), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() }, SLAB)).with_children(|p| {
+        w.spawn(slab(Node { width: px(244), padding: UiRect::all(px(8)), flex_direction: FlexDirection::Column, row_gap: px(6), ..default() }, CLOTH)).with_children(|p| {
             deco(p);
-            p.spawn(Node { margin: UiRect::top(px(2)), ..row(8) }).with_children(|r| {
+            p.spawn(Node { margin: UiRect::top(px(4)), ..row(8) }).with_children(|r| {
                 r.spawn((Node { flex_shrink: 0.0, ..default() }, Interaction::None, Action::Collapse)).with_children(|c| {
-                    ids.clock = c.spawn(txt("12:00", 20.0, SODIUM)).id();
+                    ids.clock = c.spawn(txt("12:00", 20.0, SAFFRON)).id();
                 });
                 ids.phase = r.spawn(txt("DAY", 10.0, DIM)).id();
                 r.spawn((button(Node { width: px(32), height: px(32), margin: UiRect::left(Val::Auto), ..default() }, Action::Pause), Tip("PAUSE TIME  [T]".into(), "Freeze or resume the clock".into()))).with_children(|b| {
-                    ids.pause = b.spawn((txt("||", 12.0, CHALK), Lbl)).id();
+                    b.spawn(top_band());
+                    ids.pause = b.spawn((txt("||", 12.0, SHELL), Lbl)).id();
                 });
             });
             ids.weather_body = p
                 .spawn(col(6))
                 .with_children(|b| {
+                    // Time slider, with ticks at 06, 12, 18.
                     b.spawn(col(0)).with_children(|t| {
-                        let (tr, fill, knob) = track(t, px(228), 20.0, SODIUM);
+                        let (tr, fill, knob) = track(t, px(228), 20.0, SAFFRON);
                         t.commands().entity(tr).insert(TimeTrack);
                         ids.time_fill = fill;
                         ids.time_knob = knob;
                         t.spawn(Node { width: px(228), height: px(6), ..default() }).with_children(|k| {
                             for pct in [25.0, 50.0, 75.0] {
-                                k.spawn((Node { left: percent(pct), width: px(1), height: px(6), ..abs() }, BackgroundColor(SEAM)));
+                                k.spawn((Node { left: percent(pct), width: px(1), height: px(6), ..abs() }, BackgroundColor(STITCH)));
                             }
                         });
                         t.spawn(Node { width: px(228), justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|k| {
@@ -289,18 +370,29 @@ fn spawn_hud(mut commands: Commands) {
                             k.spawn(txt("24", 10.0, DIM));
                         });
                     });
+                    // Tide row (read-only, follows the clock).
+                    b.spawn(Node { width: px(228), height: px(16), ..row(4) }).with_children(|r| {
+                        r.spawn((txt("TIDE", 10.0, DIM), Node { flex_shrink: 0.0, ..default() }));
+                        r.spawn((Node { width: px(120), min_width: px(70), height: px(6), flex_shrink: 1.0, border: UiRect::all(px(1)), ..default() }, BackgroundColor(DEEP), BorderColor::all(STITCH))).with_children(|g| {
+                            ids.tide_fill = g.spawn((Node { left: px(0), top: px(0), bottom: px(0), width: px(0), ..abs() }, BackgroundColor(TIDE))).id();
+                            g.spawn((Node { left: percent(50.0), top: px(-3), width: px(1), height: px(10), ..abs() }, BackgroundColor(SHELL)));
+                        });
+                        ids.tide_text = r.spawn((txt("", 10.0, DIM), Node { flex_shrink: 0.0, margin: UiRect::left(Val::Auto), ..default() })).id();
+                    });
+                    // Weather grid: 74x32, three per row.
                     b.spawn(Node { flex_wrap: FlexWrap::Wrap, column_gap: px(2), row_gap: px(2), ..default() }).with_children(|g| {
                         for k in WeatherKind::ALL {
+                            let name = if k == WeatherKind::Fog { "SEA FOG".to_string() } else { k.name().to_uppercase() };
                             g.spawn(button(Node { width: px(74), height: px(32), ..default() }, Action::Weather(k))).with_children(|b| {
                                 b.spawn(top_band());
-                                b.spawn((txt(k.name().to_uppercase(), 12.0, CHALK), Lbl));
+                                b.spawn((txt(name, 12.0, SHELL), Lbl));
                             });
                         }
                     });
                     b.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..row(6) }).with_children(|r| {
                         r.spawn((button(Node { min_height: px(32), padding: UiRect::horizontal(px(8)), column_gap: px(6), ..default() }, Action::Auto), Tog)).with_children(|t| {
                             toggle_box(t);
-                            t.spawn((txt("AUTO CYCLE", 12.0, CHALK), Lbl));
+                            t.spawn((txt("AUTO CYCLE", 12.0, SHELL), Lbl));
                         });
                         ids.status = r.spawn(txt("CYCLING", 10.0, DIM)).id();
                     });
@@ -314,7 +406,7 @@ fn spawn_hud(mut commands: Commands) {
     commands.spawn(Node { left: px(16), top: px(16), column_gap: px(4), ..abs() }).with_children(|r| {
         for (label, key, a) in [("< UNDO", "^Z", Action::Undo), ("REDO >", "^Y", Action::Redo)] {
             r.spawn(button(Node { width: px(72), height: px(36), ..default() }, a)).with_children(|b| {
-                b.spawn((txt(label, 12.0, CHALK), Lbl));
+                b.spawn((txt(label, 12.0, SHELL), Lbl));
                 b.spawn((txt(key, 10.0, DIM), Node { right: px(3), top: px(1), ..abs() }));
             });
         }
@@ -323,20 +415,31 @@ fn spawn_hud(mut commands: Commands) {
     // ---- HintsPanel (full + collapsed tab)
     commands.spawn(Node { left: px(16), top: px(60), ..abs() }).with_children(|w| {
         ids.hints_full = w
-            .spawn(slab(Node { width: px(272), padding: UiRect::all(px(8)), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, SLAB))
+            .spawn(slab(Node { width: px(272), padding: UiRect::all(px(8)), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() }, CLOTH))
             .with_children(|p| {
                 deco(p);
                 p.spawn((button(Node { right: px(0), top: px(0), width: px(32), height: px(32), ..abs() }, Action::Hints), Tip("HINTS  [H]".into(), "Collapse the hints".into()))).with_children(|b| {
-                    b.spawn((txt("x", 12.0, CHALK), Lbl));
+                    b.spawn((txt("x", 12.0, SHELL), Lbl));
                 });
-                ids.invalid = p.spawn((txt("", 12.0, SODIUM), Node { display: Display::None, ..default() })).id();
-                ids.hint_list = p.spawn(col(4)).id();
+                // Invalid reason: madder text with the broken-thread notch at its left edge.
+                ids.invalid = p
+                    .spawn(Node { display: Display::None, margin: UiRect::top(px(4)), ..row(6) })
+                    .with_children(|r| {
+                        r.spawn(row(4)).with_children(|n| {
+                            for _ in 0..3 {
+                                n.spawn((Node { width: px(4), height: px(3), ..default() }, BackgroundColor(MADDER)));
+                            }
+                        });
+                        ids.invalid_text = r.spawn(txt("", 12.0, MADDER)).id();
+                    })
+                    .id();
+                ids.hint_list = p.spawn(Node { margin: UiRect::top(px(4)), ..col(4) }).id();
             })
             .id();
         ids.hints_tab = w
             .spawn((button(Node { width: px(32), height: px(32), display: Display::None, ..default() }, Action::Hints), Tip("HINTS  [H]".into(), "Show the hints".into())))
             .with_children(|b| {
-                b.spawn((txt("?", 12.0, CHALK), Lbl));
+                b.spawn((txt("?", 12.0, SHELL), Lbl));
             })
             .id();
     });
@@ -346,11 +449,11 @@ fn spawn_hud(mut commands: Commands) {
         .spawn((
             Node { max_width: px(260), padding: UiRect::all(px(6)), border: UiRect::all(px(1)), flex_direction: FlexDirection::Column, display: Display::None, ..abs() },
             BackgroundColor(DEEP),
-            BorderColor::all(SEAM),
+            BorderColor::all(STITCH),
             GlobalZIndex(1000),
         ))
         .with_children(|t| {
-            ids.tip_title = t.spawn(txt("", 14.0, CHALK)).id();
+            ids.tip_title = t.spawn(txt("", 14.0, SHELL)).id();
             ids.tip_sub = t.spawn(txt("", 12.0, DIM)).id();
         })
         .id();
@@ -358,16 +461,17 @@ fn spawn_hud(mut commands: Commands) {
     commands.insert_resource(ids);
 }
 
+/// 12x12 box; on, it is filled malachite with a 4x4 cloth square inside.
 fn toggle_box(t: &mut ChildSpawnerCommands) {
     t.spawn((Node { width: px(12), height: px(12), border: UiRect::all(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(DIM))).with_children(|b| {
         b.spawn((
             Node { left: px(0), right: px(0), top: px(0), bottom: px(0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..abs() },
-            BackgroundColor(MOSS),
+            BackgroundColor(MALACHITE),
             Visibility::Hidden,
-            Band,
+            Band::Fill,
         ))
         .with_children(|f| {
-            f.spawn((Node { width: px(4), height: px(4), ..default() }, BackgroundColor(SLAB)));
+            f.spawn((Node { width: px(4), height: px(4), ..default() }, BackgroundColor(CLOTH)));
         });
     });
 }
@@ -380,31 +484,38 @@ fn seg_button(g: &mut ChildSpawnerCommands, o: &Opt, a: Action, cond: Option<Con
     }
     e.with_children(|b| {
         b.spawn(top_band());
-        b.spawn((txt(o.l, 12.0, CHALK), Lbl));
+        b.spawn((txt(o.l, 12.0, SHELL), Lbl));
+    });
+}
+
+/// The name plate: 14-px shell text on a deep well with a 3-px band down its left edge.
+fn name_plate(p: &mut ChildSpawnerCommands, text: &str) {
+    p.spawn((Node { padding: UiRect { left: px(12), right: px(10), top: px(6), bottom: px(6) }, align_items: AlignItems::Center, ..default() }, BackgroundColor(DEEP))).with_children(|n| {
+        n.spawn((Node { left: px(0), top: px(0), bottom: px(0), width: px(3), ..abs() }, BackgroundColor(MALACHITE), PlateBand));
+        n.spawn((txt(text, 14.0, SHELL), Plate));
     });
 }
 
 fn fill_strip(p: &mut ChildSpawnerCommands, tool: Tool) {
     let (a, b) = strip::rows(tool);
     let mut seg_row = 0u8;
-    for (i, ctls) in [a, b].iter().enumerate() {
+    let mut first = true;
+    for ctls in [a, b] {
         if ctls.is_empty() {
             continue;
         }
         p.spawn(Node { flex_wrap: FlexWrap::Wrap, row_gap: px(4), ..row(6) }).with_children(|r| {
-            if i == 0 {
-                r.spawn((Node { padding: UiRect { left: px(12), right: px(10), top: px(6), bottom: px(6) }, align_items: AlignItems::Center, ..default() }, BackgroundColor(DEEP))).with_children(|n| {
-                    n.spawn((Node { left: px(0), top: px(0), bottom: px(0), width: px(3), ..abs() }, BackgroundColor(MOSS)));
-                    n.spawn(txt(tool.label(), 14.0, CHALK));
-                });
+            if first {
+                name_plate(r, strip::plate(tool));
             }
             for (k, c) in ctls.iter().enumerate() {
-                if i == 0 || k > 0 {
+                if first || k > 0 {
                     r.spawn(divider());
                 }
                 cluster(r, c, &mut seg_row);
             }
         });
+        first = false;
     }
 }
 
@@ -425,13 +536,13 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
         C::Tog(o) => {
             r.spawn((button(Node { min_height: px(32), padding: UiRect::horizontal(px(8)), column_gap: px(6), ..default() }, Action::Set(o.set)), Cond { sel: o.sel, en: o.en }, Tog)).with_children(|t| {
                 toggle_box(t);
-                t.spawn((txt(o.l, 12.0, CHALK), Lbl));
+                t.spawn((txt(o.l, 12.0, SHELL), Lbl));
             });
         }
         C::Sld(sl) => {
             r.spawn(Node { min_height: px(32), ..row(6) }).with_children(|g| {
-                g.spawn(txt(sl.l, 12.0, CHALK));
-                let (tr, fill, knob) = track(g, px(96), 32.0, MOSS);
+                g.spawn(txt(sl.l, 12.0, SHELL));
+                let (tr, fill, knob) = track(g, px(96), 32.0, MALACHITE);
                 let text = g.spawn(txt("", 10.0, DIM)).id();
                 g.commands().entity(tr).insert(Slider { sl: *sl, fill, knob, text });
             });
@@ -440,14 +551,22 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
             r.spawn(row(0)).with_children(|g| {
                 g.spawn((txt(*label, 10.0, DIM), Node { margin: UiRect::right(px(4)), ..default() }));
                 for (i, (name, h)) in palette(*slot).iter().enumerate() {
+                    // 32x32 hit node; 28x28 deep cell; 20x20 chip: lit hex over the noon-shadow hex.
                     g.spawn((
-                        button(Node { width: px(32), height: px(32), padding: UiRect::all(px(4)), border: UiRect::all(px(2)), ..default() }, Action::Color(*slot, i as u8)),
+                        button(Node { width: px(32), height: px(32), border: UiRect::all(px(2)), ..default() }, Action::Color(*slot, i as u8)),
                         Cond { sel: yes, en: *en },
-                        Tip((*label).into(), (*name).into()),
+                        Tip(name.to_uppercase(), format!("{} swatch", label.to_lowercase())),
+                        Chip,
                     ))
                     .with_children(|b| {
-                        b.spawn((Node { width: px(20), height: px(20), border: UiRect::all(px(1)), ..default() }, BackgroundColor(hex(*h)), BorderColor::all(DRIP)));
-                        b.spawn(band(Node { left: px(0), right: px(0), bottom: px(-5), height: px(3), ..default() }));
+                        b.spawn((Node { width: px(28), height: px(28), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(DEEP))).with_children(|cell| {
+                            cell.spawn((Node { width: px(20), height: px(20), padding: UiRect::all(px(1)), flex_direction: FlexDirection::Column, ..default() }, BackgroundColor(WEFT))).with_children(|chip| {
+                                chip.spawn((Node { height: px(12), ..default() }, BackgroundColor(hex(*h))));
+                                chip.spawn((Node { height: px(6), ..default() }, BackgroundColor(hex(strip::shadow(*slot, i)))));
+                            });
+                        });
+                        b.spawn(band(Band::Fill, MALACHITE, Node { left: px(2), right: px(2), bottom: px(-5), height: px(3), ..default() }));
+                        b.spawn(band(Band::Veil, VEIL, Node { left: px(2), right: px(2), top: px(2), bottom: px(2), ..default() }));
                     });
                 }
             });
@@ -457,7 +576,7 @@ fn cluster(r: &mut ChildSpawnerCommands, c: &C, seg_row: &mut u8) {
                 for (i, (k, l, full)) in CLUTTER.iter().enumerate() {
                     g.spawn((button(Node { width: px(72), height: px(36), ..default() }, Action::Clutter(*k)), Seg(0, i), Tip((*full).into(), "Click to place".into()))).with_children(|b| {
                         b.spawn(top_band());
-                        b.spawn((txt(*l, 12.0, CHALK), Lbl));
+                        b.spawn((txt(*l, 12.0, SHELL), Lbl));
                     });
                 }
             });
@@ -477,21 +596,26 @@ fn rebuild_strip(mut commands: Commands, s: Res<ToolSettings>, ids: Res<Ids>, mu
     commands.entity(ids.strip_body).despawn_children().with_children(|p| fill_strip(p, tool));
 }
 
-fn rebuild_hints(mut commands: Commands, s: Res<ToolSettings>, status: Res<ToolStatus>, ids: Res<Ids>, mut cur: Local<Option<(Tool, bool)>>) {
-    let drawing = status.drawing;
-    if *cur == Some((s.tool, drawing)) {
+fn rebuild_hints(mut commands: Commands, s: Res<ToolSettings>, status: Res<ToolStatus>, ids: Res<Ids>, mut cur: Local<Option<(Tool, bool, bool)>>) {
+    let key = (s.tool, status.drawing, status.raising);
+    if *cur == Some(key) {
         return;
     }
-    *cur = Some((s.tool, drawing));
+    *cur = Some(key);
     let tool = s.tool;
+    let lines: Vec<_> = if status.raising {
+        strip::raising_hints(tool).to_vec()
+    } else {
+        strip::hints(tool).iter().copied().filter(|(k, _)| !(status.drawing && *k == "DRAG")).collect()
+    };
     commands.entity(ids.hint_list).despawn_children().with_children(|p| {
-        p.spawn(txt(tool.label(), 12.0, CHALK));
-        for (key, desc) in strip::hints(tool).iter().filter(|(k, _)| !(drawing && *k == "DRAG")) {
+        p.spawn((txt(strip::plate(tool), 12.0, SHELL), Plate));
+        for (key, desc) in lines {
             p.spawn(row(6)).with_children(|r| {
                 r.spawn((Node { padding: UiRect::axes(px(4), px(2)), flex_shrink: 0.0, ..default() }, BackgroundColor(DEEP))).with_children(|c| {
-                    c.spawn(txt(*key, 10.0, CHALK));
+                    c.spawn(txt(key, 10.0, SHELL));
                 });
-                r.spawn((txt(*desc, 12.0, DIM), Node { flex_basis: px(0), flex_grow: 1.0, ..default() }));
+                r.spawn((txt(desc, 12.0, DIM), Node { flex_basis: px(0), flex_grow: 1.0, ..default() }));
             });
         }
     });
@@ -627,7 +751,8 @@ fn sync_btn(s: Res<ToolSettings>, status: Res<ToolStatus>, w: Res<Weather>, cloc
     for (a, c, mut b) in &mut q {
         let (sel, en, now) = match *a {
             Action::Set(_) => c.map_or((false, true, false), |c| ((c.sel)(&s), (c.en)(&s), false)),
-            Action::Tool(t) => (s.tool == t, !status.drawing || s.tool == t, false),
+            // The toolbar never dims while drawing; picking another tool cancels the gesture.
+            Action::Tool(t) => (s.tool == t, true, false),
             Action::Clutter(k) => (s.clutter == k, true, false),
             Action::Color(slot, i) => (color_get(&s.colors, slot) == i, c.is_none_or(|c| (c.en)(&s)), false),
             Action::Weather(k) => (!w.auto && w.kind == k, true, w.auto && w.kind == k),
@@ -637,7 +762,8 @@ fn sync_btn(s: Res<ToolSettings>, status: Res<ToolStatus>, w: Res<Weather>, cloc
             Action::Redo => (false, glade.can_redo(), false),
             Action::Hints | Action::Collapse => (false, true, false),
         };
-        let n = Btn { sel, en, now };
+        let bad = matches!(*a, Action::Tool(t) if s.tool == t) && status.invalid.is_some();
+        let n = Btn { sel, en, now, bad };
         if *b != n {
             *b = n;
         }
@@ -646,25 +772,36 @@ fn sync_btn(s: Res<ToolSettings>, status: Res<ToolStatus>, w: Res<Weather>, cloc
 
 fn paint(
     time: Res<Time>,
-    mut q: Query<(Entity, &Btn, &Interaction, &mut Flash, &mut BackgroundColor, &mut BorderColor, Has<Tog>)>,
+    mut q: Query<(Entity, &Btn, &Interaction, &mut Flash, &mut BackgroundColor, &mut BorderColor, &Action, Has<Tog>, Has<Chip>), Without<Band>>,
     kids: Query<&Children>,
-    mut vis: Query<&mut Visibility, With<Band>>,
-    mut tcol: Query<&mut TextColor, With<Lbl>>,
+    mut deco: Query<(&Band, &mut Visibility, &mut BackgroundColor), Without<Btn>>,
+    mut tcol: Query<(&mut TextColor, Has<Glyph>), With<Lbl>>,
 ) {
-    for (e, b, i, mut fl, mut bg, mut bd, tog) in &mut q {
+    for (e, b, i, mut fl, mut bg, mut bd, a, tog, chip) in &mut q {
         fl.0 = if *i == Interaction::Pressed { 0.08 } else { (fl.0 - time.delta_secs()).max(0.0) };
-        let edge = if b.sel && !tog { MOSS } else { SEAM };
-        let (fill, edge) = if !b.en {
-            (DIS_BG, SEAM)
-        } else if fl.0 > 0.0 {
-            (PRESS, edge)
+        let hot = *i != Interaction::None && b.en;
+        let erase_hover = hot && matches!(*a, Action::Tool(Tool::Erase));
+        let edge = if b.bad || erase_hover {
+            MADDER
         } else if b.sel && !tog {
-            (LIT, MOSS)
-        } else if *i != Interaction::None {
-            (LIT, edge)
+            MALACHITE
+        } else if chip {
+            Color::NONE
         } else {
-            (CAST, edge)
+            STITCH
         };
+        let fill = if chip {
+            Color::NONE
+        } else if !b.en {
+            DIS_BG
+        } else if fl.0 > 0.0 {
+            PRESS
+        } else if (b.sel && !tog) || hot {
+            LIT
+        } else {
+            TABLET
+        };
+        let edge = if !b.en && !chip { STITCH } else { edge };
         if bg.0 != fill {
             bg.0 = fill;
         }
@@ -672,14 +809,36 @@ fn paint(
         if *bd != edge {
             *bd = edge;
         }
-        let (show, text) = (b.sel || b.now, if b.en { CHALK } else { DIS_TXT });
+        let label = if b.en { SHELL } else { DIS_TXT };
+        let glyph = if !b.en {
+            DIS_TXT
+        } else if b.sel {
+            MALACHITE
+        } else if hot {
+            SHELL
+        } else {
+            DIM
+        };
         for d in kids.iter_descendants(e) {
-            if let Ok(mut v) = vis.get_mut(d) {
+            if let Ok((kind, mut v, mut c)) = deco.get_mut(d) {
+                let show = match kind {
+                    Band::Top => (b.sel || b.now) && !b.bad,
+                    Band::Notch => b.bad,
+                    Band::Fill => b.sel,
+                    Band::Veil => !b.en,
+                };
                 v.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+                if matches!(kind, Band::Top) {
+                    let want = if b.now && !b.sel { COCHINEAL } else { MALACHITE };
+                    if c.0 != want {
+                        c.0 = want;
+                    }
+                }
             }
-            if let Ok(mut t) = tcol.get_mut(d) {
-                if t.0 != text {
-                    t.0 = text;
+            if let Ok((mut t, is_glyph)) = tcol.get_mut(d) {
+                let want = if is_glyph { glyph } else { label };
+                if t.0 != want {
+                    t.0 = want;
                 }
             }
         }
@@ -694,17 +853,18 @@ fn set_text(texts: &mut Query<&mut Text>, e: Entity, s: String) {
     }
 }
 
-fn place(nodes: &mut Query<&mut Node>, fill: Entity, knob: Entity, f: f32) {
+fn place(nodes: &mut Query<&mut Node>, fill: Entity, knob: Option<Entity>, f: f32) {
     let v = percent(f * 100.0);
-    if let Ok(n) = nodes.get(fill)
+    if let Ok(mut n) = nodes.get_mut(fill)
         && n.width != v
     {
-        nodes.get_mut(fill).unwrap().width = v;
+        n.width = v;
     }
-    if let Ok(n) = nodes.get(knob)
+    if let Some(knob) = knob
+        && let Ok(mut n) = nodes.get_mut(knob)
         && n.left != v
     {
-        nodes.get_mut(knob).unwrap().left = v;
+        n.left = v;
     }
 }
 
@@ -715,6 +875,32 @@ fn show(nodes: &mut Query<&mut Node>, e: Entity, on: bool) {
             n.display = d;
         }
     }
+}
+
+/// Clock phase word for the hour: DAWN 05-07, DAY 08-15, GOLDEN 16-17, DUSK 18-19, NIGHT 20-04.
+fn phase_word(h: f32) -> &'static str {
+    match h.rem_euclid(24.0) as u32 {
+        5..=7 => "DAWN",
+        8..=15 => "DAY",
+        16..=17 => "GOLDEN",
+        18..=19 => "DUSK",
+        _ => "NIGHT",
+    }
+}
+
+/// Tide readout: `RISING +0.21 M`; HIGH / LOW within 0.03 m of the extremes.
+fn tide_readout(t: Tide) -> String {
+    let word = if t.level >= TIDE_RANGE - 0.03 {
+        "HIGH"
+    } else if t.level <= -TIDE_RANGE + 0.03 {
+        "LOW"
+    } else if t.falling {
+        "FALLING"
+    } else {
+        "RISING"
+    };
+    let level = if t.level.abs() < 0.005 { 0.0 } else { t.level };
+    format!("{word} {level:+.2} M")
 }
 
 fn sync_text(
@@ -731,26 +917,46 @@ fn sync_text(
 ) {
     let h = clock.hour.rem_euclid(24.0);
     set_text(&mut texts, ids.clock, format!("{:02}:{:02}", h as u32, ((h.fract() * 60.0) as u32).min(59)));
-    let phase = match h {
-        5.0..8.0 => "DAWN",
-        8.0..17.0 => "DAY",
-        17.0..20.0 => "DUSK",
-        _ => "NIGHT",
-    };
-    set_text(&mut texts, ids.phase, phase.into());
+    set_text(&mut texts, ids.phase, phase_word(h).into());
     set_text(&mut texts, ids.pause, if clock.paused { ">" } else { "||" }.into());
     set_text(&mut texts, ids.status, if weather.auto { "CYCLING" } else { "HELD" }.into());
-    place(&mut nodes, ids.time_fill, ids.time_knob, h / 24.0);
+    place(&mut nodes, ids.time_fill, Some(ids.time_knob), h / 24.0);
+    let tide = Tide::at(h);
+    place(&mut nodes, ids.tide_fill, None, ((tide.level + TIDE_RANGE) / (2.0 * TIDE_RANGE)).clamp(0.0, 1.0));
+    set_text(&mut texts, ids.tide_text, tide_readout(tide));
     show(&mut nodes, ids.weather_body, open.0);
     show(&mut nodes, ids.hints_full, hv.0);
     show(&mut nodes, ids.hints_tab, !hv.0);
-    set_text(&mut texts, ids.invalid, status.invalid.clone().unwrap_or_default());
+    set_text(&mut texts, ids.invalid_text, format!("! {}", status.invalid.clone().unwrap_or_default()));
     show(&mut nodes, ids.invalid, status.invalid.is_some());
     for x in &sl {
         let v = (x.sl.get)(&s);
-        place(&mut nodes, x.fill, x.knob, ((v - x.sl.lo) / (x.sl.hi - x.sl.lo)).clamp(0.0, 1.0));
+        place(&mut nodes, x.fill, Some(x.knob), ((v - x.sl.lo) / (x.sl.hi - x.sl.lo)).clamp(0.0, 1.0));
         let unit = if x.sl.unit.is_empty() { String::new() } else { format!(" {}", x.sl.unit) };
-        set_text(&mut texts, x.text, format!("{v:.d$}{unit}", d = x.sl.dec));
+        let text = if v <= x.sl.lo && !x.sl.zero.is_empty() { x.sl.zero.to_string() } else { format!("{v:.d$}{unit}", d = x.sl.dec) };
+        set_text(&mut texts, x.text, text);
+    }
+}
+
+/// Name plate text and band: the tool name, with live BEACON (Roundhouse, saffron band) and
+/// `DYE: HUT` (after a Shift+click pick).
+fn plate(s: Res<ToolSettings>, mut texts: Query<&mut Text, With<Plate>>, mut bands: Query<&mut BackgroundColor, With<PlateBand>>) {
+    let beacon = s.tool == Tool::Roundhouse && s.ghost_beacon;
+    let name = match (s.tool, s.dye) {
+        (Tool::Roundhouse, _) if beacon => "BEACON".to_string(),
+        (Tool::Dye, Some(t)) => format!("DYE: {t}"),
+        (t, _) => strip::plate(t).to_string(),
+    };
+    for mut t in &mut texts {
+        if t.0 != name {
+            t.0 = name.clone();
+        }
+    }
+    for mut b in &mut bands {
+        let want = if beacon { SAFFRON } else { MALACHITE };
+        if b.0 != want {
+            b.0 = want;
+        }
     }
 }
 
@@ -787,5 +993,38 @@ fn tooltip(
         n.display = Display::Flex;
         n.left = px((c.x - 20.0).clamp(4.0, (ww - 264.0).max(4.0)));
         n.bottom = px(wh - c.y + 12.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_words_follow_the_design() {
+        let w = |h: f32| phase_word(h);
+        assert_eq!([w(4.9), w(5.0), w(7.99), w(8.0), w(15.9), w(16.0), w(17.9), w(18.0), w(19.9), w(20.0), w(0.0)], ["NIGHT", "DAWN", "DAWN", "DAY", "DAY", "GOLDEN", "GOLDEN", "DUSK", "DUSK", "NIGHT", "NIGHT"]);
+    }
+
+    #[test]
+    fn tide_readout_words_and_sign() {
+        assert_eq!(tide_readout(Tide { level: 0.3, falling: true }), "HIGH +0.30 M");
+        assert_eq!(tide_readout(Tide { level: -0.29, falling: false }), "LOW -0.29 M");
+        assert_eq!(tide_readout(Tide { level: 0.21, falling: false }), "RISING +0.21 M");
+        assert_eq!(tide_readout(Tide { level: -0.1, falling: true }), "FALLING -0.10 M");
+        // The clock drives it: high water at 03:00, low at 09:00.
+        assert!(tide_readout(Tide::at(3.0)).starts_with("HIGH"));
+        assert!(tide_readout(Tide::at(9.0)).starts_with("LOW"));
+    }
+
+    #[test]
+    fn tokens_match_the_design_hexes() {
+        let rgb = |c: Color| c.to_srgba().to_u8_array_no_alpha();
+        assert_eq!(rgb(MALACHITE), [0x2F, 0xE0, 0xA0]);
+        assert_eq!(rgb(MADDER), [0xFF, 0x5A, 0x4E]);
+        assert_eq!(rgb(SAFFRON), [0xFF, 0xC2, 0x1A]);
+        assert_eq!(rgb(COCHINEAL), [0xE8, 0x39, 0x9A]);
+        assert_eq!(rgb(TIDE), [0x19, 0xE0, 0xD0]);
+        assert_eq!(rgb(SHELL), [0xFF, 0xF4, 0xDE]);
     }
 }

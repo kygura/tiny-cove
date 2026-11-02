@@ -11,7 +11,10 @@ use bevy::{
 use cairn_cove_core::GLADE_HALF;
 
 const MIN_ZOOM: f32 = 0.3;
-const MAX_ZOOM: f32 = 1.6;
+/// Far enough out to see the whole 64 m island plus open sea around it.
+const MAX_ZOOM: f32 = 3.2;
+/// Default framing: the whole island and a margin of sea (see `default_frames_the_island`).
+const DEFAULT_ZOOM: f32 = 2.3;
 const MIN_PITCH: f32 = 25.0;
 const MAX_PITCH: f32 = 55.0;
 const PAN_SPEED: f32 = 14.0;
@@ -38,10 +41,10 @@ impl Default for CameraRig {
             focus: Vec3::ZERO,
             yaw_deg: DEFAULT_YAW,
             pitch_deg: DEFAULT_PITCH,
-            zoom: 1.0,
+            zoom: DEFAULT_ZOOM,
             target_yaw: DEFAULT_YAW,
             target_pitch: DEFAULT_PITCH,
-            target_zoom: 1.0,
+            target_zoom: DEFAULT_ZOOM,
         }
     }
 }
@@ -178,6 +181,26 @@ mod tests {
         assert_eq!(step_yaw(50.0, 1.0), 90.0);
         assert_eq!(step_yaw(50.0, -1.0), 45.0);
         assert_eq!(step_yaw(0.0, -1.0), -45.0);
+    }
+
+    /// Half extents (m) of what the view covers on screen at `zoom` and `aspect`: (width, height).
+    fn view_half(zoom: f32, aspect: f32) -> (f32, f32) {
+        let h = crate::render::VIEW_HEIGHT * zoom * 0.5;
+        (h * aspect, h)
+    }
+
+    #[test]
+    fn default_frames_the_island() {
+        // At yaw 45 a 64 m square is a diamond 2 * 32 * sqrt(2) wide; its screen height is that
+        // times sin(pitch). Both must fit at 16:9, with sea to spare.
+        let diag = GLADE_HALF * std::f32::consts::SQRT_2;
+        let rig = CameraRig::default();
+        let (hw, hh) = view_half(rig.zoom, 16.0 / 9.0);
+        assert!(hw > diag * 1.05, "island wider than the default view: {hw} vs {diag}");
+        assert!(hh > diag * rig.pitch_deg.to_radians().sin() * 1.05, "island taller than the default view");
+        // Zooming all the way out still shows more than the default.
+        assert!(MAX_ZOOM > DEFAULT_ZOOM && view_half(MAX_ZOOM, 16.0 / 9.0).0 > hw);
+        assert!((MIN_ZOOM..=MAX_ZOOM).contains(&DEFAULT_ZOOM));
     }
 
     #[test]

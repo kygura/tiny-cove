@@ -3,7 +3,8 @@
 //! document after each gesture, logs `SMOKE ok|FAIL <step>`, optionally saves a screenshot and
 //! exits with status 0 (all passed) or 1.
 
-use super::{CursorOverride, Tool, ToolSettings};
+use super::{CursorOverride, Tool, ToolSettings, hash01, q2};
+use crate::camera::CameraRig;
 use crate::weather::Clock;
 use crate::world::{BuiltScene, Glade};
 use bevy::{
@@ -12,8 +13,9 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
 };
 use cairn_cove_core::{
-    BridgeKind, ClutterKind, Document, FenceKind, Footprint, Material, OpeningKind, PaintLayer, PathKind, PropKind,
-    RoofStyle, StairKind, Structure, TerrainOp, TreeKind, geom::is_closed,
+    BridgeKind, ClutterKind, Document, FenceKind, Footprint, Hanging, Material, OpeningKind, PaintLayer, PathKind,
+    PropKind, RoofStyle, StairKind, Structure, TerrainDab, TerrainOp, TreeKind, WallKind, buildings::is_beacon,
+    geom::is_closed,
 };
 use std::path::PathBuf;
 
@@ -73,16 +75,29 @@ pub(super) fn install(app: &mut App) {
     let shot = args.get(k + 1).filter(|a| !a.starts_with("--")).map(PathBuf::from);
     app.insert_resource(Smoke { shot, steps: steps(), ..default() })
         .insert_resource(CursorOverride::default())
-        .add_systems(Startup, |mut clock: ResMut<Clock>, mut glade: ResMut<Glade>| {
+        .add_systems(Startup, |mut clock: ResMut<Clock>, mut glade: ResMut<Glade>, mut rig: ResMut<CameraRig>| {
             clock.hour = 12.0;
             clock.paused = true;
-            // Fixed terrain so the scripted coordinates behave the same every run.
-            glade.reset(Document::new(7));
+            rig.set_zoom(1.9);
+            glade.reset(arena());
         })
         .add_systems(PreUpdate, drive.after(InputSystems));
 }
 
 // --- script ------------------------------------------------------------------------------------
+
+/// Seed 7 with a level 1.5 m plateau over the middle of the island, so the scripted coordinates
+/// land on dry flat ground whatever the island generator does at the edges. It is the committed
+/// base of the history; every step's own edits come after it.
+fn arena() -> Document {
+    let mut d = Document::new(7);
+    for i in -4..=4 {
+        for j in -4..=4 {
+            d.terrain.push(TerrainDab { center: Vec2::new(i as f32 * 6.0, j as f32 * 6.0), radius: 7.0, op: TerrainOp::Flatten { height: 1.5, strength: 1.0 } });
+        }
+    }
+    d
+}
 
 /// Ground point from diorama coordinates: `s` = depth (+ towards the camera), `d` = screen-right.
 fn sd(s: f32, d: f32) -> Vec2 {
@@ -158,16 +173,25 @@ fn is_wall(s: &Structure) -> bool {
     matches!(s, Structure::Wall(_))
 }
 
+fn is_stairs(s: &Structure) -> bool {
+    matches!(s, Structure::Stairs(_))
+}
+
+/// Point on a hut's camera-facing (+x) wall, a little inside the face so the ray meets the wall.
+fn hut_face(c: Vec2) -> Vec2 {
+    Vec2::new(c.x + 1.94, c.y + 0.3)
+}
+
 fn steps() -> Vec<Step> {
     let mut v = Vec::new();
     let key = |t: Tool| Act::Key(t.hotkey().0);
 
-    // Walls.
+    // Dykes: every kind, crest / tumbled / footing / weathering, scroll height.
     let wa = sd(-14.0, -18.0);
     let wb = sd(-14.0, -6.0);
-    v.push(step("wall", with(vec![key(Tool::Dyke), set(|s| { s.crest = false; s.tumbled = false; })], drag(&[wa, wb])), |b, a, _| {
+    v.push(step("dyke", with(vec![key(Tool::Dyke), set(|s| { s.crest = false; s.tumbled = false; })], drag(&[wa, wb])), |b, a, _| {
         match added(b, a, is_wall)? {
-            Structure::Wall(w) => ok_if(!w.crest && !w.tumbled && (w.height - 4.0).abs() < 0.01 && w.points.len() == 2, || format!("{w:?}")),
+            Structure::Wall(w) => ok_if(!w.crest && !w.tumbled && w.kind == WallKind::DryStone && (w.height - 4.0).abs() < 0.01 && w.points.len() == 2, || format!("{w:?}")),
             _ => unreachable!(),
         }
     }));
@@ -184,9 +208,19 @@ fn steps() -> Vec<Step> {
             _ => unreachable!(),
         },
     ));
+    for (s0, kind) in [(-24.0, WallKind::Turf), (-27.0, WallKind::Palisade)] {
+        v.push(step(
+            format!("dyke {kind:?} footing+weathering"),
+            with(vec![set(move |s| { s.wall_kind = kind; s.footing = 1.0; s.weathering = 0.8; s.crest = false; s.tumbled = false; s.wall_height = 4.0; })], drag(&[sd(s0, -18.0), sd(s0, -10.0)])),
+            move |b, a, _| match added(b, a, is_wall)? {
+                Structure::Wall(w) => ok_if(w.kind == kind && (w.footing - 1.0).abs() < 1e-3 && (w.weathering - 0.8).abs() < 1e-3, || format!("{w:?}")),
+                _ => unreachable!(),
+            },
+        ));
+    }
     let c = Vec2::new(-4.0, -12.0);
     let ring = [c + Vec2::new(-3.0, -3.0), c + Vec2::new(3.0, -3.0), c + Vec2::new(3.0, 3.0), c + Vec2::new(-3.0, 3.0), c + Vec2::new(-3.0, -3.0)];
-    v.push(step("wall closed ring", with(vec![set(|s| { s.crest = false; s.tumbled = false; s.wall_height = 4.0; })], drag(&ring)), |b, a, _| {
+    v.push(step("dyke closed ring", with(vec![set(|s| { s.wall_kind = WallKind::DryStone; s.footing = 0.0; s.weathering = 0.25; s.crest = false; s.tumbled = false; s.wall_height = 4.0; })], drag(&ring)), |b, a, _| {
         match added(b, a, is_wall)? {
             Structure::Wall(w) => ok_if(is_closed(&w.points), || format!("not closed: {:?}", w.points)),
             _ => unreachable!(),
@@ -205,7 +239,7 @@ fn steps() -> Vec<Step> {
         ok_if(count(a, |s| matches!(s, Structure::Wall(w) if w.roofed && w.roof == RoofStyle::Hide)) == 1, || "ring not roofed".into())
     }));
 
-    // Openings on the first wall's camera-facing face.
+    // Openings on the first dyke's camera-facing face: click cycles window -> door -> wide door -> none.
     let face = sd(-14.0, -15.0) + n() * 0.35;
     let first_wall_openings = |d: &Document| match d.structures.first() {
         Some((_, Structure::Wall(w))) => w.openings.iter().map(|o| o.kind).collect::<Vec<_>>(),
@@ -215,14 +249,15 @@ fn steps() -> Vec<Step> {
         let k = first_wall_openings(a);
         ok_if(k == [OpeningKind::Window], || format!("{k:?}"))
     }));
-    v.push(step("opening upgrade", click(face, 2.0), move |_, a, _| {
-        let k = first_wall_openings(a);
-        ok_if(k == [OpeningKind::Door], || format!("{k:?}"))
-    }));
+    for (name, want) in [("opening click cycles to door", vec![OpeningKind::Door]), ("opening click cycles to wide door", vec![OpeningKind::WideDoor]), ("opening click cycles to none", vec![])] {
+        v.push(step(name, click(face, 2.0), move |_, a, _| {
+            let k = first_wall_openings(a);
+            ok_if(k == want, || format!("{k:?}"))
+        }));
+    }
 
-    // Stairs.
-    let is_stairs = |s: &Structure| matches!(s, Structure::Stairs(_));
-    for (name, kind, p, run) in [("stairs steel to wall top", StairKind::Log, sd(-14.0, -9.0), 4.6), ("stairs ladder to wall top", StairKind::RopeLadder, sd(-14.0, -12.0), 1.2)] {
+    // Steps: log and ladder up a dyke top, stone on the flat.
+    for (name, kind, p, run) in [("steps log to dyke top", StairKind::Log, sd(-14.0, -9.0), 4.6), ("steps ladder to dyke top", StairKind::RopeLadder, sd(-14.0, -12.0), 1.2)] {
         let acts = with(
             vec![key(Tool::Steps), set(move |s| s.stairs = kind)],
             vec![Act::Aim(p + n() * run, 0.0), Act::Wait(1), Act::Press, Act::Aim(p + n() * 2.0, 0.0), Act::Aim(p + n() * 0.35, 3.6), Act::Wait(3), Act::Release],
@@ -237,7 +272,7 @@ fn steps() -> Vec<Step> {
         }));
     }
     v.push(step(
-        "stairs concrete",
+        "steps stone on the flat",
         with(vec![set(|s| s.stairs = StairKind::Stone)], drag(&[sd(-4.0, -16.0), sd(-4.0, -10.0)])),
         move |b, a, _| match added(b, a, is_stairs)? {
             Structure::Stairs(st) => ok_if(st.kind == StairKind::Stone, || format!("{:?}", st.kind)),
@@ -245,95 +280,137 @@ fn steps() -> Vec<Step> {
         },
     ));
 
-    // Deck.
-    v.push(step("deck", with(vec![key(Tool::Jetty)], raise(Vec2::new(-3.5, -3.5), Vec2::new(-0.5, -0.5), 20.0)), |b, a, _| {
+    // Jetty: footprint, lift, click. Then steps up onto its deck.
+    let deck_c = Vec2::new(-2.0, -2.0);
+    v.push(step("jetty", with(vec![key(Tool::Jetty)], raise(Vec2::new(-3.5, -3.5), Vec2::new(-0.5, -0.5), 20.0)), |b, a, _| {
         match added(b, a, |s| matches!(s, Structure::Platform(_)))? {
             Structure::Platform(p) => ok_if(p.height > DECK_MIN && p.half.min_element() > 1.0, || format!("{p:?}")),
             _ => unreachable!(),
         }
     }));
+    v.push(step(
+        "steps to jetty deck",
+        with(vec![key(Tool::Steps), set(|s| s.stairs = StairKind::Stone)], vec![Act::Aim(deck_c + n() * 7.0, 0.0), Act::Wait(1), Act::Press, Act::Aim(deck_c + n() * 3.0, 0.0), Act::Aim(deck_c, 0.0), Act::Wait(3), Act::Release]),
+        move |b, a, _| match added(b, a, is_stairs)? {
+            Structure::Stairs(st) => ok_if(st.to.y - st.from.y > 1.0 && st.to.xz().distance(deck_c) < 2.6, || format!("from {} to {}", st.from, st.to)),
+            _ => unreachable!(),
+        },
+    ));
 
-    // Bridges.
-    for (i, kind) in [BridgeKind::Rope { railing: 1 }, BridgeKind::Causeway, BridgeKind::Log].into_iter().enumerate() {
-        let s0 = 2.0 + 3.0 * i as f32;
+    // Bridges: rope with each railing and hanging, causeway, log.
+    let bridges = [(BridgeKind::Rope { railing: 1 }, Hanging::Lanterns, 2.0), (BridgeKind::Causeway, Hanging::None, 5.0), (BridgeKind::Log, Hanging::None, 8.0), (BridgeKind::Rope { railing: 3 }, Hanging::Pennants, -1.0)];
+    for (kind, hang, s0) in bridges {
         v.push(step(
-            format!("bridge {kind:?}"),
-            with(vec![key(Tool::Bridge), set(move |s| s.bridge = kind)], drag(&[sd(s0, -20.0), sd(s0, -13.0)])),
+            format!("bridge {kind:?} {hang:?}"),
+            with(vec![key(Tool::Bridge), set(move |s| { s.bridge = kind; s.hanging = hang; })], drag(&[sd(s0, -20.0), sd(s0, -13.0)])),
             move |b, a, _| match added(b, a, |s| matches!(s, Structure::Bridge(_)))? {
-                Structure::Bridge(br) => ok_if(br.kind == kind, || format!("{:?}", br.kind)),
+                Structure::Bridge(br) => ok_if(br.kind == kind && br.hanging == hang, || format!("{:?} {:?}", br.kind, br.hanging)),
                 _ => unreachable!(),
             },
         ));
     }
 
-    // Fences.
+    // Windbreaks.
     for (i, kind) in [FenceKind::Driftwood, FenceKind::Wattle, FenceKind::NetLine, FenceKind::Reed].into_iter().enumerate() {
         let s0 = 2.0 + 2.0 * i as f32;
         v.push(step(
-            format!("fence {kind:?}"),
-            with(vec![key(Tool::Windbreak), set(move |s| s.fence = kind)], drag(&[sd(s0, -9.0), sd(s0, -3.0)])),
+            format!("windbreak {kind:?}"),
+            with(vec![key(Tool::Windbreak), set(move |s| { s.fence = kind; s.colors.trim = 3; })], drag(&[sd(s0, -9.0), sd(s0, -3.0)])),
             move |b, a, _| match added(b, a, |s| matches!(s, Structure::Fence(_)))? {
-                Structure::Fence(f) => ok_if(f.kind == kind, || format!("{:?}", f.kind)),
+                Structure::Fence(f) => ok_if(f.kind == kind && f.colors.trim == 3, || format!("{:?}", f.kind)),
                 _ => unreachable!(),
             },
         ));
     }
 
-    // Paths.
+    // Tracks: every kind; the first one scrolls its width.
     for (i, kind) in [PathKind::Shell, PathKind::Pebble, PathKind::Flagstone, PathKind::Boardwalk, PathKind::Stepping].into_iter().enumerate() {
         let s0 = 2.0 * i as f32;
-        v.push(step(
-            format!("path {kind:?}"),
-            with(vec![key(Tool::Track), set(move |s| s.path = kind)], drag(&[sd(s0, 1.0), sd(s0, 6.0), sd(s0 + 0.5, 10.0)])),
-            move |b, a, _| match added(b, a, |s| matches!(s, Structure::Path(_)))? {
-                Structure::Path(p) => ok_if(p.kind == kind && p.points.len() >= 2, || format!("{p:?}")),
-                _ => unreachable!(),
-            },
-        ));
+        let mut acts = with(vec![key(Tool::Track), set(move |s| { s.path = kind; s.path_width = 1.6; })], drag(&[sd(s0, 1.0), sd(s0, 6.0), sd(s0 + 0.5, 10.0)]));
+        let want = if i == 0 {
+            let r = acts.len() - 2;
+            acts.insert(r, Act::Scroll(2.0));
+            2.0
+        } else {
+            1.6
+        };
+        v.push(step(format!("track {kind:?}"), acts, move |b, a, _| match added(b, a, |s| matches!(s, Structure::Path(_)))? {
+            Structure::Path(p) => ok_if(p.kind == kind && p.points.len() >= 2 && (p.width - want).abs() < 1e-3, || format!("{p:?}")),
+            _ => unreachable!(),
+        }));
     }
 
-    // Blocks and tower.
+    // Huts: rectangle, lift, click, with every roof / material and the HUD toggles and sliders.
     let roofs = [RoofStyle::Boat, RoofStyle::Hide, RoofStyle::Thatch, RoofStyle::Turf];
     let mats = [Material::Stone, Material::Wattle, Material::Plank, Material::Wattle];
     let block_c = |i: usize| sd(12.0, -22.0 + 7.0 * i as f32);
     for (i, (roof, mat)) in roofs.into_iter().zip(mats).enumerate() {
         let cc = block_c(i);
+        // Hut 0 is carved without hangings, hut 1 has custom colours, hut 2 stands on explicit stilts.
+        let (carved, hangings, stilts, trim) = [(true, false, 0.0, 0u8), (false, true, 0.0, 4), (false, true, 1.5, 0), (false, true, 0.0, 0)][i];
         v.push(step(
-            format!("block {roof:?}"),
-            with(vec![key(Tool::Hut), set(move |s| { s.roof = roof; s.material = mat; })], raise(cc - Vec2::splat(2.0), cc + Vec2::splat(2.0), 50.0)),
+            format!("hut {roof:?}"),
+            with(vec![key(Tool::Hut), set(move |s| { s.roof = roof; s.material = mat; s.carved = carved; s.hangings = hangings; s.stilts = stilts; s.colors.trim = trim; s.colors.roof = 3; })], raise(cc - Vec2::splat(2.0), cc + Vec2::splat(2.0), 50.0)),
             move |b, a, _| match added(b, a, |s| matches!(s, Structure::House(h) if matches!(h.footprint, Footprint::Rect { .. })))? {
-                Structure::House(h) => ok_if(h.roof == roof && h.material == mat && h.wall_height > 5.5, || format!("roof {:?} h {}", h.roof, h.wall_height)),
+                Structure::House(h) => ok_if(
+                    h.roof == roof && h.material == mat && h.wall_height > 3.0 && h.carved == carved && h.hangings == hangings && (h.stilts - stilts).abs() < 1e-3 && h.colors.trim == trim && h.colors.roof == 3,
+                    || format!("{h:?}"),
+                ),
                 _ => unreachable!(),
             },
         ));
     }
+    // Roundhouse: low and round; then raised tall it becomes a beacon (and the ghost flag clears).
     let tc = sd(-12.0, 20.0);
-    v.push(step("tower", with(vec![key(Tool::Roundhouse), set(|s| s.roof = RoofStyle::Turf)], raise(tc, tc + Vec2::new(2.5, 0.0), 30.0)), |b, a, _| {
+    v.push(step("roundhouse", with(vec![key(Tool::Roundhouse), set(|s| { s.roof = RoofStyle::Turf; s.stilts = 0.0; s.colors.roof = 0; })], raise(tc, tc + Vec2::new(2.5, 0.0), 8.0)), |b, a, s| {
         match added(b, a, |s| matches!(s, Structure::House(h) if matches!(h.footprint, Footprint::Round { .. })))? {
-            Structure::House(h) => ok_if(h.roof == RoofStyle::Turf && h.wall_height > TOWER_MIN, || format!("roof {:?} h {}", h.roof, h.wall_height)),
+            Structure::House(h) => ok_if(h.roof == RoofStyle::Turf && !is_beacon(h) && !s.ghost_beacon, || format!("roof {:?} h {}", h.roof, h.wall_height)),
+            _ => unreachable!(),
+        }
+    }));
+    let bc = sd(-4.0, 22.0);
+    v.push(step("beacon", with(vec![key(Tool::Roundhouse), set(|s| s.roof = RoofStyle::Thatch)], raise(bc, bc + Vec2::new(2.5, 0.0), 120.0)), |b, a, s| {
+        match added(b, a, |s| matches!(s, Structure::House(h) if matches!(h.footprint, Footprint::Round { .. })))? {
+            Structure::House(h) => ok_if(is_beacon(h) && !s.ghost_beacon, || format!("not a beacon: h {}", h.wall_height)),
             _ => unreachable!(),
         }
     }));
 
-    // Style copy (block 0: earth + pitched) and apply (block 1 becomes timber).
+    // Steps up to a hut floor (stilted hut 2) and an opening in a hut wall.
+    let h2 = block_c(2);
     v.push(step(
-        "style copy",
-        with(vec![key(Tool::Dye), set(|s| { s.material = Material::Wattle; s.roof = RoofStyle::Turf; })], click(block_c(0), 3.0)),
+        "steps to hut floor",
+        with(vec![key(Tool::Steps), set(|s| s.stairs = StairKind::Log)], vec![Act::Aim(h2 + n() * 6.0, 0.0), Act::Wait(1), Act::Press, Act::Aim(h2 + n() * 3.5, 0.0), Act::Aim(hut_face(h2), 1.0), Act::Wait(3), Act::Release]),
+        move |b, a, _| match added(b, a, is_stairs)? {
+            Structure::Stairs(st) => ok_if(st.to.y - st.from.y > 1.0 && st.to.xz().distance(h2) < 3.2, || format!("from {} to {}", st.from, st.to)),
+            _ => unreachable!(),
+        },
+    ));
+    let h3 = block_c(3);
+    v.push(step("opening in a hut wall", with(vec![key(Tool::Opening), set(|s| s.opening = OpeningKind::Door)], click(hut_face(h3), 1.2)), |b, a, _| {
+        let open = |d: &Document| d.structures.iter().map(|(_, s)| if let Structure::House(h) = s { h.openings.len() } else { 0 }).sum::<usize>();
+        ok_if(open(a) == open(b) + 1, || format!("openings {} -> {}", open(b), open(a)))
+    }));
+
+    // Dye: Shift+click picks a hut's style (and names it), a plain click applies the strip to another.
+    v.push(step(
+        "dye shift+click picks",
+        with(vec![key(Tool::Dye), set(|s| { s.material = Material::Wattle; s.roof = RoofStyle::Turf; }), Act::Shift(true)], with(click(block_c(0), 3.0), vec![Act::Shift(false)])),
         |b, a, s| {
             ok_if(a == b, || "document changed".into())?;
-            ok_if(s.material == Material::Stone && s.roof == RoofStyle::Boat, || format!("{:?} {:?}", s.material, s.roof))
+            ok_if(s.material == Material::Stone && s.roof == RoofStyle::Boat && s.dye == Some("HUT") && s.carved, || format!("{:?} {:?} {:?}", s.material, s.roof, s.dye))
         },
     ));
     v.push(step(
-        "style apply",
-        with(vec![set(|s| s.material = Material::Plank), Act::Shift(true)], with(click(block_c(1), 3.0), vec![Act::Shift(false)])),
+        "dye click applies",
+        with(vec![set(|s| { s.material = Material::Plank; s.colors.wall = 2; s.weathering = 0.7; })], click(block_c(1), 3.0)),
         |b, a, _| {
-            let timber = |d: &Document| count(d, |s| matches!(s, Structure::House(h) if h.material == Material::Plank));
-            ok_if(timber(a) == timber(b) + 1 && a.structures.len() == b.structures.len(), || format!("timber {} -> {}", timber(b), timber(a)))
+            let dyed = |d: &Document| count(d, |s| matches!(s, Structure::House(h) if h.material == Material::Plank && h.roof == RoofStyle::Boat && h.colors.wall == 2 && (h.weathering - 0.7).abs() < 1e-3));
+            ok_if(dyed(a) == dyed(b) + 1 && a.structures.len() == b.structures.len(), || format!("dyed {} -> {}", dyed(b), dyed(a)))
         },
     ));
 
-    // Trees and clutter along the front edge.
+    // Trees and props along the front edge.
     let slot = |k: usize| sd(22.0, -19.0 + 2.0 * k as f32);
     let trees = [TreeKind::Snag, TreeKind::SeaPine, TreeKind::Cypress, TreeKind::Fig, TreeKind::Palm];
     for (k, t) in trees.into_iter().enumerate() {
@@ -361,16 +438,29 @@ fn steps() -> Vec<Step> {
         ClutterKind::StandingStone,
     ];
     for (k, c) in clutter.into_iter().enumerate() {
-        v.push(step(format!("clutter {c:?}"), with(vec![key(Tool::Prop), set(move |s| s.clutter = c)], click(slot(5 + k), 0.0)), move |b, a, _| {
+        v.push(step(format!("prop {c:?}"), with(vec![key(Tool::Prop), set(move |s| s.clutter = c)], click(slot(5 + k), 0.0)), move |b, a, _| {
             match added(b, a, |s| matches!(s, Structure::Placed(_)))? {
                 Structure::Placed(p) => ok_if(p.kind == PropKind::Clutter(c), || format!("{:?}", p.kind)),
                 _ => unreachable!(),
             }
         }));
     }
+    // Prop: click holds the ghost, scroll rotates it 15 degrees per notch, release places it.
+    let spot = slot(19);
+    v.push(step(
+        "prop click + scroll rotates",
+        vec![key(Tool::Prop), set(|s| s.clutter = ClutterKind::Cairn), Act::Aim(spot, 0.0), Act::Wait(1), Act::Press, Act::Wait(1), Act::Scroll(2.0), Act::Wait(1), Act::Release],
+        move |b, a, _| match added(b, a, |s| matches!(s, Structure::Placed(_)))? {
+            Structure::Placed(p) => {
+                let want = (hash01(q2(spot), 1) * std::f32::consts::TAU + 30f32.to_radians()).rem_euclid(std::f32::consts::TAU);
+                ok_if((p.angle - want).abs() < 1e-3, || format!("angle {} want {want}", p.angle))
+            }
+            _ => unreachable!(),
+        },
+    ));
     v.push(step("erase", with(vec![key(Tool::Erase)], click(slot(5), 0.5)), |b, a, _| {
-        let barrel = |d: &Document| count(d, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Baskets)));
-        ok_if(a.structures.len() + 1 == b.structures.len() && barrel(a) + 1 == barrel(b), || format!("{} -> {}", b.structures.len(), a.structures.len()))
+        let basket = |d: &Document| count(d, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Baskets)));
+        ok_if(a.structures.len() + 1 == b.structures.len() && basket(a) + 1 == basket(b), || format!("{} -> {}", b.structures.len(), a.structures.len()))
     }));
 
     // Terrain brushes.
@@ -385,17 +475,25 @@ fn steps() -> Vec<Step> {
             },
         ));
     }
+    v.push(step("paint shift erases", with(vec![key(Tool::Paint), set(|s| s.paint = PaintLayer::DuneGrass), Act::Shift(true)], with(drag(&stroke(0.0)), vec![Act::Shift(false)])), |b, a, _| {
+        let d = new_dabs(b, a)?;
+        ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Paint { strength, .. } if strength < 0.0)), || format!("{:?}", d[0].op))
+    }));
+    v.push(step("paint Clear", with(vec![set(|s| s.paint = PaintLayer::Clear)], drag(&stroke(1.0))), |b, a, _| {
+        let d = new_dabs(b, a)?;
+        ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Paint { layer: PaintLayer::Clear, .. })), || format!("{:?}", d[0].op))
+    }));
     let sculpt = |up: bool| move |b: &Document, a: &Document, _: &ToolSettings| {
         let d = new_dabs(b, a)?;
         ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Sculpt { amount } if (amount > 0.0) == up)), || format!("{:?}", d[0].op))
     };
     v.push(step("raise", with(vec![key(Tool::Raise), set(|s| s.lower = false)], drag(&stroke(-8.0))), sculpt(true)));
-    v.push(step("lower (shift)", with(vec![Act::Shift(true)], with(drag(&stroke(-8.0)), vec![Act::Shift(false)])), sculpt(false)));
+    v.push(step("raise + shift lowers", with(vec![Act::Shift(true)], with(drag(&stroke(-8.0)), vec![Act::Shift(false)])), sculpt(false)));
     v.push(step("flatten", with(vec![key(Tool::Flatten)], drag(&stroke(-6.0))), |b, a, _| {
         let d = new_dabs(b, a)?;
         ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Flatten { .. })), || format!("{:?}", d[0].op))
     }));
-    v.push(step("water", with(vec![key(Tool::Lagoon)], drag(&[sd(4.0, 16.0), sd(4.0, 22.0)])), |b, a, _| {
+    v.push(step("lagoon", with(vec![key(Tool::Lagoon)], drag(&[sd(4.0, 16.0), sd(4.0, 22.0)])), |b, a, _| {
         let d = new_dabs(b, a)?;
         ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Water { .. })), || format!("{:?}", d[0].op))
     }));
@@ -408,11 +506,12 @@ fn steps() -> Vec<Step> {
         ok_if(a.terrain.len() < b.terrain.len(), || "undo did not happen".into())?;
         ok_if(a.structures == b.structures, || format!("structures {} -> {}", b.structures.len(), a.structures.len()))
     }));
+    // Leave the Hut strip open for the screenshot.
+    v.push(step("hut strip for the screenshot", vec![key(Tool::Hut), set(|s| s.dye = None)], |b, a, s| ok_if(a == b && s.tool == Tool::Hut, || "tool not selected".into())));
     v
 }
 
 const DECK_MIN: f32 = 1.5;
-const TOWER_MIN: f32 = 12.5;
 
 // --- driver ------------------------------------------------------------------------------------
 
