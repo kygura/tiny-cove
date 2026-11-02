@@ -2,9 +2,9 @@
 //! Everything here is a pure function of time and inputs, so it is deterministic and testable.
 
 use crate::render::{Particle, ParticleKind};
-use crate::weather::WeatherKind;
+use crate::world::WarmLight;
 use bevy::prelude::*;
-use cairn_cove_core::{mesh::hash_f, palette, terrain::Terrain};
+use cairn_cove_core::{mesh::hash_f, palette};
 
 /// Flames per fire (DESIGN §A7: 6-10) and the life of one flame particle (s).
 pub const FLAMES: usize = 8;
@@ -13,26 +13,11 @@ pub const FLAME_LIFE: f32 = 0.6;
 pub const LEAP_TIME: f32 = 0.9;
 pub const RING_LIFE: f32 = 0.7;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FireKind {
-    /// A basket on top of a beacon tower.
-    Beacon,
-    /// A firepit on the ground.
-    Pit,
-}
-
-/// A `Fire` marker well above the ground is a beacon basket, else a firepit.
-pub fn fire_kind(pos: Vec3, terrain: &Terrain) -> FireKind {
-    if pos.y > terrain.height(pos.xz()) + 2.0 { FireKind::Beacon } else { FireKind::Pit }
-}
-
-/// Beacon baskets burn 19:30-06:00 and in storms and sea fog; firepits 18:00-07:00.
-pub fn fire_lit(kind: FireKind, hour: f32, weather: WeatherKind) -> bool {
+/// Fireflies are out from 21:00 to 04:00 (DESIGN A7). This is the clock, not the emissive
+/// weight, which also rises in daytime fog and storms.
+pub fn fireflies_out(hour: f32) -> bool {
     let h = hour.rem_euclid(24.0);
-    match kind {
-        FireKind::Beacon => h >= 19.5 || h < 6.0 || matches!(weather, WeatherKind::Storm | WeatherKind::Fog),
-        FireKind::Pit => h >= 18.0 || h < 7.0,
-    }
+    h >= 21.0 || h < 4.0
 }
 
 /// Flame life stage 0..=3: flame_white, glow_core, glow_fire, glow_ember in four equal steps.
@@ -46,8 +31,8 @@ pub fn flame_color(stage: usize) -> Vec3 {
 }
 
 /// Hot flame quads plus two rising sparks for one fire at `pos`.
-pub fn flame_particles(pos: Vec3, kind: FireKind, t: f32, salt: f32, wind: Vec2, out: &mut Vec<Particle>) {
-    let k = if kind == FireKind::Beacon { 1.5 } else { 1.0 };
+pub fn flame_particles(pos: Vec3, kind: WarmLight, t: f32, salt: f32, wind: Vec2, out: &mut Vec<Particle>) {
+    let k = if kind == WarmLight::Beacon { 1.5 } else { 1.0 };
     // Stepped ~8 Hz flicker, never smoothed.
     let flick = 0.85 + 0.3 * hash_f(0x51, (t * 8.0).floor(), salt);
     for i in 0..FLAMES {
@@ -143,16 +128,9 @@ mod tests {
     }
 
     #[test]
-    fn beacons_burn_at_night_storm_and_fog_pits_evening_to_morning() {
-        use FireKind::*;
-        use WeatherKind::*;
-        assert!(!fire_lit(Beacon, 12.0, Clear));
-        assert!(fire_lit(Beacon, 23.0, Clear) && fire_lit(Beacon, 3.0, Clear));
-        assert!(fire_lit(Beacon, 12.0, Storm) && fire_lit(Beacon, 12.0, Fog));
-        assert!(!fire_lit(Beacon, 12.0, Rain));
-        assert!(!fire_lit(Pit, 12.0, Storm), "pits ignore weather");
-        assert!(fire_lit(Pit, 18.5, Clear) && fire_lit(Pit, 6.5, Clear) && !fire_lit(Pit, 7.5, Clear));
-        assert!(!fire_lit(Beacon, 18.5, Clear), "beacons wait for 19:30");
+    fn fireflies_only_at_night_by_the_clock() {
+        assert!(fireflies_out(23.0) && fireflies_out(2.0) && fireflies_out(21.0));
+        assert!(!fireflies_out(12.0) && !fireflies_out(20.0) && !fireflies_out(4.5));
     }
 
     #[test]
@@ -160,14 +138,14 @@ mod tests {
         assert_eq!(flame_color(0), palette::flame_white());
         assert_eq!(flame_color(3), palette::glow_ember());
         let mut ps = Vec::new();
-        flame_particles(Vec3::new(1.0, 2.0, 3.0), FireKind::Pit, 1.234, 0.5, Vec2::new(1.0, 0.0), &mut ps);
+        flame_particles(Vec3::new(1.0, 2.0, 3.0), WarmLight::Pit, 1.234, 0.5, Vec2::new(1.0, 0.0), &mut ps);
         assert_eq!(ps.len(), FLAMES + 2);
         assert!(finite(&ps));
         // Every flame is hot: red channel dominant, never grey.
         assert!(ps.iter().all(|p| p.color.x >= p.color.z));
         // Deterministic.
         let mut again = Vec::new();
-        flame_particles(Vec3::new(1.0, 2.0, 3.0), FireKind::Pit, 1.234, 0.5, Vec2::new(1.0, 0.0), &mut again);
+        flame_particles(Vec3::new(1.0, 2.0, 3.0), WarmLight::Pit, 1.234, 0.5, Vec2::new(1.0, 0.0), &mut again);
         assert_eq!(ps, again);
     }
 
