@@ -16,7 +16,8 @@ use bevy::{
     prelude::*,
     window::PrimaryWindow,
 };
-use cairn_cove_core::geom::{contains, is_closed, polyline_length};
+use cairn_cove_core::buildings::{is_beacon, needs_stilts};
+use cairn_cove_core::geom::{contains, footprint_polygon, is_closed, polyline_length};
 use cairn_cove_core::scene::{Hit, pick};
 use cairn_cove_core::terrain::Terrain;
 use cairn_cove_core::{
@@ -72,11 +73,11 @@ impl Tool {
         Tool::Erase,
     ];
 
-    /// Toolbar label (DESIGN.md §2.1).
+    /// Toolbar label (DESIGN.md B5).
     pub fn label(self) -> &'static str {
         match self {
             Tool::Dyke => "DYKE",
-            Tool::Windbreak => "WINDBRK",
+            Tool::Windbreak => "W-BREAK",
             Tool::Hut => "HUT",
             Tool::Roundhouse => "ROUND",
             Tool::Track => "TRACK",
@@ -89,10 +90,34 @@ impl Tool {
             Tool::Prop => "PROP",
             Tool::Paint => "PAINT",
             Tool::Raise => "RAISE",
-            Tool::Flatten => "FLAT",
+            Tool::Flatten => "FLATTEN",
             Tool::Lagoon => "LAGOON",
             Tool::Dye => "DYE",
             Tool::Erase => "ERASE",
+        }
+    }
+
+    /// Three-character ASCII toolbar glyph (DESIGN.md B5).
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Tool::Dyke => "=#=",
+            Tool::Windbreak => "|x|",
+            Tool::Hut => "/^\\",
+            Tool::Roundhouse => "(^)",
+            Tool::Track => ":::",
+            Tool::Steps => "_|^",
+            Tool::Jetty => "TTT",
+            Tool::Bridge => "\\_/",
+            Tool::Opening => "[ ]",
+            Tool::Roof => "/\\",
+            Tool::Tree => "\\|/",
+            Tool::Prop => ".8.",
+            Tool::Paint => "~*~",
+            Tool::Raise => "/+\\",
+            Tool::Flatten => "-=-",
+            Tool::Lagoon => "~~~",
+            Tool::Dye => "(%)",
+            Tool::Erase => ">x<",
         }
     }
 
@@ -178,6 +203,11 @@ pub struct ToolSettings {
     pub stair_width: f32,
     /// Bridge deck width in metres, 1..=3 (scroll while dragging a bridge).
     pub bridge_width: f32,
+    /// Dye: what the last Shift+click pick copied (`HUT`, `DYKE`, ...). Only that structure's
+    /// material control stays enabled; cleared when another tool is chosen.
+    pub dye: Option<&'static str>,
+    /// Written by the Roundhouse tool: the ghost being raised is tall enough to be a beacon.
+    pub ghost_beacon: bool,
 }
 
 impl Default for ToolSettings {
@@ -193,19 +223,19 @@ impl Default for ToolSettings {
             crest: true,
             tumbled: false,
             wall_thickness: 0.6,
-            footing: 0.4,
+            footing: 0.0,
             stilts: 0.0,
-            weathering: 0.35,
-            fence: FenceKind::Driftwood,
-            path: PathKind::Flagstone,
+            weathering: 0.25,
+            fence: FenceKind::Wattle,
+            path: PathKind::Shell,
             path_width: 1.6,
             stairs: StairKind::Stone,
             bridge: BridgeKind::Rope { railing: 0 },
             hanging: Hanging::None,
             opening: OpeningKind::Window,
-            tree: TreeKind::Cypress,
-            clutter: ClutterKind::CrabPots,
-            paint: PaintLayer::DuneGrass,
+            tree: TreeKind::Palm,
+            clutter: ClutterKind::Canoe,
+            paint: PaintLayer::SeaPinks,
             lower: false,
             brush_radius: 3.0,
             brush_strength: 0.5,
@@ -214,6 +244,8 @@ impl Default for ToolSettings {
             wall_height: 4.0,
             stair_width: 1.2,
             bridge_width: 1.6,
+            dye: None,
+            ghost_beacon: false,
         }
     }
 }
@@ -221,8 +253,10 @@ impl Default for ToolSettings {
 /// Feedback from the active tool to the HUD.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct ToolStatus {
-    /// A drag / placement is in progress (HUD dims the toolbar slightly, never hides it).
+    /// A drag / placement is in progress (the toolbar stays exactly as it is).
     pub drawing: bool,
+    /// The footprint is fixed and the mouse sets the height (hints switch to MOVE / SCROLL / CLICK).
+    pub raising: bool,
     /// Short uppercase reason the current placement is invalid, e.g. `TOO STEEP`.
     pub invalid: Option<String>,
 }
@@ -275,8 +309,8 @@ const MIN_BRIDGE: f32 = 3.0;
 /// Steepest rise / run for non-ladder stairs (~51°).
 const MAX_STAIR_SLOPE: f32 = 1.25;
 /// Default raise heights.
-const BLOCK_HEIGHT: f32 = 5.0;
-const TOWER_HEIGHT: f32 = 12.0;
+const BLOCK_HEIGHT: f32 = 2.4;
+const ROUND_HEIGHT: f32 = 3.0;
 const DECK_HEIGHT: f32 = 1.5;
 /// An RMB press that moves less than this (px) is a tap = cancel.
 const RMB_TAP_PX: f32 = 6.0;
@@ -285,7 +319,7 @@ const OUTSIDE: &str = "OUTSIDE THE ISLAND";
 const TOO_SHORT: &str = "TOO SHORT";
 const TOO_STEEP: &str = "TOO STEEP";
 const NEEDS_ANCHORS: &str = "NEEDS TWO ANCHORS";
-const NEEDS_WALL: &str = "NEEDS A WALL";
+const NEEDS_WALL: &str = "NEEDS A HUT OR DYKE";
 const NEEDS_RING: &str = "NEEDS A CLOSED DYKE RING";
 
 // =============================================================================================
@@ -367,12 +401,12 @@ pub fn dab_points(last: Vec2, cur: Vec2, spacing: f32) -> Vec<Vec2> {
     (1..=n.min(512)).map(|k| last + dir * (spacing * k as f32)).collect()
 }
 
-/// Window → door → wide portal → window.
-pub fn next_opening(k: OpeningKind) -> OpeningKind {
+/// Shuttered window → doorway → wide boat door → nothing (`None` removes the opening).
+pub fn next_opening(k: OpeningKind) -> Option<OpeningKind> {
     match k {
-        OpeningKind::Window => OpeningKind::Door,
-        OpeningKind::Door => OpeningKind::WideDoor,
-        OpeningKind::WideDoor => OpeningKind::Window,
+        OpeningKind::Window => Some(OpeningKind::Door),
+        OpeningKind::Door => Some(OpeningKind::WideDoor),
+        OpeningKind::WideDoor => None,
     }
 }
 
@@ -520,9 +554,9 @@ fn shape_structure(tool: Tool, s: &ToolSettings, shape: Shape, height: f32) -> S
                 roof,
                 roof_pitch: pitch_frac(s.roof_pitch_deg),
                 material: s.material,
-                carved: s.carved && !round,
+                carved: s.carved,
                 hangings: s.hangings,
-                stilts: s.stilts,
+                stilts: if round { 0.0 } else { s.stilts },
                 openings: Vec::new(),
                 colors: s.colors,
                 weathering: s.weathering,
@@ -537,6 +571,25 @@ fn span_structure(tool: Tool, s: &ToolSettings, a: Vec3, b: Vec3) -> Structure {
     } else {
         Structure::Stairs(Stairs { from: a, to: b, width: s.stair_width, kind: s.stairs, colors: s.colors })
     }
+}
+
+/// Floor height of a hut as the core builds it: flattened ground + 0.1 m, or on stilts the
+/// highest ground under it plus the stilt height (never less than 1.2 m over water).
+pub fn hut_floor(h: &House, terrain: &Terrain) -> f32 {
+    let poly = footprint_polygon(&h.footprint);
+    let c = poly.iter().copied().sum::<Vec2>() / poly.len().max(1) as f32;
+    let (mut lo, mut hi, mut wet) = (f32::INFINITY, f32::NEG_INFINITY, false);
+    for p in poly.iter().copied().chain([c]) {
+        let g = terrain.height(p);
+        lo = lo.min(g);
+        hi = hi.max(g);
+        wet |= terrain.water_level(p).is_some_and(|l| g < l);
+    }
+    if !needs_stilts(h, terrain) {
+        return lo + 0.1;
+    }
+    let f = hi + h.stilts.clamp(0.0, 8.0).max(0.5);
+    if wet { f.max(1.2) } else { f }
 }
 
 /// Why a span (stairs / bridge) from `a` to `b` cannot be placed.
@@ -576,10 +629,63 @@ pub fn opening_click(doc: &Document, hit: &Hit, place: OpeningKind, remove: bool
             openings.remove(i);
         }
         (None, true) => return Err(NEEDS_WALL),
-        (Some(i), false) => openings[i].kind = next_opening(openings[i].kind),
+        (Some(i), false) => match next_opening(openings[i].kind) {
+            Some(k) => openings[i].kind = k,
+            None => {
+                openings.remove(i);
+            }
+        },
         (None, false) => openings.push(Opening { along: hit.along, kind: place }),
     }
     Ok(d)
+}
+
+/// A ray that passes straight through an opening (a doorway has no mesh to hit) still clicks it:
+/// the nearest crossing of a dyke or hut wall, nearer than `max_t` along the ray, where the wall
+/// has an opening at that spot. Returns the hit as if the wall had been picked there.
+pub fn through_opening(doc: &Document, terrain: &Terrain, origin: Vec3, dir: Vec3, max_t: f32) -> Option<Hit> {
+    let (o2, d2) = (origin.xz(), dir.xz());
+    let mut best: Option<(f32, Hit)> = None;
+    for (id, st) in &doc.structures {
+        let (pts, closed, height, openings) = match st {
+            Structure::Wall(w) => (w.points.clone(), false, w.height, &w.openings),
+            Structure::House(h) => (footprint_polygon(&h.footprint), true, h.wall_height, &h.openings),
+            _ => continue,
+        };
+        let n = pts.len();
+        for i in 0..if closed { n } else { n.saturating_sub(1) } {
+            let (a, e) = (pts[i], pts[(i + 1) % n] - pts[i]);
+            let den = d2.perp_dot(e);
+            if den.abs() < 1e-6 {
+                continue;
+            }
+            let w = a - o2;
+            let (t, u) = (w.perp_dot(e) / den, w.perp_dot(d2) / den);
+            if !(0.0..=max_t).contains(&t) || !(0.0..=1.0).contains(&u) || best.as_ref().is_some_and(|(bt, _)| *bt <= t) {
+                continue;
+            }
+            let point = origin + dir * t;
+            let ground = terrain.height(point.xz());
+            let along = cairn_cove_core::scene::along_of(st, point.xz());
+            if point.y >= ground - 0.1 && point.y <= ground + height && openings.iter().any(|o| (o.along - along).abs() < OPENING_GRAB) {
+                best = Some((t, Hit { id: Some(*id), point, normal: Vec3::new(e.y, 0.0, -e.x).normalize_or_zero(), along }));
+            }
+        }
+    }
+    best.map(|(_, h)| h)
+}
+
+/// `opening_click` on the picked hit; if that fails, retry on an opening the ray passed through.
+fn opening_or_through(doc: &Document, terrain: &Terrain, ray: Option<(Vec3, Vec3)>, hit: &Hit, place: OpeningKind, remove: bool) -> Result<(Document, Hit), &'static str> {
+    match opening_click(doc, hit, place, remove) {
+        Ok(d) => Ok((d, *hit)),
+        Err(e) => {
+            let (o, d) = ray.ok_or(e)?;
+            let max_t = (hit.point - o).dot(d.normalize_or_zero()) + 0.5;
+            let th = through_opening(doc, terrain, o, d.normalize_or_zero(), max_t).ok_or(e)?;
+            opening_click(doc, &th, place, remove).map(|d| (d, th))
+        }
+    }
 }
 
 /// Roof click: closed wall ring (hit directly or containing the hit point) or a block.
@@ -617,8 +723,26 @@ pub fn roof_click(doc: &Document, hit: &Hit, s: &ToolSettings, remove: bool) -> 
     Ok(d)
 }
 
-/// Style picker: copy a structure's style into the settings.
+/// Name of what a Dye pick copied (shown in the name plate: `DYE: HUT`).
+pub fn dye_name(st: &Structure) -> &'static str {
+    match st {
+        Structure::Wall(_) => "DYKE",
+        Structure::House(_) => "HUT",
+        Structure::Fence(_) => "WINDBREAK",
+        Structure::Path(_) => "TRACK",
+        Structure::Stairs(_) => "STEPS",
+        Structure::Platform(_) => "JETTY",
+        Structure::Bridge(_) => "BRIDGE",
+        Structure::Placed(p) => match p.kind {
+            PropKind::Tree(_) => "TREE",
+            PropKind::Clutter(_) => "PROP",
+        },
+    }
+}
+
+/// Dye Shift+click: copy a structure's style into the settings.
 pub fn copy_style(st: &Structure, s: &mut ToolSettings) {
+    s.dye = Some(dye_name(st));
     match st {
         Structure::Wall(w) => {
             s.wall_kind = w.kind;
@@ -672,7 +796,7 @@ pub fn copy_style(st: &Structure, s: &mut ToolSettings) {
     }
 }
 
-/// Style picker with Shift: apply the settings' style to a structure (geometry untouched).
+/// Dye click: apply the settings' style to a structure (geometry untouched).
 pub fn apply_style(st: &mut Structure, s: &ToolSettings) {
     match st {
         Structure::Wall(w) => {
@@ -691,8 +815,8 @@ pub fn apply_style(st: &mut Structure, s: &ToolSettings) {
             h.material = s.material;
             h.roof = if round && s.roof == RoofStyle::Boat { RoofStyle::Thatch } else { s.roof };
             h.roof_pitch = pitch_frac(s.roof_pitch_deg);
-            h.carved = s.carved && !round;
-            h.stilts = s.stilts;
+            h.carved = s.carved;
+            h.stilts = if round { 0.0 } else { s.stilts };
             h.hangings = s.hangings;
             h.weathering = s.weathering;
             h.colors = s.colors;
@@ -801,10 +925,11 @@ enum Tint {
 
 impl Tint {
     fn color(self) -> Color {
+        // DESIGN B1: ghost-ok #A8FFD8 @45%, ghost-bad #FF5A4E @55%, ghost-pick #FFC21A @50%.
         match self {
-            Tint::Ok => Color::srgb(0.62, 0.84, 0.5),
-            Tint::Bad => Color::srgb(0.96, 0.62, 0.22),
-            Tint::Pick => Color::srgb(0.55, 0.78, 0.95),
+            Tint::Ok => Color::srgba(0.659, 1.0, 0.847, 0.45),
+            Tint::Bad => Color::srgba(1.0, 0.353, 0.306, 0.55),
+            Tint::Pick => Color::srgba(1.0, 0.761, 0.102, 0.5),
         }
     }
 }
@@ -836,6 +961,10 @@ struct Cx<'a> {
     pending: Option<Pending>,
     invalid: Option<&'static str>,
     marks: Vec<Mark>,
+    /// Footprint fixed, mouse sets the height.
+    raising: bool,
+    /// The roundhouse being raised is tall enough to be a beacon.
+    beacon: bool,
 }
 
 impl Cx<'_> {
@@ -944,6 +1073,9 @@ fn drive_tools(
         st.tool = s.tool;
         cancel = true;
     }
+    if s.tool != Tool::Dye {
+        s.dye = None;
+    }
     if mouse.just_pressed(MouseButton::Right) {
         st.rmb_travel = 0.0;
     }
@@ -1016,6 +1148,8 @@ fn drive_tools(
             pending: None,
             invalid: None,
             marks: Vec::new(),
+            raising: false,
+            beacon: false,
         };
         match cx.s.tool {
             Tool::Dyke | Tool::Windbreak | Tool::Track => line_tool(&mut cx),
@@ -1049,7 +1183,8 @@ fn drive_tools(
         } else if cx.glade.has_preview() {
             cx.glade.set_preview(None);
         }
-        new_status = ToolStatus { drawing, invalid: cx.invalid.map(str::to_string) };
+        new_status = ToolStatus { drawing, raising: cx.raising, invalid: cx.invalid.map(str::to_string) };
+        cx.s.ghost_beacon = cx.beacon;
         st.phase = cx.phase;
         for m in cx.marks {
             draw_mark(&mut gizmos, scene, m);
@@ -1185,14 +1320,18 @@ fn line_tool(cx: &mut Cx) {
 
 fn default_height(tool: Tool) -> f32 {
     match tool {
-        Tool::Roundhouse => TOWER_HEIGHT,
+        Tool::Roundhouse => ROUND_HEIGHT,
         Tool::Jetty => DECK_HEIGHT,
         _ => BLOCK_HEIGHT,
     }
 }
 
 fn height_range(tool: Tool) -> (f32, f32) {
-    if tool == Tool::Jetty { (0.3, 8.0) } else { (0.6, 24.0) }
+    match tool {
+        Tool::Jetty => (0.3, 8.0),
+        Tool::Roundhouse => (1.5, 30.0),
+        _ => (1.2, 4.5),
+    }
 }
 
 fn shape_of(tool: Tool, a: Vec2, b: Vec2, angle: f32, shift: bool) -> Shape {
@@ -1260,6 +1399,8 @@ fn shape_tool(cx: &mut Cx) {
                 cx.commit_add(st);
                 return;
             }
+            cx.raising = true;
+            cx.beacon = matches!(&st, Structure::House(h) if is_beacon(h));
             cx.pending = Some(Pending::Add(st));
             cx.phase = Phase::Raise { shape, base, anchor_y };
         }
@@ -1272,6 +1413,16 @@ fn shape_tool(cx: &mut Cx) {
 /// End point of a span under the cursor: structure top, or ground (bridges sit a little above
 /// ground / water). Second value: is it a valid anchor.
 fn span_anchor(cx: &Cx, skip: Option<StructureId>) -> Option<(Vec3, bool)> {
+    // Steps onto a hut land on its floor (the raised floor of a stilted hut), not its roof.
+    if cx.s.tool == Tool::Steps
+        && let Some((o, d)) = cx.inp.ray
+        && let Some(h) = cx.pick(o, d, skip)
+        && h.normal.y < 0.6
+        && let Some(Structure::House(hs)) = h.id.and_then(|id| cx.glade.doc().get(id))
+    {
+        let floor = hut_floor(hs, &cx.scene.terrain);
+        return Some((Vec3::new(q(h.point.x), floor.min(h.point.y), q(h.point.z)), true));
+    }
     let (p, id) = cx.surface(skip)?;
     let p = Vec3::new(q(p.x), p.y, q(p.z));
     if id.is_some() || cx.s.tool == Tool::Steps {
@@ -1433,8 +1584,8 @@ fn click_tool(cx: &mut Cx) {
     let Some(hit) = cx.hover() else { return };
     let committed = cx.glade.committed();
     match cx.s.tool {
-        Tool::Opening => match opening_click(committed, &hit, cx.s.opening, inp.shift) {
-            Ok(doc) => {
+        Tool::Opening => match opening_or_through(committed, &cx.scene.terrain, cx.inp.ray, &hit, cx.s.opening, inp.shift) {
+            Ok((doc, hit)) => {
                 cx.marks.push(Mark::Part(hit.id.unwrap_or_default(), Tint::Ok));
                 cx.marks.push(Mark::Ring(hit.point, 0.5, Tint::Ok));
                 if inp.press {
@@ -1470,14 +1621,16 @@ fn click_tool(cx: &mut Cx) {
                 return;
             }
             if inp.shift {
+                if let Some(st) = committed.get(id) {
+                    let st = st.clone();
+                    copy_style(&st, cx.s);
+                }
+            } else {
                 let mut doc = committed.clone();
                 if let Some(st) = doc.get_mut(id) {
                     apply_style(st, cx.s);
                 }
                 cx.commit(doc);
-            } else if let Some(st) = committed.get(id) {
-                let st = st.clone();
-                copy_style(&st, cx.s);
             }
         }
     }
@@ -1559,12 +1712,13 @@ mod tests {
 
     #[test]
     fn opening_cycle() {
-        let mut k = OpeningKind::Window;
-        let seq: Vec<_> = (0..3).map(|_| {
-            k = next_opening(k);
-            k
-        }).collect();
-        assert_eq!(seq, [OpeningKind::Door, OpeningKind::WideDoor, OpeningKind::Window]);
+        let mut k = Some(OpeningKind::Window);
+        let mut seq = Vec::new();
+        while let Some(cur) = k {
+            k = next_opening(cur);
+            seq.push(k);
+        }
+        assert_eq!(seq, [Some(OpeningKind::Door), Some(OpeningKind::WideDoor), None]);
     }
 
     fn wall_doc(points: Vec<Vec2>) -> (Document, StructureId) {
@@ -1574,18 +1728,120 @@ mod tests {
     }
 
     #[test]
-    fn opening_click_places_upgrades_removes() {
+    fn opening_click_cycles_window_door_wide_none_and_shift_removes() {
         let (d, id) = wall_doc(vec![Vec2::new(-5.0, 0.0), Vec2::new(5.0, 0.0)]);
         let hit = Hit { id: Some(id), point: Vec3::new(0.0, 2.0, 0.0), normal: Vec3::Z, along: 5.0 };
+        let near = Hit { along: 5.5, ..hit };
+        let kinds = |d: &Document| match d.get(id) {
+            Some(Structure::Wall(w)) => w.openings.iter().map(|o| o.kind).collect::<Vec<_>>(),
+            _ => panic!(),
+        };
         let d1 = opening_click(&d, &hit, OpeningKind::Window, false).unwrap();
-        let d2 = opening_click(&d1, &Hit { along: 5.5, ..hit }, OpeningKind::Window, false).unwrap();
-        let Some(Structure::Wall(w)) = d2.get(id) else { panic!() };
-        assert_eq!(w.openings, vec![Opening { along: 5.0, kind: OpeningKind::Door }]);
-        let d3 = opening_click(&d2, &hit, OpeningKind::Window, true).unwrap();
-        let Some(Structure::Wall(w)) = d3.get(id) else { panic!() };
-        assert!(w.openings.is_empty());
+        assert_eq!(kinds(&d1), [OpeningKind::Window]);
+        let d2 = opening_click(&d1, &near, OpeningKind::Window, false).unwrap();
+        assert_eq!(kinds(&d2), [OpeningKind::Door]);
+        let d3 = opening_click(&d2, &near, OpeningKind::Window, false).unwrap();
+        assert_eq!(kinds(&d3), [OpeningKind::WideDoor]);
+        let d4 = opening_click(&d3, &near, OpeningKind::Window, false).unwrap();
+        assert!(kinds(&d4).is_empty(), "third click on a wide door removes it");
+        let d5 = opening_click(&d2, &hit, OpeningKind::Window, true).unwrap();
+        assert!(kinds(&d5).is_empty(), "shift+click removes");
         let ground = Hit { id: None, ..hit };
         assert_eq!(opening_click(&d, &ground, OpeningKind::Window, false), Err(NEEDS_WALL));
+        assert_eq!(NEEDS_WALL, "NEEDS A HUT OR DYKE");
+    }
+
+    #[test]
+    fn a_ray_through_a_wide_door_still_clicks_it() {
+        let (mut d, id) = wall_doc(vec![Vec2::new(-5.0, 0.0), Vec2::new(5.0, 0.0)]);
+        if let Some(Structure::Wall(w)) = d.get_mut(id) {
+            w.openings.push(Opening { along: 5.0, kind: OpeningKind::WideDoor });
+        }
+        let t = Terrain::build(1, &[], &[]);
+        let dir = Vec3::new(1.0, 1.2, 1.0).normalize();
+        let aim = |x: f32| {
+            let target = Vec3::new(x, t.height(Vec2::new(x, 0.0)) + 1.0, 0.0);
+            (target + dir * 20.0, -dir)
+        };
+        let (o, rd) = aim(0.0);
+        let hit = through_opening(&d, &t, o, rd, 100.0).expect("ray through the doorway");
+        assert_eq!(hit.id, Some(id));
+        assert!((hit.along - 5.0).abs() < 0.3, "{}", hit.along);
+        // Cycling: the doorway click removes the wide door.
+        let (doc, _) = opening_or_through(&d, &t, Some((o, rd)), &Hit { id: None, point: Vec3::new(2.0, 0.0, -2.0), normal: Vec3::Y, along: 0.0 }, OpeningKind::Window, false).unwrap();
+        assert!(matches!(doc.get(id), Some(Structure::Wall(w)) if w.openings.is_empty()));
+        // A ray through solid wall far from the opening is not a hit.
+        let (o, rd) = aim(3.5);
+        assert!(through_opening(&d, &t, o, rd, 100.0).is_none());
+    }
+
+    #[test]
+    fn hut_floor_follows_ground_and_stilts() {
+        let t = Terrain::build(3, &[], &[]);
+        let c = Vec2::new(0.0, 0.0);
+        let hut = |stilts: f32| House {
+            footprint: Footprint::Rect { center: c, half: Vec2::splat(2.0), angle: 0.0 },
+            wall_height: 2.4,
+            roof: RoofStyle::Thatch,
+            roof_pitch: 0.6,
+            material: Material::Wattle,
+            carved: false,
+            hangings: true,
+            stilts,
+            openings: Vec::new(),
+            colors: Colors::default(),
+            weathering: 0.0,
+        };
+        let ground = (0..16).map(|i| t.height(c + Vec2::from_angle(i as f32 * 0.4) * 2.0)).fold(f32::INFINITY, f32::min);
+        let on_ground = hut_floor(&hut(0.0), &t);
+        assert!(on_ground.is_finite());
+        if !needs_stilts(&hut(0.0), &t) {
+            assert!(on_ground >= ground - 0.5 && on_ground <= ground + 1.0);
+        }
+        let lifted = hut_floor(&hut(2.0), &t);
+        assert!(lifted >= on_ground + 0.5, "{lifted} vs {on_ground}");
+    }
+
+    #[test]
+    fn dye_pick_names_the_structure_and_tool_defaults_match_the_design() {
+        let mut s = ToolSettings::default();
+        let st = shape_structure(Tool::Hut, &s, Shape::Rect { center: Vec2::ZERO, half: Vec2::ONE * 3.0, angle: 0.0 }, 2.4);
+        copy_style(&st, &mut s);
+        assert_eq!(s.dye, Some("HUT"));
+        let wall = line_structure(Tool::Dyke, &s, vec![Vec2::ZERO, Vec2::X * 4.0]);
+        copy_style(&wall, &mut s);
+        assert_eq!(s.dye, Some("DYKE"));
+        let d = ToolSettings::default();
+        assert_eq!((d.wall_kind, d.material, d.roof, d.crest, d.carved, d.hangings), (WallKind::DryStone, Material::Wattle, RoofStyle::Thatch, true, false, true));
+        assert_eq!((d.stilts, d.weathering, d.footing, d.fence, d.path, d.stairs), (0.0, 0.25, 0.0, FenceKind::Wattle, PathKind::Shell, StairKind::Stone));
+        assert_eq!((d.bridge, d.tree, d.clutter, d.paint, d.colors), (BridgeKind::Rope { railing: 0 }, TreeKind::Palm, ClutterKind::Canoe, PaintLayer::SeaPinks, Colors::default()));
+    }
+
+    #[test]
+    fn roundhouse_beacon_threshold_and_stilt_rules() {
+        let s = ToolSettings { stilts: 2.0, carved: true, ..default() };
+        let round = |h: f32| shape_structure(Tool::Roundhouse, &s, Shape::Circle { center: Vec2::ZERO, radius: 3.0 }, h);
+        let Structure::House(low) = round(ROUND_HEIGHT) else { panic!() };
+        let Structure::House(tall) = round(7.5) else { panic!() };
+        assert!(!is_beacon(&low) && is_beacon(&tall), "beacon at wall height >= 2.5 x radius");
+        assert_eq!(low.stilts, 0.0, "round houses never take the hut stilts slider");
+        assert!(low.carved, "carved passes through for the core to decide");
+        let Structure::House(hut) = shape_structure(Tool::Hut, &s, Shape::Rect { center: Vec2::ZERO, half: Vec2::ONE * 3.0, angle: 0.0 }, 2.4) else { panic!() };
+        assert_eq!(hut.stilts, 2.0);
+        // Boat roofs fall back to thatch on round footprints.
+        let boat = ToolSettings { roof: RoofStyle::Boat, ..default() };
+        let Structure::House(r) = shape_structure(Tool::Roundhouse, &boat, Shape::Circle { center: Vec2::ZERO, radius: 3.0 }, 3.0) else { panic!() };
+        assert_eq!(r.roof, RoofStyle::Thatch);
+    }
+
+    #[test]
+    fn every_tool_has_a_unique_hotkey_label_and_glyph() {
+        use std::collections::HashSet;
+        let keys: HashSet<_> = Tool::ALL.iter().map(|t| t.hotkey().1).collect();
+        let labels: HashSet<_> = Tool::ALL.iter().map(|t| t.label()).collect();
+        let glyphs: HashSet<_> = Tool::ALL.iter().map(|t| t.glyph()).collect();
+        assert_eq!((keys.len(), labels.len(), glyphs.len()), (18, 18, 18));
+        assert_eq!(Tool::ALL.len(), 18);
     }
 
     #[test]
