@@ -34,19 +34,28 @@ to `main`.
 - Design (0832f67): the judge panel scored textile 8.7, PS1 8.5, poster 7.3. "Folk Pigment"
   art plus the "Woad Cloth" HUD. Hexes are snapped to 5 bits, and shade() has calibration
   goldens.
-- Phase 2 runs the eight tasks in isolated worktrees with a shared CARGO_TARGET_DIR, merged by
-  the planner.
+- Phase 2: the eight tasks ran in isolated worktrees. A–E passed first try and merged cleanly
+  (110 core + 37 game tests). F, G and H hit the account's 5-hour usage limit mid-task. F's
+  WIP was saved as b886a17 and they are re-running as phase 2b.
+- Integration: scene and demo call the real `buildings::needs_stilts`, and hut tests use level
+  ground (the island moved their expectations).
+- `env::Wind` and `env::Tide` were promoted to main early so life (H) can read them while F
+  finishes the look.
+- A shared CARGO_TARGET_DIR across worktrees mixes up binaries, which A observed as a stale
+  test binary. Phase 2b uses a private copy of the warm cache per task (target-F/G/H).
+- Palette tokens missing at phase 2 were faked locally in walls, buildings, paths and terrain
+  ('tok' helpers). F adds the real ones; the helpers get swapped at integration.
 
 ## Tasks
 | # | Task | Files | Model | Deps | State |
 |---|---|---|---|---|---|
 | 0 | Model contract re-theme, keep build green | core/*, src/* (mechanical) | opus | — | done |
 | 1 | Art direction + HUD brief (judge panel) | DESIGN.md | opus ×4 | — | done |
-| A | Dykes, breakwater, gateposts, windbreaks | core/src/walls.rs | opus | 0,1 | frontier |
-| B | Huts, roundhouses, beacons, roofs, stilts | core/src/buildings.rs | opus | 0,1 | frontier |
-| C | Tracks, steps, jetty, bridges | core/src/paths.rs | sonnet | 0,1 | frontier |
-| D | Trees, props | core/src/nature.rs | sonnet | 0,1 | frontier |
-| E | Island terrain, lagoon, scene rules, demo cove | core/src/terrain.rs, scene.rs, demo.rs | opus | 0 | frontier |
+| A | Dykes, breakwater, gateposts, windbreaks | core/src/walls.rs | opus | 0,1 | done |
+| B | Huts, roundhouses, beacons, roofs, stilts | core/src/buildings.rs | opus | 0,1 | done |
+| C | Tracks, steps, jetty, bridges | core/src/paths.rs | sonnet | 0,1 | done |
+| D | Trees, props | core/src/nature.rs | sonnet | 0,1 | done |
+| E | Island terrain, lagoon, scene rules, demo cove | core/src/terrain.rs, scene.rs, demo.rs | opus | 0 | done |
 | F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | opus | 0,1 | frontier |
 | G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | sonnet | 0,1 | frontier |
 | H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | sonnet | 0 | frontier |
