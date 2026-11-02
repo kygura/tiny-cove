@@ -283,7 +283,8 @@ pub struct Platform {
     pub center: Vec2,
     pub half: Vec2,
     pub angle: f32,
-    /// Deck height above the lowest ground under it.
+    /// Deck height above the highest ground or water under it (over the sea the deck always
+    /// clears high tide).
     pub height: f32,
     pub colors: Colors,
 }

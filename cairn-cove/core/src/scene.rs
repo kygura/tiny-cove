@@ -35,7 +35,8 @@ pub fn build(doc: &Document) -> Scene {
     let seed = doc.seed;
 
     // Ground under houses is levelled unless the house stands on stilts (explicit, or
-    // automatic over water / steep ground judged on the unlevelled ground). Paths follow it.
+    // automatic over water / steep ground judged on the unlevelled ground), whose natural
+    // ground no neighbour's levelling margin may touch either. Paths follow it.
     let houses: Vec<&House> = doc.structures.iter().filter_map(|(_, s)| if let Structure::House(h) = s { Some(h) } else { None }).collect();
     let flatten: Vec<FlattenRegion> = if houses.is_empty() {
         Vec::new()
@@ -43,8 +44,11 @@ pub fn build(doc: &Document) -> Scene {
         let raw = Terrain::build(seed, &doc.terrain, &[]);
         houses
             .iter()
-            .filter(|h| !needs_stilts(h, &raw))
-            .map(|h| FlattenRegion { poly: footprint_polygon(&h.footprint), height: None, margin: 1.5 })
+            .map(|h| {
+                let keep = needs_stilts(h, &raw);
+                // A kept footprint grows by more than a grid cell so its edges sample raw ground.
+                FlattenRegion { poly: footprint_polygon(&h.footprint), height: None, margin: if keep { 1.0 } else { 1.5 }, keep }
+            })
             .collect()
     };
     let terrain = Terrain::build(seed, &doc.terrain, &flatten);
@@ -312,32 +316,104 @@ mod tests {
     use super::*;
     use crate::model::*;
 
+    /// Flat dry land at 1 m over the whole buildable area.
+    fn flat_doc(seed: u64) -> Document {
+        let mut doc = Document::new(seed);
+        doc.terrain.push(TerrainDab { center: Vec2::ZERO, radius: 60.0, op: TerrainOp::Flatten { height: 1.0, strength: 1.0 } });
+        doc
+    }
+
+    fn track(doc: &mut Document, a: Vec2, b: Vec2) {
+        doc.add(Structure::Path(Path { points: vec![a, b], width: 1.4, kind: PathKind::Shell }));
+    }
+
+    /// True if a horizontal ray 1 m above the ground along `a → b` hits structure `id`.
+    fn blocked(doc: &Document, s: &Scene, id: StructureId, a: Vec2, b: Vec2) -> bool {
+        let d = (b - a).normalize();
+        let o = Vec3::new(a.x, s.terrain.height(a) + 1.0, a.y);
+        pick(doc, s, o, Vec3::new(d.x, 0.0, d.y)).is_some_and(|h| h.id == Some(id))
+    }
+
+    /// Gatepost stones (Rock) of a dyke within `r` of `p`.
+    fn posts_near(s: &Scene, id: StructureId, p: Vec2, r: f32) -> usize {
+        let m = &s.parts.iter().find(|q| q.id == id).unwrap().mesh;
+        m.positions.iter().zip(&m.surfaces).filter(|(q, k)| **k == crate::mesh::Surface::Rock as u8 && Vec2::new(q[0], q[2]).distance(p) < r).count()
+    }
+
+    /// A track through a dyke cuts a walk-through gap between gateposts; next to it the dyke
+    /// still blocks.
     #[test]
-    fn path_through_wall_makes_one_cut() {
-        let mut doc = Document::new(3);
-        doc.add(Structure::Wall(Wall {
-            points: vec![Vec2::new(-6.0, 0.0), Vec2::new(6.0, 0.0)],
-            height: 4.0,
-            thickness: 1.0,
-            kind: WallKind::DryStone,
-            crest: true,
-            tumbled: false,
-            footing: 0.0,
-            roofed: false,
-            roof: RoofStyle::Boat,
-            roof_pitch: 0.6,
-            openings: vec![],
-            colors: Colors::default(),
-            weathering: 0.5,
-        }));
-        doc.add(Structure::Path(Path {
-            points: vec![Vec2::new(0.0, -5.0), Vec2::new(0.0, 5.0)],
-            width: 1.5,
-            kind: PathKind::Pebble,
-        }));
+    fn path_through_wall_cuts_a_gap_with_gateposts() {
+        let mut doc = flat_doc(3);
+        let mut w = dyke(vec![Vec2::new(-10.0, 0.0), Vec2::new(10.0, 0.0)], WallKind::DryStone);
+        w.height = 1.5;
+        let wall = doc.add(Structure::Wall(w));
+        track(&mut doc, Vec2::new(0.0, -5.0), Vec2::new(0.0, 5.0));
         let s = build(&doc);
         assert_eq!(s.parts.len(), 2);
         assert_eq!(build(&doc).markers, s.markers);
+        assert!(!blocked(&doc, &s, wall, Vec2::new(0.0, -5.0), Vec2::new(0.0, 5.0)), "gap along the track");
+        assert!(blocked(&doc, &s, wall, Vec2::new(4.0, -5.0), Vec2::new(4.0, 5.0)), "solid beside it");
+        // Gateposts either side of the gap (track 1.4 m + 0.6 m clearance, then a 0.55 m post).
+        assert!(posts_near(&s, wall, Vec2::new(-1.3, 0.0), 0.7) > 0 && posts_near(&s, wall, Vec2::new(1.3, 0.0), 0.7) > 0);
+        assert_eq!(posts_near(&s, wall, Vec2::ZERO, 0.9), 0, "no post in the track");
+    }
+
+    /// Two tracks crossing a dyke close together both get through (their gaps merge when
+    /// there is no room for gateposts between them), whatever their spacing.
+    #[test]
+    fn close_tracks_through_a_dyke_both_pass() {
+        for gap in [2.0, 2.5, 3.0, 3.5, 4.5] {
+            let mut doc = flat_doc(3);
+            let mut w = dyke(vec![Vec2::new(-10.0, 0.0), Vec2::new(10.0, 0.0)], WallKind::DryStone);
+            w.height = 1.5;
+            let wall = doc.add(Structure::Wall(w));
+            for x in [0.0, gap] {
+                track(&mut doc, Vec2::new(x, -5.0), Vec2::new(x, 5.0));
+            }
+            let s = build(&doc);
+            for x in [0.0, gap] {
+                assert!(!blocked(&doc, &s, wall, Vec2::new(x, -5.0), Vec2::new(x, 5.0)), "track at {x}, spacing {gap}");
+            }
+            assert!(blocked(&doc, &s, wall, Vec2::new(-5.0, -5.0), Vec2::new(-5.0, 5.0)));
+        }
+    }
+
+    /// A track crossing right by a dyke's end, or at a closed ring's seam, still gets through.
+    #[test]
+    fn tracks_at_dyke_ends_and_ring_seams_pass() {
+        for (end, w_h) in [(0.2, 1.5), (0.5, 1.5), (1.0, 1.5), (0.3, 3.0)] {
+            for flip in [false, true] {
+                let mut doc = flat_doc(3);
+                let mut w = dyke(vec![Vec2::new(-10.0, 0.0), Vec2::new(10.0, 0.0)], WallKind::DryStone);
+                w.height = w_h;
+                if flip {
+                    w.points.reverse();
+                }
+                let wall = doc.add(Structure::Wall(w));
+                let x = -10.0 + end;
+                track(&mut doc, Vec2::new(x, -5.0), Vec2::new(x, 5.0));
+                let s = build(&doc);
+                assert!(!blocked(&doc, &s, wall, Vec2::new(x, -5.0), Vec2::new(x, 5.0)), "{end} m from the end (flip {flip})");
+                assert!(blocked(&doc, &s, wall, Vec2::new(0.0, -5.0), Vec2::new(0.0, 5.0)));
+            }
+        }
+        // A ring whose first point sits mid-side: a track crossing at that seam and the far side.
+        for roofed in [false, true] {
+            let mut doc = flat_doc(3);
+            let v = |x: f32, z: f32| Vec2::new(x, z);
+            let mut w = dyke(vec![v(0.0, -4.0), v(4.0, -4.0), v(4.0, 4.0), v(-4.0, 4.0), v(-4.0, -4.0), v(0.0, -4.0)], WallKind::Turf);
+            w.roofed = roofed;
+            let wall = doc.add(Structure::Wall(w));
+            for x in [0.2, -0.4] {
+                track(&mut doc, v(x, -9.0), v(x, 9.0));
+                let s = build(&doc);
+                assert!(!blocked(&doc, &s, wall, v(x, -9.0), v(x, 9.0)), "ring seam, track at {x}, roofed {roofed}");
+                assert!(!blocked(&doc, &s, wall, v(x, 9.0), v(x, -9.0)), "ring seam, track at {x}, from the far side");
+                assert!(blocked(&doc, &s, wall, v(2.5, -9.0), v(2.5, 9.0)));
+                doc.structures.retain(|(_, st)| !matches!(st, Structure::Path(_)));
+            }
+        }
     }
 
     use glam::Vec3Swizzles;
@@ -455,6 +531,21 @@ mod tests {
         assert_eq!(scene.parts.len(), doc.structures.len());
         for (part, (_, s)) in scene.parts.iter().zip(&doc.structures) {
             assert!(part.mesh.is_valid() && !part.mesh.is_empty(), "{s:?}");
+            // Vertex alpha is the flutter weight: only cloth, nets and hanging fish move.
+            let cloth = match s {
+                Structure::Placed(p) => matches!(p.kind, PropKind::Clutter(Pennant | DryingRack)),
+                Structure::Fence(f) => f.kind == FenceKind::NetLine,
+                Structure::Bridge(b) => b.hanging == Hanging::Pennants && matches!(b.kind, BridgeKind::Rope { .. }),
+                _ => false,
+            };
+            let lo = part.mesh.colors.iter().map(|c| c[3]).fold(1.0, f32::min);
+            assert_eq!(lo < 1.0, cloth, "{s:?} flutter {lo}");
+        }
+        for (part, (_, s)) in scene.parts.iter().zip(&doc.structures) {
+            if matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(Pennant)) || matches!(s, Structure::Bridge(b) if b.hanging == Hanging::Pennants && matches!(b.kind, BridgeKind::Rope { .. })) {
+                let lo = part.mesh.colors.iter().map(|c| c[3]).fold(1.0, f32::min);
+                assert!(lo < 0.05, "pennant tips flutter freely: {s:?} {lo}");
+            }
         }
         assert!(scene.markers.iter().all(|m| m.pos.is_finite() && m.dir.is_finite()));
     }
@@ -584,6 +675,62 @@ mod tests {
         assert!(needs_stilts(&hut(rect(cliff), 2.4, RoofStyle::Thatch, Material::Wattle), &raw));
         let beacon = hut(Footprint::Round { center: cliff, radius: 1.5 }, 6.0, RoofStyle::Thatch, Material::Stone);
         assert!(!needs_stilts(&beacon, &raw));
+    }
+
+    /// Site sample points of a footprint (as `buildings::site` takes them).
+    fn site_points(fp: Footprint) -> Vec<Vec2> {
+        let poly = footprint_polygon(&fp);
+        let c = poly.iter().copied().sum::<Vec2>() / poly.len() as f32;
+        let n = poly.len();
+        (0..n).flat_map(|i| [poly[i], (poly[i] + poly[(i + 1) % n]) * 0.5, (poly[i] + c) * 0.5]).chain([c]).collect()
+    }
+
+    /// Huts side by side on a slope each keep level ground under their own floor (whatever
+    /// order they were placed in), and a stilted neighbour's natural ground is untouched.
+    #[test]
+    fn neighbouring_huts_keep_their_own_ground() {
+        let bare = Terrain::build(7, &[], &[]);
+        let base = -bare.plan().cove * 6.0;
+        let mut doc = Document::new(7);
+        doc.terrain.push(TerrainDab { center: base + Vec2::new(16.0, 0.0), radius: 30.0, op: TerrainOp::Sculpt { amount: 2.0 } });
+        let raw = Terrain::build(7, &doc.terrain, &[]);
+        let rect = |x: f32| Footprint::Rect { center: base + Vec2::new(x, 0.0), half: Vec2::new(2.0, 1.5), angle: 0.0 };
+        let range = |t: &Terrain, fp: Footprint| {
+            let hs: Vec<f32> = site_points(fp).iter().map(|p| t.height(*p)).collect();
+            hs.iter().fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(*y), b.max(*y)))
+        };
+        // Two plain huts 0.2 m apart, then the second one on stilts 0.5 m away.
+        for (gap, stilts) in [(0.2, 0.0), (0.5, 1.0)] {
+            let (fa, fb) = (rect(0.0), rect(4.0 + gap));
+            let mut b = hut(fb, 2.4, RoofStyle::Thatch, Material::Wattle);
+            b.stilts = stilts;
+            let mut doc = doc.clone();
+            doc.add(Structure::House(hut(fa, 2.4, RoofStyle::Thatch, Material::Wattle)));
+            doc.add(Structure::House(b.clone()));
+            let s = build(&doc);
+            let (lo, hi) = range(&raw, fa);
+            assert!(hi - lo > 0.15 && !raw.is_sea(base), "a real slope: {lo}..{hi}");
+            let (alo, ahi) = range(&s.terrain, fa);
+            // The first hut's floor stands on (and clears) its own ground.
+            let floor = |id| {
+                let m = &s.parts.iter().find(|p| p.id == id).unwrap().mesh;
+                m.positions.iter().zip(&m.surfaces).filter(|(_, s)| **s == crate::mesh::Surface::Dirt as u8).map(|(p, _)| p[1]).fold(f32::MIN, f32::max)
+            };
+            let ids: Vec<StructureId> = doc.structures.iter().map(|(id, _)| *id).collect();
+            let fl = floor(ids[ids.len() - 2]);
+            assert!(fl > ahi && fl < alo + 0.25, "floor {fl} over ground {alo}..{ahi} (gap {gap})");
+            if stilts > 0.0 {
+                assert!(needs_stilts(&b, &raw));
+                assert!(site_points(fb).iter().all(|p| s.terrain.height(*p) == raw.height(*p)), "stilted ground untouched");
+            } else {
+                // Side by side, both stand on one level terrace.
+                for fp in [fa, fb] {
+                    let (lo, hi) = range(&s.terrain, fp);
+                    assert!(hi - lo < 0.08, "level: {lo}..{hi}");
+                }
+                assert!((floor(ids[ids.len() - 1]) - fl).abs() < 0.05);
+            }
+        }
     }
 
     /// Swimming birds go to lagoons first, then to the open sea.

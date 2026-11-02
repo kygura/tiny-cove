@@ -451,6 +451,9 @@ struct Edge {
     dist: f32,
     half_len: f32,
     sea: bool,
+    /// Where a canoe moors off this edge: the nearest spot out from it that stays afloat at
+    /// low tide (`Terrain::boat_water`), if any within reach.
+    boat: Option<Vec2>,
 }
 
 /// A jetty: plank deck on log piles that run down to the seabed, mooring posts with rope coils
@@ -469,16 +472,19 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
     let az = Vec2::new(-ax.y, ax.x);
     let (ax3, az3) = (flat(ax), flat(az));
     let world = |l: Vec2| p.center + ax * l.x + az * l.y;
-    let mut gmin = f32::MAX;
+    // `height` is measured from the highest ground or water under the deck, so the deck never
+    // sinks into the beach at the landward end and the Raise phase always lifts it.
+    let mut gmax = f32::MIN;
     let mut over_sea = false;
     for i in 0..=4 {
         for j in 0..=4 {
             let q = world(Vec2::new(-hx + 2.0 * hx * i as f32 / 4.0, -hz + 2.0 * hz * j as f32 / 4.0));
-            gmin = gmin.min(terrain.height(q));
+            let g = terrain.height(q);
+            gmax = gmax.max(terrain.water_level(q).map_or(g, |l| l.max(g)));
             over_sea |= terrain.is_sea(q);
         }
     }
-    let mut top = gmin + height;
+    let mut top = gmax + height;
     if over_sea {
         // The deck always clears the water, high tide included.
         top = top.max(SEA_LEVEL + 0.45);
@@ -489,7 +495,14 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
     // Edges: +x, -x, +z, -z in local space; sea if the water just beyond them is sea.
     let edges: Vec<Edge> = [(ax, az, hx, hz), (-ax, az, hx, hz), (az, ax, hz, hx), (-az, ax, hz, hx)]
         .into_iter()
-        .map(|(out, along, dist, half_len)| Edge { out, along, dist, half_len, sea: terrain.is_sea(p.center + out * (dist + 1.1)) })
+        .map(|(out, along, dist, half_len)| {
+            let sea = terrain.is_sea(p.center + out * (dist + 1.1));
+            let boat = [1.1, 1.6, 2.2, 2.8]
+                .into_iter()
+                .map(|off| p.center + out * (dist + off))
+                .find(|q| terrain.is_sea(*q) && terrain.boat_water(*q).is_some());
+            Edge { out, along, dist, half_len, sea, boat }
+        })
         .collect();
     let jetty = over_sea || edges.iter().any(|e| e.sea);
 
@@ -567,14 +580,16 @@ pub fn platform_mesh(platform: &Platform, terrain: &Terrain, seed: u64) -> (Mesh
     }
 
     // Canoes alongside: prefer the long sea edges, one or two. `dir` runs along the edge.
-    let mut order: Vec<usize> = (0..4).filter(|&i| edges[i].sea).collect();
+    let mut order: Vec<usize> = (0..4).filter(|&i| edges[i].sea && edges[i].boat.is_some()).collect();
     order.sort_by(|&a, &b| edges[b].half_len.total_cmp(&edges[a].half_len));
     let mut boats = vec![false; 4];
     for (rank, &i) in order.iter().take(2).enumerate() {
         if rank == 0 || r.f() < 0.5 {
             let e = &edges[i];
             boats[i] = true;
-            mk.push(Marker { kind: MarkerKind::Boat, pos: v3(p.center + e.out * (e.dist + 1.1), SEA_LEVEL), dir: flat(e.along) });
+            if let Some(q) = e.boat {
+                mk.push(Marker { kind: MarkerKind::Boat, pos: v3(q, SEA_LEVEL), dir: flat(e.along) });
+            }
         }
     }
 
@@ -756,8 +771,11 @@ fn rope_bridge(m: &mut MeshData, mk: &mut Vec<Marker>, f: &Fr, br: &Bridge, rail
                 let tip = p.lerp(q, 0.5) - Vec3::Y * 0.45;
                 let base = if k % 3 == 0 { trim } else { palette::pigment(k as u32) };
                 let col = tint(base, &mut rng(seed, 42, f.xz(p)), 0.1);
+                let from = m.vertex_count();
                 m.tri(p, tip, q, col, Surface::Hide, 1.0);
                 m.tri(p, q, tip, col, Surface::Hide, 1.0);
+                // Tied along the hand line, free at the tip.
+                m.flutter(from, |v| if v.distance(tip) < 1e-4 { 1.0 } else { 0.0 });
                 // A sailcloth heading strip along the line.
                 m.beam(p, q, 0.02, 0.05, palette::sailcloth(), Surface::Hide, 1.0);
                 mk.push(Marker { kind: MarkerKind::Flag, pos: p, dir: Vec3::Y });
@@ -1184,7 +1202,8 @@ mod tests {
     fn jetty_deck_clears_the_water_and_land_stage_is_plain() {
         let c = Vec2::new(-12.0, 6.0);
         let terr = sea_at(c);
-        // Deck height is relative to the seabed; a tiny value must still clear the tide.
+        // Deck height is relative to the highest ground or water; a tiny value must still clear
+        // the tide.
         let (m, _) = platform_mesh(&jetty(c, 0.2), &terr, 1);
         let deck_top = m.positions.iter().zip(&m.surfaces).filter(|(_, s)| **s == Surface::Boards as u8).map(|(p, _)| p[1]).fold(f32::MIN, f32::max);
         assert!(deck_top >= SEA_LEVEL + 0.45 - 1e-4, "{deck_top}");
@@ -1200,6 +1219,42 @@ mod tests {
             let (_, hi) = m.bounds().unwrap();
             assert!(hi.y >= lt.height(land) - 1.0 + h - 1e-4 || hi.y >= h - 1e-4);
         }
+    }
+
+    /// A jetty from the beach out to sea: its height is measured from the highest ground or
+    /// water under it (the deck clears the sand and rises with the setting), and its canoes
+    /// moor only where they stay afloat at low tide.
+    #[test]
+    fn shore_jetty_rises_with_height_and_moors_in_deep_water() {
+        use crate::model::TIDE_RANGE;
+        use crate::terrain::BOAT_DEPTH;
+        let terr = Terrain::build(7, &[], &[]);
+        let cove = terr.plan().cove;
+        let shore = (0..400).map(|i| i as f32 * 0.1).find(|r| terr.is_sea(cove * *r)).unwrap();
+        let deck = |m: &MeshData| m.positions.iter().zip(&m.surfaces).filter(|(_, s)| **s == Surface::Boards as u8).map(|(p, _)| p[1]).fold(f32::MIN, f32::max);
+        let mut moored = 0;
+        for hx in [5.0, 6.0, 8.0] {
+            let p = Platform { center: cove * shore, half: Vec2::new(hx, 1.0), angle: cove.to_angle(), height: 1.5, colors: Colors::default() };
+            let land_end = terr.height(cove * (shore - hx));
+            assert!(land_end > SEA_LEVEL);
+            let (m, mk) = platform_mesh(&p, &terr, 1);
+            let top = deck(&m);
+            assert!(top >= land_end + 1.5 - 1e-3, "deck {top} clears the beach at {land_end}");
+            let (raised, _) = platform_mesh(&Platform { height: 2.5, ..p.clone() }, &terr, 1);
+            assert!((deck(&raised) - top - 1.0).abs() < 1e-3, "raising lifts the deck");
+            for b in mk.iter().filter(|k| k.kind == MarkerKind::Boat) {
+                let q = Vec2::new(b.pos.x, b.pos.z);
+                assert!(SEA_LEVEL - TIDE_RANGE - terr.height(q) >= BOAT_DEPTH - 1e-4, "afloat at low tide: bed {}", terr.height(q));
+                moored += 1;
+            }
+        }
+        assert!(moored > 0);
+        // Over shallows that dry out at low tide no canoe moors at all.
+        let flat = Terrain::build(7, &[crate::model::TerrainDab { center: cove * (shore + 6.0), radius: 40.0, op: crate::model::TerrainOp::Flatten { height: -0.4, strength: 1.0 } }], &[]);
+        let c = cove * (shore + 6.0);
+        assert!(flat.is_sea(c) && flat.boat_water(c).is_none());
+        let (_, mk) = platform_mesh(&jetty(c, 1.0), &flat, 1);
+        assert!(!mk.iter().any(|k| k.kind == MarkerKind::Boat));
     }
 
     #[test]

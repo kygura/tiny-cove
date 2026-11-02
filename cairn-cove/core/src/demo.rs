@@ -186,14 +186,14 @@ pub fn demo_document(seed: u64) -> Document {
     // Jetty: a plank deck from the beach out over the water, its deck ~1.1 m above the sea.
     let jetty_c = f.local(jetty_shore + 2.5, jetty_b);
     let jetty_half = Vec2::new(5.0, 1.0);
-    let gmin = (0..=4)
+    let gmax = (0..=4)
         .flat_map(|i| (0..=4).map(move |j| (i, j)))
         .map(|(i, j)| {
             let l = Vec2::new(-jetty_half.x + 2.0 * jetty_half.x * i as f32 / 4.0, -jetty_half.y + 2.0 * jetty_half.y * j as f32 / 4.0);
-            t.height(jetty_c + Vec2::from_angle(along_cove).rotate(l))
+            t.height(jetty_c + Vec2::from_angle(along_cove).rotate(l)).max(SEA_LEVEL)
         })
-        .fold(f32::MAX, f32::min);
-    d.add(Structure::Platform(Platform { center: jetty_c, half: jetty_half, angle: along_cove, height: (SEA_LEVEL + 1.1 - gmin).max(0.4), colors: colors(0, 0, 0) }));
+        .fold(f32::MIN, f32::max);
+    d.add(Structure::Platform(Platform { center: jetty_c, half: jetty_half, angle: along_cove, height: (SEA_LEVEL + 1.1 - gmax).max(0.4), colors: colors(0, 0, 0) }));
     // A canoe afloat in the cove (a Boat marker), two drawn up on the sand.
     d.add(placed(f.local(jetty_shore + 5.5, 3.0), along_cove + 0.4, 1.0, PropKind::Clutter(ClutterKind::Canoe), colors(0, 0, 0)));
     for (b, trim) in [(-4.8, 0u8), (-6.9, 2)] {

@@ -50,6 +50,10 @@ const BATTER: f32 = 0.06;
 const GATE_W: f32 = 0.55;
 /// A track gap gets a lintel stone when the dyke is at least this tall.
 const LINTEL_MIN: f32 = 2.2;
+/// ... and the gap at most this wide (merged gaps of several tracks stay open).
+const LINTEL_MAX: f32 = 6.0;
+/// Widest gap (several merged track crossings).
+const MAX_GAP: f32 = 16.0;
 /// Square wind hole size.
 const HOLE_W: f32 = 0.5;
 /// Sea sampling step along the dyke.
@@ -314,6 +318,16 @@ impl Line {
         }
         nlv(d)
     }
+    /// The same closed ring, restarted at distance `s` (on a vertex or a segment).
+    fn rotated(&self, s: f32) -> Option<Line> {
+        let i = self.cum.partition_point(|&c| c <= s).saturating_sub(1).min(self.segs() - 1);
+        let (q, _) = self.at(s);
+        let mut pts = vec![q];
+        pts.extend_from_slice(&self.p[i + 1..]);
+        pts.extend_from_slice(&self.p[1..=i]);
+        pts.push(q);
+        Line::new(&pts)
+    }
     /// True if a polyline vertex lies strictly inside `(a, b)`.
     fn vertex_in(&self, a: f32, b: f32) -> bool {
         self.cum.iter().any(|&c| c > a + 0.02 && c < b - 0.02)
@@ -518,11 +532,60 @@ impl<'a> Dyke<'a> {
         runs
     }
 
+    /// Track cuts in this dyke's own `along` (see `build`), widths clamped, sorted, and merged
+    /// wherever two gaps would leave less than a pair of gateposts of wall between them.
+    fn prepare_cuts(&self, cuts: &[Cut], loc: impl Fn(f32) -> f32) -> Vec<Cut> {
+        let mut v: Vec<Cut> = cuts
+            .iter()
+            .filter(|c| c.along.is_finite() && c.width.is_finite() && c.height.is_finite())
+            .map(|c| Cut { along: loc(c.along), width: c.width.clamp(0.8, MAX_GAP), height: c.height })
+            .collect();
+        v.sort_by(|a, b| a.along.total_cmp(&b.along));
+        let mut merged: Vec<Cut> = Vec::new();
+        for c in v {
+            if let Some(l) = merged.last_mut() {
+                let (lo, hi) = (c.along - c.width * 0.5, l.along + l.width * 0.5);
+                if lo - hi < 2.0 * GATE_W + 0.15 {
+                    let (a, b) = ((l.along - l.width * 0.5).min(lo), hi.max(c.along + c.width * 0.5));
+                    *l = Cut { along: (a + b) * 0.5, width: (b - a).min(MAX_GAP), height: l.height.max(c.height) };
+                    continue;
+                }
+            }
+            merged.push(c);
+        }
+        merged
+    }
+
     #[allow(clippy::too_many_lines)]
     fn build(mut self, cuts: &[Cut], m: &mut MeshData, mk: &mut Vec<Marker>) {
         let total = self.line.total();
         let palisade = self.w.kind == WallKind::Palisade;
-        let sea = self.sea_runs();
+        // A closed ring has no real ends: if a track crosses near its seam, restart the ring
+        // at the corner (or segment middle) farthest from every track so no gap straddles it.
+        let mut off = 0.0;
+        if self.line.closed {
+            let reach = |c: &Cut| c.width.clamp(0.8, MAX_GAP) * 0.5 + GATE_W + 0.15;
+            let ok = |c: &&Cut| c.along.is_finite() && c.width.is_finite();
+            if cuts.iter().filter(ok).any(|c| c.along - reach(c) < 0.0 || c.along + reach(c) > total) {
+                let clear = |s: f32| {
+                    cuts.iter().filter(ok).map(|c| {
+                        let d = (s - c.along).rem_euclid(total);
+                        d.min(total - d) - reach(c)
+                    })
+                    .fold(f32::MAX, f32::min)
+                };
+                let segs = self.line.cum.windows(2).filter(|w| w[1] - w[0] > 0.2).map(|w| (w[0] + w[1]) * 0.5);
+                let best = self.line.cum[1..self.line.segs()].iter().copied().chain(segs).max_by(|a, b| clear(*a).total_cmp(&clear(*b)));
+                if let Some(line) = best.filter(|s| clear(*s) > 0.0).and_then(|s| self.line.rotated(s).map(|l| (s, l))) {
+                    (off, self.line) = line;
+                }
+            }
+        }
+        let total = self.line.total();
+        let loc = |s: f32| if off == 0.0 { s } else { (s - off).rem_euclid(total) };
+        // A roofed ring keeps its flat-topped wall over the water too, so the roof rests on it
+        // all round instead of floating over a low breakwater.
+        let sea = if self.flat_top.is_some() { Vec::new() } else { self.sea_runs() };
         let in_sea = |a: f32, b: f32| sea.iter().any(|&(x, y)| a < y && b > x);
         let busy = |feats: &[Feat], a: f32, b: f32| feats.iter().any(|f| a < f.eb + 0.1 && b > f.ea - 0.1);
         let mut feats: Vec<Feat> = Vec::new();
@@ -530,25 +593,34 @@ impl<'a> Dyke<'a> {
         let mut gates: Vec<Gate> = Vec::new();
 
         // ---- track cuts: gap between two standing-stone gateposts ---------------------------
-        for c in cuts {
-            if !(c.along.is_finite() && c.width.is_finite() && c.height.is_finite()) {
-                continue;
-            }
-            let wd = c.width.clamp(0.8, 8.0);
+        for c in self.prepare_cuts(cuts, loc) {
+            let wd = c.width;
             let posts = total >= wd + 2.0 * GATE_W + 0.2;
             let margin = wd * 0.5 + if posts { GATE_W } else { 0.0 } + 0.02;
             if margin * 2.0 > total {
                 continue;
             }
-            let sc = c.along.clamp(margin, total - margin);
-            let (a, b) = (sc - wd * 0.5, sc + wd * 0.5);
-            let (ea, eb) = if posts { (a - GATE_W, b + GATE_W) } else { (a, b) };
+            let along = c.along.clamp(0.0, total);
+            let sc = along.clamp(margin, total - margin);
+            let (mut a, mut b) = (sc - wd * 0.5, sc + wd * 0.5);
+            let (mut post_a, mut post_b) = (posts, posts);
+            // Near an open end the gap (and a gatepost) would slide over the track: run the gap
+            // out to that end instead, with a post on the inner side only.
+            if !self.line.closed && (sc - along).abs() > 0.05 {
+                if sc > along {
+                    (a, b, post_a) = (0.0, along + wd * 0.5, false);
+                } else {
+                    (a, b, post_b) = (along - wd * 0.5, total, false);
+                }
+            }
+            let ea = if post_a { a - GATE_W } else { a };
+            let eb = if post_b { b + GATE_W } else { b };
             if busy(&feats, ea, eb) || in_sea(ea, eb) {
                 continue;
             }
-            let sm = self.smp(sc);
+            let sm = self.smp((a + b) * 0.5);
             let above_ground = sm.full - SINK;
-            if posts && above_ground >= LINTEL_MIN {
+            if post_a && post_b && above_ground >= LINTEL_MIN && wd <= LINTEL_MAX {
                 let clear = c.height.clamp(1.8, (above_ground - 0.32).max(1.8));
                 let y = sm.base + SINK + clear;
                 let top = y + 0.3;
@@ -558,9 +630,11 @@ impl<'a> Dyke<'a> {
                 lintels.push(Lintel { a: ea, b: eb, y, th: 0.3, timber: false });
             } else {
                 feats.push(Feat { a: ea, b: eb, ea, eb, hole: Hole::Open });
-                if posts {
-                    let top = sm.base + SINK + (above_ground + 0.45).max(1.3);
+                let top = sm.base + SINK + (above_ground + 0.45).max(1.3);
+                if post_a {
                     gates.push(Gate { a: ea, b: a, top, lintel: false });
+                }
+                if post_b {
                     gates.push(Gate { a: b, b: eb, top, lintel: false });
                 }
             }
@@ -571,20 +645,21 @@ impl<'a> Dyke<'a> {
             if !o.along.is_finite() {
                 continue;
             }
+            let along = loc(o.along);
             let (wd, pad) = match o.kind {
                 OpeningKind::Window => (HOLE_W, 0.2),
                 OpeningKind::Door => (1.1, 0.25),
                 OpeningKind::WideDoor => (2.4, 0.3),
             };
-            let (a, b) = (o.along - wd * 0.5, o.along + wd * 0.5);
+            let (a, b) = (along - wd * 0.5, along + wd * 0.5);
             let (ea, eb) = (a - pad, b + pad);
             if ea < 0.05 || eb > total - 0.05 || busy(&feats, ea, eb) || in_sea(ea, eb) || self.line.vertex_in(ea, eb) {
                 continue;
             }
-            let sm = self.smp(o.along);
+            let sm = self.smp(along);
             let gy = sm.base + SINK;
             let hg = sm.full - SINK;
-            let (p, d) = self.line.at(o.along);
+            let (p, d) = self.line.at(along);
             let n = nlv(d);
             let door = |mk: &mut Vec<Marker>| {
                 mk.push(Marker { kind: MarkerKind::Door, pos: v3(p + n * (self.half + 0.5), gy), dir: v3(n, 0.0) });
@@ -1432,8 +1507,11 @@ fn net(m: &mut MeshData, (p0, g0): (Post, f32), (p1, g1): (Post, f32), colors: C
     let rope = palette::rope();
     for i in 0..K {
         let (a, b, c, d) = (bot(i), bot(i + 1), top(i + 1), top(i));
+        let from = m.vertex_count();
         m.quad(a, b, c, d, rope, Surface::Fiber, 1.0);
         m.quad(b, a, d, c, rope, Surface::Fiber, 1.0);
+        // Hangs from the top rope: the loose foot sways a little.
+        m.flutter(from, |v| if v.distance(a) < 1e-4 || v.distance(b) < 1e-4 { 0.3 } else { 0.0 });
         m.beam(top(i) - Vec3::Y * 0.02, top(i + 1) - Vec3::Y * 0.02, 0.04, 0.04, palette::fiber_dark(), Surface::Fiber, UV);
     }
     for i in 1..K {
@@ -1488,7 +1566,7 @@ mod tests {
         }
     }
     fn square(poly: [(f32, f32); 4], height: f32) -> FlattenRegion {
-        FlattenRegion { poly: poly.iter().map(|&(x, z)| Vec2::new(x, z)).collect(), height: Some(height), margin: 1.0 }
+        FlattenRegion { poly: poly.iter().map(|&(x, z)| Vec2::new(x, z)).collect(), height: Some(height), margin: 1.0, keep: false }
     }
     /// Flat land at 1 m above the sea.
     fn flat_terrain() -> Terrain {
@@ -1815,6 +1893,26 @@ mod tests {
         assert!(gr > gl + 1.0);
         assert!((top_near(&open, -5.0, 0.3, None) - (gl + 3.0)).abs() < 0.3);
         assert!((top_near(&open, 5.0, 0.3, None) - (gr + 3.0)).abs() < 0.3);
+    }
+
+    /// A roofed ring straddling the shore keeps its flat-topped wall over the water (the roof
+    /// rests on it all round); the same ring unroofed turns into a low breakwater out there.
+    #[test]
+    fn roofed_ring_over_the_sea_keeps_its_wall() {
+        let t = coast();
+        let a = Vec2::new(-5.0, -4.0);
+        let mut w = wall(vec![a, Vec2::new(7.0, -4.0), Vec2::new(7.0, 4.0), Vec2::new(-5.0, 4.0), a]);
+        w.height = 2.5;
+        w.roofed = true;
+        assert!(t.is_sea(Vec2::new(7.0, 0.0)));
+        let want = w.points.iter().map(|&p| ground_eff(&t, p)).fold(f32::MIN, f32::max) + 2.5;
+        let (m, _) = wall_mesh(&w, &[], &t, 1);
+        assert!(m.is_valid());
+        assert!((top_near(&m, 7.0, 0.4, None) - want).abs() < 0.05, "sea side {} vs {want}", top_near(&m, 7.0, 0.4, None));
+        assert!(m.positions.iter().all(|p| p[2].abs() < 4.0 + 1.2), "no wide rubble mole");
+        w.roofed = false;
+        let (open, _) = wall_mesh(&w, &[], &t, 1);
+        assert!(top_near(&open, 7.0, 0.4, None) < want - 0.8, "unroofed: breakwater");
     }
 
     #[test]

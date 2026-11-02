@@ -5,7 +5,9 @@
 //!   preferred (PS1 look): helpers emit unshared vertices per face.
 //! - `uv` is in metres of surface (1.0 = one texture tile repeat per metre unless the helper
 //!   takes a scale). The renderer wraps it with `fract` inside the atlas tile `Surface`.
-//! - `color` is a linear RGB tint multiplied with the texture; alpha unused (1.0).
+//! - `color` is a linear RGB tint multiplied with the texture. Alpha is the flutter weight
+//!   `1 - w`: 1.0 (w = 0) is rigid; cloth sets `w` in 0..1 (see [`MeshData::flutter`]) and the
+//!   renderer displaces it by wind · w.
 
 use glam::{Vec2, Vec3};
 
@@ -97,6 +99,16 @@ impl MeshData {
         self.colors.extend_from_slice(&other.colors);
         self.surfaces.extend_from_slice(&other.surfaces);
         self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+
+    /// Marks the vertices from index `from` on as cloth: alpha = 1 − `w(position)`, with `w`
+    /// clamped to 0..1 (0 = pinned to its pole or line, 1 = free tip).
+    pub fn flutter(&mut self, from: usize, w: impl Fn(Vec3) -> f32) {
+        let from = from.min(self.positions.len());
+        for (c, p) in self.colors[from..].iter_mut().zip(&self.positions[from..]) {
+            let w = w(Vec3::from_array(*p));
+            c[3] = 1.0 - if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
+        }
     }
 
     /// Pushes one vertex and returns its index.
@@ -280,6 +292,7 @@ impl MeshData {
             && self.positions.iter().flatten().all(|v| v.is_finite())
             && self.normals.iter().flatten().all(|v| v.is_finite())
             && self.uvs.iter().flatten().all(|v| v.is_finite())
+            && self.colors.iter().all(|c| c.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(&c[3]))
     }
 }
 
@@ -388,6 +401,21 @@ mod tests {
         for (p, n) in b.positions.iter().zip(&b.normals) {
             assert!((Vec3::from_array(*p) - Vec3::splat(0.5)).dot(Vec3::from_array(*n)) > 0.0);
         }
+    }
+
+    #[test]
+    fn flutter_sets_alpha_from_weight() {
+        let mut m = MeshData::default();
+        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Timber, 1.0);
+        let rigid = m.vertex_count();
+        m.quad(Vec3::ZERO, Vec3::X, Vec3::new(1.0, -1.0, 0.0), -Vec3::Y, Vec3::ONE, Surface::Hide, 1.0);
+        m.flutter(rigid, |p| -p.y * 2.0);
+        assert!(m.colors[..rigid].iter().all(|c| c[3] == 1.0));
+        let a: Vec<f32> = m.colors[rigid..].iter().map(|c| c[3]).collect();
+        assert_eq!(a, vec![1.0, 1.0, 0.0, 0.0]);
+        assert!(m.is_valid());
+        m.colors[0][3] = 1.5;
+        assert!(!m.is_valid());
     }
 
     #[test]

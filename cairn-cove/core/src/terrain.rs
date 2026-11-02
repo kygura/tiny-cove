@@ -17,7 +17,7 @@
 
 use crate::geom;
 use crate::mesh::{hash_f, MeshData, Surface};
-use crate::model::{PaintLayer, TerrainDab, TerrainOp, GLADE_HALF, SEA_LEVEL};
+use crate::model::{PaintLayer, TerrainDab, TerrainOp, GLADE_HALF, SEA_LEVEL, TIDE_RANGE};
 use crate::palette;
 use glam::{Vec2, Vec3};
 use std::f32::consts::{PI, TAU};
@@ -43,6 +43,9 @@ const PLAN_SALT: u64 = 0x25D;
 /// Ground below this (near the shore) is beach sand.
 const BEACH_TOP: f32 = 0.6;
 
+/// Least water depth (at low tide) a floating boat needs under it.
+pub const BOAT_DEPTH: f32 = 0.5;
+
 const NO_LEVEL: f32 = f32::INFINITY;
 const LAYERS: usize = 4;
 
@@ -51,10 +54,14 @@ const LAYERS: usize = 4;
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlattenRegion {
     pub poly: Vec<Vec2>,
-    /// Target height; `None` = average of the current ground inside the polygon.
+    /// Target height; `None` = average of the ground inside the polygon (after the dabs,
+    /// before any region).
     pub height: Option<f32>,
     /// Blend distance outside the polygon in metres.
     pub margin: f32,
+    /// Instead of levelling: keep the natural ground inside the polygon and within `margin`
+    /// of it untouched by every other region (stilted huts).
+    pub keep: bool,
 }
 
 /// Heightfield plus lagoon mask and paint layers; a pure function of `(seed, dabs, regions)`.
@@ -246,9 +253,7 @@ impl Terrain {
         for d in dabs {
             t.apply_dab(d, &mut carve);
         }
-        for r in flatten {
-            t.apply_region(r);
-        }
+        t.apply_regions(flatten);
         t.finish();
         t
     }
@@ -309,44 +314,119 @@ impl Terrain {
         }
     }
 
-    fn apply_region(&mut self, r: &FlattenRegion) {
-        if r.poly.len() < 3 {
+    /// Applies all flatten regions together, so their order does not matter. Each footprint is
+    /// levelled to its own target; footprints closer than the grid can resolve (two cells)
+    /// share one target, so huts built side by side stand on one terrace. Margins blend by the
+    /// strongest weight towards the weighted mean of the targets that reach the cell, and
+    /// `keep` regions protect the ground under them (and their margin) from every margin.
+    fn apply_regions(&mut self, regions: &[FlattenRegion]) {
+        let regions: Vec<&FlattenRegion> = regions.iter().filter(|r| r.poly.len() >= 3 && r.poly.iter().all(|p| p.is_finite())).collect();
+        if regions.is_empty() {
             return;
         }
-        let m = r.margin.max(0.0);
-        let (lo, hi) = r.poly.iter().fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
-        let (i0, i1, j0, j1) = range((lo + hi) * 0.5, ((hi - lo) * 0.5).max_element() + m + SPACING);
-        let inside = |p: Vec2| geom::contains(&r.poly, p);
-        let target = r.height.unwrap_or_else(|| {
-            let (mut s, mut c) = (0.0, 0);
+        let margin = |r: &FlattenRegion| if r.margin.is_finite() { r.margin.clamp(0.0, 50.0) } else { 0.0 };
+        let cells = |r: &FlattenRegion| {
+            let (lo, hi) = r.poly.iter().fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
+            range((lo + hi) * 0.5, ((hi - lo) * 0.5).max_element() + margin(r) + SPACING)
+        };
+        let dist = |r: &FlattenRegion, p: Vec2| (0..r.poly.len()).map(|e| seg_dist(p, r.poly[e], r.poly[(e + 1) % r.poly.len()])).fold(f32::MAX, f32::min);
+
+        // Targets from the ground before any region, as (Σ height, cell count) for averaging.
+        let mut target: Vec<(f32, f32)> = regions
+            .iter()
+            .map(|r| {
+                if let Some(h) = r.height.filter(|h| h.is_finite()) {
+                    return (h.clamp(-50.0, 50.0), 1.0);
+                }
+                let (i0, i1, j0, j1) = cells(r);
+                let (mut s, mut c) = (0.0, 0.0);
+                for j in j0..=j1 {
+                    for i in i0..=i1 {
+                        if geom::contains(&r.poly, world(i, j)) {
+                            s += self.h[j * GRID + i];
+                            c += 1.0;
+                        }
+                    }
+                }
+                if c > 0.0 { (s, c) } else { (self.height(r.poly[0]), 1.0) }
+            })
+            .collect();
+        // Averaged footprints that (nearly) touch share their target: union-find over pairs.
+        let mut group: Vec<usize> = (0..regions.len()).collect();
+        fn root(g: &mut [usize], mut i: usize) -> usize {
+            while g[i] != i {
+                g[i] = g[g[i]];
+                i = g[i];
+            }
+            i
+        }
+        let shares = |r: &FlattenRegion| !r.keep && r.height.is_none();
+        for a in 0..regions.len() {
+            for b in a + 1..regions.len() {
+                let (ra, rb) = (regions[a], regions[b]);
+                let near = |x: &FlattenRegion, y: &FlattenRegion| x.poly.iter().any(|p| geom::contains(&y.poly, *p) || dist(y, *p) < 2.0 * SPACING);
+                if shares(ra) && shares(rb) && (near(ra, rb) || near(rb, ra)) {
+                    let (x, y) = (root(&mut group, a), root(&mut group, b));
+                    group[x.max(y)] = x.min(y);
+                }
+            }
+        }
+        let mut sums = vec![(0.0f32, 0.0f32); regions.len()];
+        for i in 0..regions.len() {
+            let g = root(&mut group, i);
+            sums[g] = (sums[g].0 + target[i].0, sums[g].1 + target[i].1);
+        }
+        for i in 0..regions.len() {
+            let g = root(&mut group, i);
+            target[i] = (sums[g].0 / sums[g].1, 1.0);
+        }
+
+        let n = GRID * GRID;
+        // (Σ target, count) of footprints over the cell; (Σ w·target, Σ w, max w) of margins.
+        let mut inside = vec![(0.0f32, 0u32); n];
+        let mut blend = vec![(0.0f32, 0.0f32, 0.0f32); n];
+        // 2 = under a kept footprint, 1 = within its margin.
+        let mut keep = vec![0u8; n];
+        for (r, &(t, _)) in regions.iter().zip(&target) {
+            let m = margin(r);
+            let (i0, i1, j0, j1) = cells(r);
             for j in j0..=j1 {
                 for i in i0..=i1 {
-                    if inside(world(i, j)) {
-                        s += self.h[j * GRID + i];
-                        c += 1;
+                    let (p, k) = (world(i, j), j * GRID + i);
+                    if geom::contains(&r.poly, p) {
+                        if r.keep {
+                            keep[k] = 2;
+                        } else {
+                            inside[k] = (inside[k].0 + t, inside[k].1 + 1);
+                        }
+                    } else if m > 0.0 {
+                        let d = dist(r, p);
+                        if r.keep {
+                            if d <= m {
+                                keep[k] = keep[k].max(1);
+                            }
+                        } else {
+                            let w = 1.0 - smooth(0.0, m, d);
+                            if w > 0.0 {
+                                let b = &mut blend[k];
+                                *b = (b.0 + w * t, b.1 + w, b.2.max(w));
+                            }
+                        }
                     }
                 }
             }
-            if c > 0 { s / c as f32 } else { self.height((lo + hi) * 0.5) }
-        });
-        for j in j0..=j1 {
-            for i in i0..=i1 {
-                let p = world(i, j);
-                let inn = inside(p);
-                let w = if inn {
-                    1.0
-                } else if m > 0.0 {
-                    let d = (0..r.poly.len()).map(|e| seg_dist(p, r.poly[e], r.poly[(e + 1) % r.poly.len()])).fold(f32::MAX, f32::min);
-                    1.0 - smooth(0.0, m, d)
-                } else {
-                    0.0
-                };
-                if w > 0.0 {
-                    let k = j * GRID + i;
-                    self.h[k] += (target - self.h[k]) * w;
-                    self.wet[k] *= 1.0 - w;
-                }
-            }
+        }
+        // Priority: kept footprint > levelled footprint > kept margin > levelling margins.
+        for k in 0..n {
+            let ((s, c), (wt, ws, w)) = (inside[k], blend[k]);
+            let (t, w) = match keep[k] {
+                2 => continue,
+                _ if c > 0 => (s / c as f32, 1.0),
+                0 if w > 0.0 => (wt / ws, w),
+                _ => continue,
+            };
+            self.h[k] += (t - self.h[k]) * w;
+            self.wet[k] *= 1.0 - w;
         }
     }
 
@@ -427,6 +507,15 @@ impl Terrain {
             return Some(lagoon.map_or(SEA_LEVEL, |l| l.max(SEA_LEVEL)));
         }
         lagoon
+    }
+
+    /// Water surface at `p` if a boat floats there all day: the water is at least
+    /// [`BOAT_DEPTH`] deep at low tide (`SEA_LEVEL - TIDE_RANGE` over the sea, a lagoon's own
+    /// level otherwise). `None` on land and over shallows that dry out.
+    pub fn boat_water(&self, p: Vec2) -> Option<f32> {
+        let level = self.water_level(p).filter(|l| l.is_finite())?;
+        let low = if self.is_sea(p) && level <= SEA_LEVEL { SEA_LEVEL - TIDE_RANGE } else { level };
+        (low - self.height(p) >= BOAT_DEPTH).then_some(level)
     }
 
     /// Level of the carved lagoon at `p`, if any.
@@ -833,14 +922,14 @@ mod tests {
     #[test]
     fn flatten_region_levels() {
         let sq = vec![Vec2::new(-3.0, -3.0), Vec2::new(3.0, -3.0), Vec2::new(3.0, 3.0), Vec2::new(-3.0, 3.0)];
-        let r = FlattenRegion { poly: sq.clone(), height: None, margin: 2.0 };
+        let r = FlattenRegion { poly: sq.clone(), height: None, margin: 2.0, keep: false };
         let d = [dab(0.0, 0.0, 8.0, TerrainOp::Sculpt { amount: 2.0 }), dab(0.0, 0.0, 4.0, TerrainOp::Water { depth: 1.0 })];
         let t = Terrain::build(2, &d, &[r]);
         let hs: Vec<f32> = (-4..=4).flat_map(|x| (-4..=4).map(move |z| (x, z))).map(|(x, z)| t.height(Vec2::new(x as f32 * 0.7, z as f32 * 0.7))).collect();
         let (mn, mx) = hs.iter().fold((f32::MAX, f32::MIN), |(a, b), h| (a.min(*h), b.max(*h)));
         assert!(mx - mn < 0.05, "{mn} {mx}");
         assert!(t.water_level(Vec2::ZERO).is_none());
-        let r2 = FlattenRegion { poly: sq, height: Some(1.25), margin: 0.0 };
+        let r2 = FlattenRegion { poly: sq, height: Some(1.25), margin: 0.0, keep: false };
         assert!((Terrain::build(2, &[], &[r2]).height(Vec2::ZERO) - 1.25).abs() < 1e-4);
     }
 
