@@ -52,8 +52,9 @@ const GATE_W: f32 = 0.55;
 const LINTEL_MIN: f32 = 2.2;
 /// ... and the gap at most this wide (merged gaps of several tracks stay open).
 const LINTEL_MAX: f32 = 6.0;
-/// Widest gap (several merged track crossings).
-const MAX_GAP: f32 = 16.0;
+/// Widest gap one track crossing may cut (a shallow crossing angle widens it). Gaps of
+/// several tracks merged together are not capped, so every track stays open.
+pub const MAX_GAP: f32 = 16.0;
 /// Square wind hole size.
 const HOLE_W: f32 = 0.5;
 /// Sea sampling step along the dyke.
@@ -532,13 +533,15 @@ impl<'a> Dyke<'a> {
         runs
     }
 
-    /// Track cuts in this dyke's own `along` (see `build`), widths clamped, sorted, and merged
-    /// wherever two gaps would leave less than a pair of gateposts of wall between them.
+    /// Track cuts in this dyke's own `along` (see `build`), widths clamped to the dyke, sorted,
+    /// and merged wherever two gaps would leave less than a pair of gateposts of wall between
+    /// them. A merged span is never capped: capping would wall off some of its tracks.
     fn prepare_cuts(&self, cuts: &[Cut], loc: impl Fn(f32) -> f32) -> Vec<Cut> {
+        let total = self.line.total();
         let mut v: Vec<Cut> = cuts
             .iter()
             .filter(|c| c.along.is_finite() && c.width.is_finite() && c.height.is_finite())
-            .map(|c| Cut { along: loc(c.along), width: c.width.clamp(0.8, MAX_GAP), height: c.height })
+            .map(|c| Cut { along: loc(c.along), width: c.width.max(0.8).min(total), height: c.height })
             .collect();
         v.sort_by(|a, b| a.along.total_cmp(&b.along));
         let mut merged: Vec<Cut> = Vec::new();
@@ -547,7 +550,7 @@ impl<'a> Dyke<'a> {
                 let (lo, hi) = (c.along - c.width * 0.5, l.along + l.width * 0.5);
                 if lo - hi < 2.0 * GATE_W + 0.15 {
                     let (a, b) = ((l.along - l.width * 0.5).min(lo), hi.max(c.along + c.width * 0.5));
-                    *l = Cut { along: (a + b) * 0.5, width: (b - a).min(MAX_GAP), height: l.height.max(c.height) };
+                    *l = Cut { along: (a + b) * 0.5, width: b - a, height: l.height.max(c.height) };
                     continue;
                 }
             }
@@ -564,7 +567,7 @@ impl<'a> Dyke<'a> {
         // at the corner (or segment middle) farthest from every track so no gap straddles it.
         let mut off = 0.0;
         if self.line.closed {
-            let reach = |c: &Cut| c.width.clamp(0.8, MAX_GAP) * 0.5 + GATE_W + 0.15;
+            let reach = |c: &Cut| c.width.max(0.8).min(total) * 0.5 + GATE_W + 0.15;
             let ok = |c: &&Cut| c.along.is_finite() && c.width.is_finite();
             if cuts.iter().filter(ok).any(|c| c.along - reach(c) < 0.0 || c.along + reach(c) > total) {
                 let clear = |s: f32| {
@@ -594,12 +597,10 @@ impl<'a> Dyke<'a> {
 
         // ---- track cuts: gap between two standing-stone gateposts ---------------------------
         for c in self.prepare_cuts(cuts, loc) {
-            let wd = c.width;
+            // A gap as long as the whole dyke opens all of it rather than none of it.
+            let wd = c.width.min(total);
             let posts = total >= wd + 2.0 * GATE_W + 0.2;
-            let margin = wd * 0.5 + if posts { GATE_W } else { 0.0 } + 0.02;
-            if margin * 2.0 > total {
-                continue;
-            }
+            let margin = (wd * 0.5 + if posts { GATE_W } else { 0.0 } + 0.02).min(total * 0.5);
             let along = c.along.clamp(0.0, total);
             let sc = along.clamp(margin, total - margin);
             let (mut a, mut b) = (sc - wd * 0.5, sc + wd * 0.5);
@@ -1510,8 +1511,10 @@ fn net(m: &mut MeshData, (p0, g0): (Post, f32), (p1, g1): (Post, f32), colors: C
         let from = m.vertex_count();
         m.quad(a, b, c, d, rope, Surface::Fiber, 1.0);
         m.quad(b, a, d, c, rope, Surface::Fiber, 1.0);
-        // Hangs from the top rope: the loose foot sways a little.
-        m.flutter(from, |v| if v.distance(a) < 1e-4 || v.distance(b) < 1e-4 { 0.3 } else { 0.0 });
+        // Hangs from the top rope: the loose foot sways a little, but not where it is tied to
+        // the posts at either end of the bay.
+        let loose = |v: Vec3, k: usize, p: Vec3| k > 0 && k < K && v.distance(p) < 1e-4;
+        m.flutter(from, |v| if loose(v, i, a) || loose(v, i + 1, b) { 0.3 } else { 0.0 });
         m.beam(top(i) - Vec3::Y * 0.02, top(i + 1) - Vec3::Y * 0.02, 0.04, 0.04, palette::fiber_dark(), Surface::Fiber, UV);
     }
     for i in 1..K {
@@ -1928,6 +1931,18 @@ mod tests {
             let (m, _) = fence_mesh(&fence(k), &[], &t, 3);
             assert!(tris(&m) <= 2200, "{k:?} {}", tris(&m));
         }
+    }
+
+    /// A net's foot sways between the posts but stays tied where it meets them.
+    #[test]
+    fn net_foot_is_tied_at_the_posts() {
+        let post = |x: f32| (Post { base: Vec3::new(x, -0.1, 0.0), top: Vec3::new(x, 1.8, 0.0) }, 0.0);
+        let mut m = MeshData::default();
+        net(&mut m, post(0.0), post(2.2), Colors::default(), 0, &mut Rng::at(1, 0.0, 0.0));
+        let sways = |p: &[f32; 3]| m.positions.iter().zip(&m.colors).any(|(q, c)| q == p && c[3] < 1.0);
+        let at_post = |p: &[f32; 3]| p[0].abs() < 1e-4 || (p[0] - 2.2).abs() < 1e-4;
+        assert!(m.positions.iter().any(|p| !at_post(p) && sways(p)), "the loose foot sways");
+        assert!(m.positions.iter().filter(|p| at_post(p)).all(|p| !sways(p)), "tied at the posts");
     }
 
     #[test]

@@ -28,6 +28,8 @@ pub const GRID: usize = 161;
 pub const EXTENT: f32 = GLADE_HALF + 16.0;
 /// Distance between grid samples in metres.
 pub const SPACING: f32 = 2.0 * EXTENT / (GRID as f32 - 1.0);
+/// Furthest a footprint sharing a terrace with its neighbours is levelled from its own ground.
+pub const TERRACE_DEV: f32 = 0.3;
 /// Bottom of the diorama block (the seabed far offshore rests just above it).
 pub const FLOOR: f32 = -8.0;
 
@@ -316,7 +318,8 @@ impl Terrain {
 
     /// Applies all flatten regions together, so their order does not matter. Each footprint is
     /// levelled to its own target; footprints closer than the grid can resolve (two cells)
-    /// share one target, so huts built side by side stand on one terrace. Margins blend by the
+    /// share one target (moving none by more than `TERRACE_DEV`), so huts built side by
+    /// side stand on one terrace. Margins blend by the
     /// strongest weight towards the weighted mean of the targets that reach the cell, and
     /// `keep` regions protect the ground under them (and their margin) from every margin.
     fn apply_regions(&mut self, regions: &[FlattenRegion]) {
@@ -352,7 +355,11 @@ impl Terrain {
             })
             .collect();
         // Averaged footprints that (nearly) touch share their target: union-find over pairs.
+        // Two groups join only if no member then ends up more than `TERRACE_DEV` from its own
+        // level, so a long row of huts on a slope steps down in terraces rather than one big
+        // fill. Per group root: (Σ height, cell count, lowest and highest own level).
         let mut group: Vec<usize> = (0..regions.len()).collect();
+        let mut span: Vec<(f32, f32, f32, f32)> = target.iter().map(|&(s, c)| (s, c, s / c, s / c)).collect();
         fn root(g: &mut [usize], mut i: usize) -> usize {
             while g[i] != i {
                 g[i] = g[g[i]];
@@ -367,7 +374,13 @@ impl Terrain {
                 let near = |x: &FlattenRegion, y: &FlattenRegion| x.poly.iter().any(|p| geom::contains(&y.poly, *p) || dist(y, *p) < 2.0 * SPACING);
                 if shares(ra) && shares(rb) && (near(ra, rb) || near(rb, ra)) {
                     let (x, y) = (root(&mut group, a), root(&mut group, b));
-                    group[x.max(y)] = x.min(y);
+                    let (gx, gy) = (span[x], span[y]);
+                    let joined = (gx.0 + gy.0, gx.1 + gy.1, gx.2.min(gy.2), gx.3.max(gy.3));
+                    let mean = joined.0 / joined.1;
+                    if x != y && (joined.3 - mean).max(mean - joined.2) <= TERRACE_DEV {
+                        group[x.max(y)] = x.min(y);
+                        span[x.min(y)] = joined;
+                    }
                 }
             }
         }
@@ -931,6 +944,35 @@ mod tests {
         assert!(t.water_level(Vec2::ZERO).is_none());
         let r2 = FlattenRegion { poly: sq, height: Some(1.25), margin: 0.0, keep: false };
         assert!((Terrain::build(2, &[], &[r2]).height(Vec2::ZERO) - 1.25).abs() < 1e-4);
+    }
+
+    /// A row of huts side by side on a slope: neighbours whose own levels are close share one
+    /// terrace, but no hut is levelled further than `TERRACE_DEV` from its own ground.
+    #[test]
+    fn terraces_stay_near_their_own_ground() {
+        // Flat land at 1 m, then the flank of a wide mound rising to the west.
+        let base = Vec2::new(-16.0, 0.0);
+        for amount in [4.0, 0.8] {
+            let d = [dab(0.0, 0.0, 60.0, TerrainOp::Flatten { height: 1.0, strength: 1.0 }), dab(-45.0, 0.0, 60.0, TerrainOp::Sculpt { amount })];
+            let raw = Terrain::build(7, &d, &[]);
+            let rect = |i: usize| {
+                let c = base + Vec2::new(i as f32 * 4.3, 0.0);
+                vec![c + Vec2::new(-2.0, -1.5), c + Vec2::new(2.0, -1.5), c + Vec2::new(2.0, 1.5), c + Vec2::new(-2.0, 1.5)]
+            };
+            let regions: Vec<FlattenRegion> = (0..8).map(|i| FlattenRegion { poly: rect(i), height: None, margin: 1.5, keep: false }).collect();
+            let t = Terrain::build(7, &d, &regions);
+            let mean = |t: &Terrain, i: usize| {
+                let c = base + Vec2::new(i as f32 * 4.3, 0.0);
+                let pts: Vec<Vec2> = (-3..=3).flat_map(|x| (-2..=2).map(move |z| c + Vec2::new(x as f32 * 0.6, z as f32 * 0.6))).collect();
+                pts.iter().map(|p| t.height(*p)).sum::<f32>() / pts.len() as f32
+            };
+            let levels: Vec<f32> = (0..8).map(|i| mean(&t, i)).collect();
+            for i in 0..8 {
+                let dev = levels[i] - mean(&raw, i);
+                assert!(dev.abs() < TERRACE_DEV + 0.1, "hut {i} moved {dev} (sculpt {amount})");
+            }
+            assert!(levels.windows(2).any(|w| (w[0] - w[1]).abs() < 0.02), "neighbours share: {levels:?}");
+        }
     }
 
     #[test]

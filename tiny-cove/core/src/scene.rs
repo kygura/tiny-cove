@@ -9,7 +9,7 @@ use crate::model::{Document, Footprint, House, Structure, StructureId};
 use crate::nature::{placed_mesh, scatter_mesh};
 use crate::paths::{bridge_mesh, path_mesh, platform_mesh, stairs_mesh};
 use crate::terrain::{FlattenRegion, Terrain};
-use crate::walls::{Cut, fence_mesh, wall_mesh};
+use crate::walls::{Cut, MAX_GAP, fence_mesh, wall_mesh};
 use glam::{Vec2, Vec3};
 
 /// Mesh of one structure.
@@ -61,11 +61,21 @@ pub fn build(doc: &Document) -> Scene {
             _ => None,
         })
         .collect();
-    let cuts_through = |host: &[Vec2], extra: f32, height: f32| -> Vec<Cut> {
+    // `thick`: the host's thickness, for a gap sized to the crossing angle (`None` keeps the
+    // square-on width, as for hut doors).
+    let cuts_through = |host: &[Vec2], extra: f32, thick: Option<f32>, height: f32| -> Vec<Cut> {
         let mut cuts: Vec<Cut> = Vec::new();
         for (pts, width) in &paths {
-            for (along, _) in polyline_crossings(host, pts) {
-                cuts.push(Cut { along, width: (width + extra).max(1.4), height });
+            for (along, at) in polyline_crossings(host, pts) {
+                let w = (width + extra).max(1.4);
+                // A track crossing at angle `a` takes w / sin(a) of the centre line, plus
+                // t / tan(a) to get through the thickness `t`.
+                let width = thick.filter(|t| t.is_finite()).map_or(w, |t| {
+                    let (h, d) = (dir_at(host, along), dir_at(pts, at));
+                    let (sin, cos) = (h.perp_dot(d).abs().max(0.05), h.dot(d).abs());
+                    (w / sin + t.clamp(0.0, 2.5) * cos / sin).min(MAX_GAP.max(w))
+                });
+                cuts.push(Cut { along, width, height });
             }
         }
         cuts.sort_by(|a, b| a.along.total_cmp(&b.along));
@@ -92,8 +102,8 @@ pub fn build(doc: &Document) -> Scene {
     for (id, s) in &doc.structures {
         let (mesh, mk) = match s {
             Structure::Wall(w) => {
-                let cuts = cuts_through(&w.points, 0.6, (w.height - 0.6).clamp(2.2, 3.4));
-                let (mut mesh, mut mk) = wall_mesh(w, &cuts, &terrain, seed);
+                let mut w = w.clone();
+                let mut roof = None;
                 if w.roofed && is_closed(&w.points) && w.height.is_finite() && w.height >= 0.3 {
                     let mut ring: Vec<Vec2> = w.points[..w.points.len() - 1].to_vec();
                     if signed_area(&ring) < 0.0 {
@@ -106,8 +116,20 @@ pub fn build(doc: &Document) -> Scene {
                         terrain.water_level(*p).filter(|l| l.is_finite()).map_or(g, |l| l.max(g))
                     };
                     let base = ring.iter().map(eff).fold(f32::MIN, f32::max) + w.height.min(40.0);
-                    let (roof, rmk) = roof_mesh(&ring, base, w.roof, w.roof_pitch, w.colors, seed);
-                    mesh.append(&roof);
+                    let mut r = roof_mesh(&ring, base, w.roof, w.roof_pitch, w.colors, seed);
+                    // Tracks walk under the roof: a low ring is raised (walls and roof together)
+                    // until its eaves clear walking height over every track gap.
+                    let lift = ROOF_HEADROOM - headroom(&r.0, &ring, &paths, &terrain);
+                    if lift > 0.0 && w.height + lift <= 40.0 {
+                        w.height += lift;
+                        r = roof_mesh(&ring, base + lift, w.roof, w.roof_pitch, w.colors, seed);
+                    }
+                    roof = Some(r);
+                }
+                let cuts = cuts_through(&w.points, 0.6, Some(w.thickness), (w.height - 0.6).clamp(2.2, 3.4));
+                let (mut mesh, mut mk) = wall_mesh(&w, &cuts, &terrain, seed);
+                if let Some((r, rmk)) = roof {
+                    mesh.append(&r);
                     mk.extend(rmk);
                 }
                 blockers.push(ribbon(&w.points, w.thickness + 0.6));
@@ -116,12 +138,12 @@ pub fn build(doc: &Document) -> Scene {
             Structure::House(h) => {
                 let poly = footprint_polygon(&h.footprint);
                 let ring = closed(&poly);
-                let cuts = cuts_through(&ring, 0.2, 2.4);
+                let cuts = cuts_through(&ring, 0.2, None, 2.4);
                 blockers.push(grow(&poly, 0.4));
                 house_mesh(h, &cuts, &terrain, seed)
             }
             Structure::Fence(f) => {
-                let cuts = cuts_through(&f.points, 0.4, 3.0);
+                let cuts = cuts_through(&f.points, 0.4, None, 3.0);
                 blockers.push(ribbon(&f.points, 0.6));
                 fence_mesh(f, &cuts, &terrain, seed)
             }
@@ -168,6 +190,80 @@ pub fn build(doc: &Document) -> Scene {
         parts,
         markers,
     }
+}
+
+/// Clear height a roofed ring keeps over the tracks that cross it.
+const ROOF_HEADROOM: f32 = 2.0;
+
+/// Unit direction of polyline `pts` at distance `s` along it.
+fn dir_at(pts: &[Vec2], s: f32) -> Vec2 {
+    let mut acc = 0.0;
+    let mut d = Vec2::X;
+    for w in pts.windows(2) {
+        let l = w[0].distance(w[1]);
+        if l > 1e-6 {
+            d = (w[1] - w[0]) / l;
+        }
+        acc += l;
+        if s <= acc {
+            break;
+        }
+    }
+    d
+}
+
+/// Least height above the ground of any part of `roof` (eave lips and fascias included) that
+/// lies over a track crossing `ring`, its full width (∞ if none): each roof triangle is
+/// clipped to each track segment's strip.
+fn headroom(roof: &MeshData, ring: &[Vec2], paths: &[(&[Vec2], f32)], terrain: &Terrain) -> f32 {
+    let Some((lo, hi)) = roof.bounds() else { return f32::INFINITY };
+    // Keeps the part of a convex polygon where `n · xz <= c`.
+    let clip = |poly: Vec<Vec3>, n: Vec2, c: f32| -> Vec<Vec3> {
+        let f = |p: Vec3| n.dot(Vec2::new(p.x, p.z)) - c;
+        let mut out = Vec::new();
+        for (i, &p) in poly.iter().enumerate() {
+            let q = poly[(i + 1) % poly.len()];
+            let (fp, fq) = (f(p), f(q));
+            if fp <= 0.0 {
+                out.push(p);
+            }
+            if (fp < 0.0) != (fq < 0.0) && (fp - fq).abs() > 1e-9 {
+                out.push(p.lerp(q, fp / (fp - fq)));
+            }
+        }
+        out
+    };
+    let ring = closed(ring);
+    let mut best = f32::INFINITY;
+    for (pts, width) in paths {
+        if polyline_crossings(&ring, pts).is_empty() {
+            continue;
+        }
+        let half = (width.max(0.0) * 0.5).min(5.0);
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (smin, smax) = (a.min(b) - Vec2::splat(half), a.max(b) + Vec2::splat(half));
+            if smax.x < lo.x || smin.x > hi.x || smax.y < lo.z || smin.y > hi.z || a.distance(b) < 1e-4 {
+                continue;
+            }
+            let d = (b - a).normalize();
+            let n = d.perp();
+            let planes = [(-d, -d.dot(a)), (d, d.dot(b)), (n, n.dot(a) + half), (-n, -n.dot(a) + half)];
+            for tri in roof.indices.chunks_exact(3) {
+                let mut poly: Vec<Vec3> = tri.iter().map(|&i| Vec3::from_array(roof.positions[i as usize])).collect();
+                for &(pn, c) in &planes {
+                    if poly.is_empty() {
+                        break;
+                    }
+                    poly = clip(poly, pn, c);
+                }
+                for p in poly {
+                    best = best.min(p.y - terrain.height(Vec2::new(p.x, p.z)));
+                }
+            }
+        }
+    }
+    best
 }
 
 /// Rectangles around each segment of a polyline (as one polygon per segment would be more
@@ -376,6 +472,102 @@ mod tests {
                 assert!(!blocked(&doc, &s, wall, Vec2::new(x, -5.0), Vec2::new(x, 5.0)), "track at {x}, spacing {gap}");
             }
             assert!(blocked(&doc, &s, wall, Vec2::new(-5.0, -5.0), Vec2::new(-5.0, 5.0)));
+        }
+    }
+
+    /// True if a horizontal ray `lift` m above the ground along `a → b`, shifted `lat` m to
+    /// its left, hits structure `id`.
+    fn blocked_at(doc: &Document, s: &Scene, id: StructureId, a: Vec2, b: Vec2, lift: f32, lat: f32) -> bool {
+        let d = (b - a).normalize();
+        let a = a + d.perp() * lat;
+        let o = Vec3::new(a.x, s.terrain.height(a) + lift, a.y);
+        pick(doc, s, o, Vec3::new(d.x, 0.0, d.y)).is_some_and(|h| h.id == Some(id))
+    }
+
+    /// A track crossing a dyke at a shallow angle, or a thick dyke, still gets a gap wide enough
+    /// to walk through the whole thickness, across the track's full width.
+    #[test]
+    fn shallow_crossings_of_thick_dykes_pass() {
+        for thickness in [1.0, 1.6, 2.5] {
+            for deg in [20.0_f32, 30.0, 45.0] {
+                let mut doc = flat_doc(3);
+                let mut w = dyke(vec![Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0)], WallKind::DryStone);
+                w.height = 1.5;
+                w.thickness = thickness;
+                let wall = doc.add(Structure::Wall(w));
+                let d = Vec2::from_angle(deg.to_radians());
+                track(&mut doc, -d * 9.0, d * 9.0);
+                let s = build(&doc);
+                for lift in [0.4, 1.0] {
+                    for lat in [-0.49, 0.0, 0.49] {
+                        let what = format!("{deg} deg, {thickness} m thick, {lift} m up, {lat} m aside");
+                        assert!(!blocked_at(&doc, &s, wall, -d * 9.0, d * 9.0, lift, lat), "{what}");
+                        assert!(!blocked_at(&doc, &s, wall, d * 9.0, -d * 9.0, lift, lat), "{what}, back");
+                    }
+                }
+                assert!(blocked(&doc, &s, wall, Vec2::new(-17.0, -5.0), Vec2::new(-17.0, 5.0)), "{deg} {thickness}");
+            }
+        }
+    }
+
+    /// However many tracks cross a dyke close together, the merged gap is never cut short:
+    /// every track gets through, and the dyke stands beyond them.
+    #[test]
+    fn many_close_tracks_through_a_dyke_all_pass() {
+        for (n, pitch) in [(8, 2.6), (12, 1.6), (12, 2.0), (16, 2.0), (16, 2.6)] {
+            let mut doc = flat_doc(3);
+            let mut w = dyke(vec![Vec2::new(-30.0, 0.0), Vec2::new(30.0, 0.0)], WallKind::DryStone);
+            w.height = 1.5;
+            let wall = doc.add(Structure::Wall(w));
+            let xs: Vec<f32> = (0..n).map(|i| (i as f32 - (n - 1) as f32 * 0.5) * pitch).collect();
+            for &x in &xs {
+                track(&mut doc, Vec2::new(x, -5.0), Vec2::new(x, 5.0));
+            }
+            let s = build(&doc);
+            for &x in &xs {
+                for lift in [0.4, 1.0] {
+                    assert!(!blocked_at(&doc, &s, wall, Vec2::new(x, -5.0), Vec2::new(x, 5.0), lift, 0.0), "{n} tracks {pitch} m apart: x={x}");
+                }
+            }
+            assert!(blocked(&doc, &s, wall, Vec2::new(28.5, -5.0), Vec2::new(28.5, 5.0)), "{n} x {pitch}");
+        }
+    }
+
+    /// A low roofed ring with a track through it raises its walls and roof together until the
+    /// eaves clear walking height over the gap; without a track it keeps its height.
+    #[test]
+    fn roofed_low_ring_clears_walking_height_over_its_track() {
+        let v = |x: f32, z: f32| Vec2::new(x, z);
+        for kind in [WallKind::Turf, WallKind::DryStone] {
+            for roof in [RoofStyle::Thatch, RoofStyle::Turf] {
+                // Seam mid-side and at a corner.
+                for seam in [0, 3] {
+                    let mut pts = vec![v(0.0, -4.0), v(4.0, -4.0), v(4.0, 4.0), v(-4.0, 4.0), v(-4.0, -4.0)];
+                    pts.rotate_left(seam);
+                    pts.push(pts[0]);
+                    let mut w = dyke(pts, kind);
+                    w.height = 1.5;
+                    w.roofed = true;
+                    w.roof = roof;
+                    let mut doc = flat_doc(3);
+                    let ring = doc.add(Structure::Wall(w));
+                    let bare = build(&doc);
+                    assert!(blocked_at(&doc, &bare, ring, v(0.0, -9.0), v(0.0, 9.0), 1.0, 0.0));
+                    let top = |s: &Scene| s.parts.iter().find(|p| p.id == ring).unwrap().mesh.bounds().unwrap().1.y;
+                    for x in [-2.0, -0.4, 0.0, 1.2, 2.0] {
+                        track(&mut doc, v(x, -9.0), v(x, 9.0));
+                        let s = build(&doc);
+                        assert!(top(&s) > top(&bare), "the roof is raised");
+                        for lift in [0.4, 1.0, 1.8] {
+                            for (a, b) in [(v(x, -9.0), v(x, 9.0)), (v(x, 9.0), v(x, -9.0))] {
+                                assert!(!blocked_at(&doc, &s, ring, a, b, lift, 0.0), "{kind:?} {roof:?} seam {seam}: x={x}, {lift} m up");
+                            }
+                        }
+                        assert!(blocked(&doc, &s, ring, v(6.0, 3.0), v(-6.0, 3.0)), "the ring still stands");
+                        doc.structures.retain(|(_, st)| !matches!(st, Structure::Path(_)));
+                    }
+                }
+            }
         }
     }
 
