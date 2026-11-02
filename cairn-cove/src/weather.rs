@@ -33,7 +33,11 @@ impl WeatherKind {
             WeatherKind::Snow => "snow",
         }
     }
+    /// Parses a CLI weather name; `seafog` is an alias of `fog`.
     pub fn parse(s: &str) -> Option<Self> {
+        if s.eq_ignore_ascii_case("seafog") || s.eq_ignore_ascii_case("sea-fog") {
+            return Some(WeatherKind::Fog);
+        }
         Self::ALL.into_iter().find(|w| w.name().eq_ignore_ascii_case(s))
     }
 }
@@ -465,6 +469,15 @@ fn particles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weather_names_parse() {
+        for k in WeatherKind::ALL {
+            assert_eq!(WeatherKind::parse(k.name()), Some(k));
+        }
+        assert_eq!(WeatherKind::parse("SeaFog"), Some(WeatherKind::Fog));
+        assert_eq!(WeatherKind::parse("drizzle"), None);
+    }
 
     #[test]
     fn palette_continuous_over_midnight() {

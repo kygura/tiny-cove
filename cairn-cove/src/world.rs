@@ -237,7 +237,7 @@ fn update_lanterns(
 ) {
     let focus = rig.map_or(Vec3::ZERO, |r| r.focus);
     if built.is_changed() || (picked.0 - focus).length() > REPICK_DISTANCE {
-        let pts = built.0.iter().flat_map(|s| s.markers.iter()).filter(|m| m.kind == MarkerKind::Lantern).map(|m| m.pos);
+        let pts = built.0.iter().flat_map(|s| s.markers.iter()).filter(|m| matches!(m.kind, MarkerKind::Lantern | MarkerKind::Fire)).map(|m| m.pos);
         *picked = (focus, nearest_points(pts, focus, MAX_LANTERNS));
     }
     let on = env.night > 0.01;

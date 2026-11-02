@@ -165,28 +165,28 @@ fn steps() -> Vec<Step> {
     // Walls.
     let wa = sd(-14.0, -18.0);
     let wb = sd(-14.0, -6.0);
-    v.push(step("wall", with(vec![key(Tool::Wall), set(|s| { s.planters = false; s.ruined = false; })], drag(&[wa, wb])), |b, a, _| {
+    v.push(step("wall", with(vec![key(Tool::Dyke), set(|s| { s.crest = false; s.tumbled = false; })], drag(&[wa, wb])), |b, a, _| {
         match added(b, a, is_wall)? {
-            Structure::Wall(w) => ok_if(!w.planters && !w.ruined && (w.height - 4.0).abs() < 0.01 && w.points.len() == 2, || format!("{w:?}")),
+            Structure::Wall(w) => ok_if(!w.crest && !w.tumbled && (w.height - 4.0).abs() < 0.01 && w.points.len() == 2, || format!("{w:?}")),
             _ => unreachable!(),
         }
     }));
     v.push(step(
-        "wall planters+ruined+scroll height",
-        with(vec![set(|s| { s.planters = true; s.ruined = true; })], {
+        "dyke crest+tumbled+scroll height",
+        with(vec![set(|s| { s.crest = true; s.tumbled = true; })], {
             let mut d = drag(&[sd(-20.0, -18.0), sd(-20.0, -10.0)]);
             let r = d.len() - 2;
             d.insert(r, Act::Scroll(4.0));
             d
         }),
         |b, a, s| match added(b, a, is_wall)? {
-            Structure::Wall(w) => ok_if(w.planters && w.ruined && (w.height - 6.0).abs() < 0.01 && s.wall_height == 6.0, || format!("height {}", w.height)),
+            Structure::Wall(w) => ok_if(w.crest && w.tumbled && (w.height - 6.0).abs() < 0.01 && s.wall_height == 6.0, || format!("height {}", w.height)),
             _ => unreachable!(),
         },
     ));
     let c = Vec2::new(-4.0, -12.0);
     let ring = [c + Vec2::new(-3.0, -3.0), c + Vec2::new(3.0, -3.0), c + Vec2::new(3.0, 3.0), c + Vec2::new(-3.0, 3.0), c + Vec2::new(-3.0, -3.0)];
-    v.push(step("wall closed ring", with(vec![set(|s| { s.planters = false; s.ruined = false; s.wall_height = 4.0; })], drag(&ring)), |b, a, _| {
+    v.push(step("wall closed ring", with(vec![set(|s| { s.crest = false; s.tumbled = false; s.wall_height = 4.0; })], drag(&ring)), |b, a, _| {
         match added(b, a, is_wall)? {
             Structure::Wall(w) => ok_if(is_closed(&w.points), || format!("not closed: {:?}", w.points)),
             _ => unreachable!(),
@@ -194,15 +194,15 @@ fn steps() -> Vec<Step> {
     }));
     v.push(step(
         "roof scroll pitch + shift style",
-        vec![key(Tool::Roof), set(|s| { s.roof = RoofStyle::Pitched; s.roof_pitch_deg = 30.0; }), Act::Aim(c, 0.0), Act::Wait(1), Act::Scroll(2.0), Act::Wait(1), Act::Shift(true), Act::Wait(1), Act::Scroll(1.0), Act::Wait(1), Act::Shift(false)],
+        vec![key(Tool::Roof), set(|s| { s.roof = RoofStyle::Boat; s.roof_pitch_deg = 30.0; }), Act::Aim(c, 0.0), Act::Wait(1), Act::Scroll(2.0), Act::Wait(1), Act::Shift(true), Act::Wait(1), Act::Scroll(1.0), Act::Wait(1), Act::Shift(false)],
         |b, a, s| {
             ok_if(a == b, || "document changed".into())?;
-            ok_if(s.roof_pitch_deg == 40.0 && s.roof == RoofStyle::Sawtooth, || format!("pitch {} roof {:?}", s.roof_pitch_deg, s.roof))
+            ok_if(s.roof_pitch_deg == 40.0 && s.roof == RoofStyle::Hide, || format!("pitch {} roof {:?}", s.roof_pitch_deg, s.roof))
         },
     ));
-    v.push(step("roof on ring", with(vec![key(Tool::Roof), set(|s| s.roof = RoofStyle::Sawtooth)], click(c, 0.0)), |b, a, _| {
+    v.push(step("roof on ring", with(vec![key(Tool::Roof), set(|s| s.roof = RoofStyle::Hide)], click(c, 0.0)), |b, a, _| {
         ok_if(count(b, |s| matches!(s, Structure::Wall(w) if w.roofed)) == 0, || "pre-roofed".into())?;
-        ok_if(count(a, |s| matches!(s, Structure::Wall(w) if w.roofed && w.roof == RoofStyle::Sawtooth)) == 1, || "ring not roofed".into())
+        ok_if(count(a, |s| matches!(s, Structure::Wall(w) if w.roofed && w.roof == RoofStyle::Hide)) == 1, || "ring not roofed".into())
     }));
 
     // Openings on the first wall's camera-facing face.
@@ -222,9 +222,9 @@ fn steps() -> Vec<Step> {
 
     // Stairs.
     let is_stairs = |s: &Structure| matches!(s, Structure::Stairs(_));
-    for (name, kind, p, run) in [("stairs steel to wall top", StairKind::Steel, sd(-14.0, -9.0), 4.6), ("stairs ladder to wall top", StairKind::Ladder, sd(-14.0, -12.0), 1.2)] {
+    for (name, kind, p, run) in [("stairs steel to wall top", StairKind::Log, sd(-14.0, -9.0), 4.6), ("stairs ladder to wall top", StairKind::RopeLadder, sd(-14.0, -12.0), 1.2)] {
         let acts = with(
-            vec![key(Tool::Stairs), set(move |s| s.stairs = kind)],
+            vec![key(Tool::Steps), set(move |s| s.stairs = kind)],
             vec![Act::Aim(p + n() * run, 0.0), Act::Wait(1), Act::Press, Act::Aim(p + n() * 2.0, 0.0), Act::Aim(p + n() * 0.35, 3.6), Act::Wait(3), Act::Release],
         );
         v.push(step(name, acts, move |b, a, _| match added(b, a, is_stairs)? {
@@ -238,15 +238,15 @@ fn steps() -> Vec<Step> {
     }
     v.push(step(
         "stairs concrete",
-        with(vec![set(|s| s.stairs = StairKind::Concrete)], drag(&[sd(-4.0, -16.0), sd(-4.0, -10.0)])),
+        with(vec![set(|s| s.stairs = StairKind::Stone)], drag(&[sd(-4.0, -16.0), sd(-4.0, -10.0)])),
         move |b, a, _| match added(b, a, is_stairs)? {
-            Structure::Stairs(st) => ok_if(st.kind == StairKind::Concrete, || format!("{:?}", st.kind)),
+            Structure::Stairs(st) => ok_if(st.kind == StairKind::Stone, || format!("{:?}", st.kind)),
             _ => unreachable!(),
         },
     ));
 
     // Deck.
-    v.push(step("deck", with(vec![key(Tool::Deck)], raise(Vec2::new(-3.5, -3.5), Vec2::new(-0.5, -0.5), 20.0)), |b, a, _| {
+    v.push(step("deck", with(vec![key(Tool::Jetty)], raise(Vec2::new(-3.5, -3.5), Vec2::new(-0.5, -0.5), 20.0)), |b, a, _| {
         match added(b, a, |s| matches!(s, Structure::Platform(_)))? {
             Structure::Platform(p) => ok_if(p.height > DECK_MIN && p.half.min_element() > 1.0, || format!("{p:?}")),
             _ => unreachable!(),
@@ -254,7 +254,7 @@ fn steps() -> Vec<Step> {
     }));
 
     // Bridges.
-    for (i, kind) in [BridgeKind::Cable { railing: 1 }, BridgeKind::Arch, BridgeKind::Girder].into_iter().enumerate() {
+    for (i, kind) in [BridgeKind::Rope { railing: 1 }, BridgeKind::Causeway, BridgeKind::Log].into_iter().enumerate() {
         let s0 = 2.0 + 3.0 * i as f32;
         v.push(step(
             format!("bridge {kind:?}"),
@@ -267,11 +267,11 @@ fn steps() -> Vec<Step> {
     }
 
     // Fences.
-    for (i, kind) in [FenceKind::Railing, FenceKind::Balustrade, FenceKind::Gabion, FenceKind::Hedge].into_iter().enumerate() {
+    for (i, kind) in [FenceKind::Driftwood, FenceKind::Wattle, FenceKind::NetLine, FenceKind::Reed].into_iter().enumerate() {
         let s0 = 2.0 + 2.0 * i as f32;
         v.push(step(
             format!("fence {kind:?}"),
-            with(vec![key(Tool::Fence), set(move |s| s.fence = kind)], drag(&[sd(s0, -9.0), sd(s0, -3.0)])),
+            with(vec![key(Tool::Windbreak), set(move |s| s.fence = kind)], drag(&[sd(s0, -9.0), sd(s0, -3.0)])),
             move |b, a, _| match added(b, a, |s| matches!(s, Structure::Fence(_)))? {
                 Structure::Fence(f) => ok_if(f.kind == kind, || format!("{:?}", f.kind)),
                 _ => unreachable!(),
@@ -280,11 +280,11 @@ fn steps() -> Vec<Step> {
     }
 
     // Paths.
-    for (i, kind) in [PathKind::Gravel, PathKind::Pavers, PathKind::Slabs, PathKind::Poured, PathKind::Stepping].into_iter().enumerate() {
+    for (i, kind) in [PathKind::Shell, PathKind::Pebble, PathKind::Flagstone, PathKind::Boardwalk, PathKind::Stepping].into_iter().enumerate() {
         let s0 = 2.0 * i as f32;
         v.push(step(
             format!("path {kind:?}"),
-            with(vec![key(Tool::Path), set(move |s| s.path = kind)], drag(&[sd(s0, 1.0), sd(s0, 6.0), sd(s0 + 0.5, 10.0)])),
+            with(vec![key(Tool::Track), set(move |s| s.path = kind)], drag(&[sd(s0, 1.0), sd(s0, 6.0), sd(s0 + 0.5, 10.0)])),
             move |b, a, _| match added(b, a, |s| matches!(s, Structure::Path(_)))? {
                 Structure::Path(p) => ok_if(p.kind == kind && p.points.len() >= 2, || format!("{p:?}")),
                 _ => unreachable!(),
@@ -293,14 +293,14 @@ fn steps() -> Vec<Step> {
     }
 
     // Blocks and tower.
-    let roofs = [RoofStyle::Pitched, RoofStyle::Sawtooth, RoofStyle::Shell, RoofStyle::Green];
-    let mats = [Material::RammedEarth, Material::Concrete, Material::Timber, Material::Concrete];
+    let roofs = [RoofStyle::Boat, RoofStyle::Hide, RoofStyle::Thatch, RoofStyle::Turf];
+    let mats = [Material::Stone, Material::Wattle, Material::Plank, Material::Wattle];
     let block_c = |i: usize| sd(12.0, -22.0 + 7.0 * i as f32);
     for (i, (roof, mat)) in roofs.into_iter().zip(mats).enumerate() {
         let cc = block_c(i);
         v.push(step(
             format!("block {roof:?}"),
-            with(vec![key(Tool::Block), set(move |s| { s.roof = roof; s.material = mat; })], raise(cc - Vec2::splat(2.0), cc + Vec2::splat(2.0), 50.0)),
+            with(vec![key(Tool::Hut), set(move |s| { s.roof = roof; s.material = mat; })], raise(cc - Vec2::splat(2.0), cc + Vec2::splat(2.0), 50.0)),
             move |b, a, _| match added(b, a, |s| matches!(s, Structure::House(h) if matches!(h.footprint, Footprint::Rect { .. })))? {
                 Structure::House(h) => ok_if(h.roof == roof && h.material == mat && h.wall_height > 5.5, || format!("roof {:?} h {}", h.roof, h.wall_height)),
                 _ => unreachable!(),
@@ -308,9 +308,9 @@ fn steps() -> Vec<Step> {
         ));
     }
     let tc = sd(-12.0, 20.0);
-    v.push(step("tower", with(vec![key(Tool::Tower), set(|s| s.roof = RoofStyle::Green)], raise(tc, tc + Vec2::new(2.5, 0.0), 30.0)), |b, a, _| {
+    v.push(step("tower", with(vec![key(Tool::Roundhouse), set(|s| s.roof = RoofStyle::Turf)], raise(tc, tc + Vec2::new(2.5, 0.0), 30.0)), |b, a, _| {
         match added(b, a, |s| matches!(s, Structure::House(h) if matches!(h.footprint, Footprint::Round { .. })))? {
-            Structure::House(h) => ok_if(h.roof == RoofStyle::Green && h.wall_height > TOWER_MIN, || format!("roof {:?} h {}", h.roof, h.wall_height)),
+            Structure::House(h) => ok_if(h.roof == RoofStyle::Turf && h.wall_height > TOWER_MIN, || format!("roof {:?} h {}", h.roof, h.wall_height)),
             _ => unreachable!(),
         }
     }));
@@ -318,24 +318,24 @@ fn steps() -> Vec<Step> {
     // Style copy (block 0: earth + pitched) and apply (block 1 becomes timber).
     v.push(step(
         "style copy",
-        with(vec![key(Tool::Style), set(|s| { s.material = Material::Concrete; s.roof = RoofStyle::Green; })], click(block_c(0), 3.0)),
+        with(vec![key(Tool::Dye), set(|s| { s.material = Material::Wattle; s.roof = RoofStyle::Turf; })], click(block_c(0), 3.0)),
         |b, a, s| {
             ok_if(a == b, || "document changed".into())?;
-            ok_if(s.material == Material::RammedEarth && s.roof == RoofStyle::Pitched, || format!("{:?} {:?}", s.material, s.roof))
+            ok_if(s.material == Material::Stone && s.roof == RoofStyle::Boat, || format!("{:?} {:?}", s.material, s.roof))
         },
     ));
     v.push(step(
         "style apply",
-        with(vec![set(|s| s.material = Material::Timber), Act::Shift(true)], with(click(block_c(1), 3.0), vec![Act::Shift(false)])),
+        with(vec![set(|s| s.material = Material::Plank), Act::Shift(true)], with(click(block_c(1), 3.0), vec![Act::Shift(false)])),
         |b, a, _| {
-            let timber = |d: &Document| count(d, |s| matches!(s, Structure::House(h) if h.material == Material::Timber));
+            let timber = |d: &Document| count(d, |s| matches!(s, Structure::House(h) if h.material == Material::Plank));
             ok_if(timber(a) == timber(b) + 1 && a.structures.len() == b.structures.len(), || format!("timber {} -> {}", timber(b), timber(a)))
         },
     ));
 
     // Trees and clutter along the front edge.
     let slot = |k: usize| sd(22.0, -19.0 + 2.0 * k as f32);
-    let trees = [TreeKind::Oak, TreeKind::Pine, TreeKind::Birch, TreeKind::Fruit, TreeKind::Fern];
+    let trees = [TreeKind::Snag, TreeKind::SeaPine, TreeKind::Cypress, TreeKind::Fig, TreeKind::Palm];
     for (k, t) in trees.into_iter().enumerate() {
         v.push(step(format!("tree {t:?}"), with(vec![key(Tool::Tree), set(move |s| s.tree = t)], click(slot(k), 0.0)), move |b, a, _| {
             match added(b, a, |s| matches!(s, Structure::Placed(_)))? {
@@ -345,23 +345,23 @@ fn steps() -> Vec<Step> {
         }));
     }
     let clutter = [
-        ClutterKind::RainBarrel,
-        ClutterKind::Planter,
-        ClutterKind::Compost,
-        ClutterKind::Cistern,
-        ClutterKind::Wheelbarrow,
-        ClutterKind::Bench,
-        ClutterKind::LampPost,
-        ClutterKind::WindTurbine,
-        ClutterKind::WashingLine,
-        ClutterKind::LogPile,
+        ClutterKind::Baskets,
+        ClutterKind::CrabPots,
+        ClutterKind::Firepit,
+        ClutterKind::CarvedPole,
+        ClutterKind::NetRack,
+        ClutterKind::Canoe,
+        ClutterKind::LanternPost,
+        ClutterKind::Pennant,
+        ClutterKind::DryingRack,
+        ClutterKind::Woodpile,
         ClutterKind::Rock,
         ClutterKind::Bush,
-        ClutterKind::Beehive,
-        ClutterKind::Solar,
+        ClutterKind::Cairn,
+        ClutterKind::StandingStone,
     ];
     for (k, c) in clutter.into_iter().enumerate() {
-        v.push(step(format!("clutter {c:?}"), with(vec![key(Tool::Clutter), set(move |s| s.clutter = c)], click(slot(5 + k), 0.0)), move |b, a, _| {
+        v.push(step(format!("clutter {c:?}"), with(vec![key(Tool::Prop), set(move |s| s.clutter = c)], click(slot(5 + k), 0.0)), move |b, a, _| {
             match added(b, a, |s| matches!(s, Structure::Placed(_)))? {
                 Structure::Placed(p) => ok_if(p.kind == PropKind::Clutter(c), || format!("{:?}", p.kind)),
                 _ => unreachable!(),
@@ -369,13 +369,13 @@ fn steps() -> Vec<Step> {
         }));
     }
     v.push(step("erase", with(vec![key(Tool::Erase)], click(slot(5), 0.5)), |b, a, _| {
-        let barrel = |d: &Document| count(d, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::RainBarrel)));
+        let barrel = |d: &Document| count(d, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Baskets)));
         ok_if(a.structures.len() + 1 == b.structures.len() && barrel(a) + 1 == barrel(b), || format!("{} -> {}", b.structures.len(), a.structures.len()))
     }));
 
     // Terrain brushes.
     let stroke = |s0: f32| vec![sd(s0, 14.0), sd(s0, 22.0)];
-    for (i, layer) in [PaintLayer::Flowers, PaintLayer::Ferns, PaintLayer::Moss, PaintLayer::Gravel].into_iter().enumerate() {
+    for (i, layer) in [PaintLayer::SeaPinks, PaintLayer::DuneGrass, PaintLayer::Wrack, PaintLayer::Pebbles].into_iter().enumerate() {
         v.push(step(
             format!("paint {layer:?}"),
             with(vec![key(Tool::Paint), set(move |s| s.paint = layer)], drag(&stroke(-4.0 + i as f32))),
@@ -389,17 +389,17 @@ fn steps() -> Vec<Step> {
         let d = new_dabs(b, a)?;
         ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Sculpt { amount } if (amount > 0.0) == up)), || format!("{:?}", d[0].op))
     };
-    v.push(step("raise", with(vec![key(Tool::Sculpt), set(|s| s.lower = false)], drag(&stroke(-8.0))), sculpt(true)));
+    v.push(step("raise", with(vec![key(Tool::Raise), set(|s| s.lower = false)], drag(&stroke(-8.0))), sculpt(true)));
     v.push(step("lower (shift)", with(vec![Act::Shift(true)], with(drag(&stroke(-8.0)), vec![Act::Shift(false)])), sculpt(false)));
     v.push(step("flatten", with(vec![key(Tool::Flatten)], drag(&stroke(-6.0))), |b, a, _| {
         let d = new_dabs(b, a)?;
         ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Flatten { .. })), || format!("{:?}", d[0].op))
     }));
-    v.push(step("water", with(vec![key(Tool::Water)], drag(&[sd(4.0, 16.0), sd(4.0, 22.0)])), |b, a, _| {
+    v.push(step("water", with(vec![key(Tool::Lagoon)], drag(&[sd(4.0, 16.0), sd(4.0, 22.0)])), |b, a, _| {
         let d = new_dabs(b, a)?;
         ok_if(d.iter().all(|d| matches!(d.op, TerrainOp::Water { .. })), || format!("{:?}", d[0].op))
     }));
-    let mut acts = vec![key(Tool::Wall), Act::Aim(sd(-2.0, -22.0), 0.0), Act::Press];
+    let mut acts = vec![key(Tool::Dyke), Act::Aim(sd(-2.0, -22.0), 0.0), Act::Press];
     acts.extend((1..=8).map(|i| Act::Aim(sd(-2.0, -22.0 + i as f32), 0.0)));
     acts.extend([Act::Undo, Act::Wait(1)]);
     acts.extend((9..=12).map(|i| Act::Aim(sd(-2.0, -22.0 + i as f32), 0.0)));

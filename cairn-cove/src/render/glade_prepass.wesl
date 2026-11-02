@@ -50,7 +50,7 @@ fn vertex(v: Vertex) -> VertexOut {
     let surface = u32(max(v.uv_b.x, 0.0) + 0.5);
 @if(NORMAL_PREPASS) {
     // Same decal bias as glade.wesl.
-    if surface == 1u || (surface >= 12u && surface <= 16u) {
+    if surface == 1u || (surface >= 12u && surface <= 17u) {
         clip.z += 0.12 * view.clip_from_view[2].z * clip.w;
     }
 }
@@ -70,10 +70,10 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> FragmentOut
     var out: FragmentOutput;
 @if(NORMAL_PREPASS) {
     var cls = 1.0;
-    if in.surface == 15u || in.surface == 22u {
+    if in.surface == 16u || in.surface == 23u {
         cls = 2.0 / 3.0;
     }
-    if in.surface == 23u {
+    if in.surface == 24u {
         cls = 1.0 / 3.0;
     }
     var n = vec3(0.0, 1.0, 0.0);

@@ -22,7 +22,7 @@ use cairn_cove_core::terrain::Terrain;
 use cairn_cove_core::{
     Bridge, BridgeKind, ClutterKind, Colors, Document, Fence, FenceKind, Footprint, GLADE_HALF, Hanging, House,
     Material, Opening, OpeningKind, PaintLayer, Path, PathKind, Placed, Platform, PropKind, RoofStyle, Scene,
-    StairKind, Stairs, Structure, StructureId, TerrainDab, TerrainOp, TreeKind, Wall,
+    StairKind, Stairs, Structure, StructureId, TerrainDab, TerrainOp, TreeKind, Wall, WallKind,
 };
 use std::f32::consts::{FRAC_PI_4, TAU};
 
@@ -30,68 +30,68 @@ use std::f32::consts::{FRAC_PI_4, TAU};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Tool {
     #[default]
-    Wall,
-    Fence,
-    Block,
-    Tower,
-    Path,
-    Stairs,
-    Deck,
+    Dyke,
+    Windbreak,
+    Hut,
+    Roundhouse,
+    Track,
+    Steps,
+    Jetty,
     Bridge,
     Opening,
     Roof,
     Tree,
-    Clutter,
+    Prop,
     Paint,
-    Sculpt,
+    Raise,
     Flatten,
-    Water,
-    Style,
+    Lagoon,
+    Dye,
     Erase,
 }
 
 impl Tool {
     pub const ALL: [Tool; 18] = [
-        Tool::Wall,
-        Tool::Fence,
-        Tool::Block,
-        Tool::Tower,
-        Tool::Path,
-        Tool::Stairs,
-        Tool::Deck,
+        Tool::Dyke,
+        Tool::Windbreak,
+        Tool::Hut,
+        Tool::Roundhouse,
+        Tool::Track,
+        Tool::Steps,
+        Tool::Jetty,
         Tool::Bridge,
         Tool::Opening,
         Tool::Roof,
         Tool::Tree,
-        Tool::Clutter,
+        Tool::Prop,
         Tool::Paint,
-        Tool::Sculpt,
+        Tool::Raise,
         Tool::Flatten,
-        Tool::Water,
-        Tool::Style,
+        Tool::Lagoon,
+        Tool::Dye,
         Tool::Erase,
     ];
 
     /// Toolbar label (DESIGN.md §2.1).
     pub fn label(self) -> &'static str {
         match self {
-            Tool::Wall => "WALL",
-            Tool::Fence => "FENCE",
-            Tool::Block => "BLOCK",
-            Tool::Tower => "TOWER",
-            Tool::Path => "PATH",
-            Tool::Stairs => "STAIR",
-            Tool::Deck => "DECK",
+            Tool::Dyke => "DYKE",
+            Tool::Windbreak => "WINDBRK",
+            Tool::Hut => "HUT",
+            Tool::Roundhouse => "ROUND",
+            Tool::Track => "TRACK",
+            Tool::Steps => "STEPS",
+            Tool::Jetty => "JETTY",
             Tool::Bridge => "BRIDGE",
-            Tool::Opening => "WIN/DR",
+            Tool::Opening => "OPENING",
             Tool::Roof => "ROOF",
             Tool::Tree => "TREE",
-            Tool::Clutter => "CLUTTER",
+            Tool::Prop => "PROP",
             Tool::Paint => "PAINT",
-            Tool::Sculpt => "RAISE",
+            Tool::Raise => "RAISE",
             Tool::Flatten => "FLAT",
-            Tool::Water => "WATER",
-            Tool::Style => "STYLE",
+            Tool::Lagoon => "LAGOON",
+            Tool::Dye => "DYE",
             Tool::Erase => "ERASE",
         }
     }
@@ -99,23 +99,23 @@ impl Tool {
     /// Selection hotkey and its on-screen tag.
     pub fn hotkey(self) -> (KeyCode, &'static str) {
         match self {
-            Tool::Wall => (KeyCode::Digit1, "1"),
-            Tool::Fence => (KeyCode::Digit2, "2"),
-            Tool::Block => (KeyCode::Digit3, "3"),
-            Tool::Tower => (KeyCode::Digit4, "4"),
-            Tool::Path => (KeyCode::Digit5, "5"),
-            Tool::Stairs => (KeyCode::Digit6, "6"),
-            Tool::Deck => (KeyCode::Digit7, "7"),
+            Tool::Dyke => (KeyCode::Digit1, "1"),
+            Tool::Windbreak => (KeyCode::Digit2, "2"),
+            Tool::Hut => (KeyCode::Digit3, "3"),
+            Tool::Roundhouse => (KeyCode::Digit4, "4"),
+            Tool::Track => (KeyCode::Digit5, "5"),
+            Tool::Steps => (KeyCode::Digit6, "6"),
+            Tool::Jetty => (KeyCode::Digit7, "7"),
             Tool::Bridge => (KeyCode::Digit8, "8"),
             Tool::Opening => (KeyCode::Digit9, "9"),
             Tool::Roof => (KeyCode::Digit0, "0"),
             Tool::Tree => (KeyCode::KeyG, "G"),
-            Tool::Clutter => (KeyCode::KeyC, "C"),
+            Tool::Prop => (KeyCode::KeyC, "C"),
             Tool::Paint => (KeyCode::KeyP, "P"),
-            Tool::Sculpt => (KeyCode::KeyR, "R"),
+            Tool::Raise => (KeyCode::KeyR, "R"),
             Tool::Flatten => (KeyCode::KeyF, "F"),
-            Tool::Water => (KeyCode::KeyV, "V"),
-            Tool::Style => (KeyCode::KeyI, "I"),
+            Tool::Lagoon => (KeyCode::KeyV, "V"),
+            Tool::Dye => (KeyCode::KeyI, "I"),
             Tool::Erase => (KeyCode::KeyX, "X"),
         }
     }
@@ -125,21 +125,30 @@ impl Tool {
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct ToolSettings {
     pub tool: Tool,
-    /// Walls, blocks, towers.
+    /// Huts, roundhouses, beacons.
     pub material: Material,
-    /// Blocks, towers, roof tool.
+    /// Dykes.
+    pub wall_kind: WallKind,
+    /// Huts, roundhouses, roof tool.
     pub roof: RoofStyle,
     /// Roof pitch in degrees, 15..=60.
     pub roof_pitch_deg: f32,
-    pub fins: bool,
-    pub planters: bool,
-    pub ruined: bool,
-    /// Wall thickness in metres, 0.3..=1.2.
+    /// Huts: carved gable horns and painted bands.
+    pub carved: bool,
+    /// Huts: fish, nets and shell strings under the eaves.
+    pub hangings: bool,
+    /// Dykes: copestones / painted tips / thrift.
+    pub crest: bool,
+    /// Dykes: collapsed sections.
+    pub tumbled: bool,
+    /// Dyke thickness in metres, 0.3..=1.2.
     pub wall_thickness: f32,
-    /// Plinth (foundation) height in metres, 0..=2.
-    pub plinth: f32,
-    /// 0..=1.
-    pub overgrowth: f32,
+    /// Dyke boulder footing height in metres, 0..=2.
+    pub footing: f32,
+    /// Hut stilt height in metres, 0..=3 (0 = automatic).
+    pub stilts: f32,
+    /// Salt bleaching and lichen, 0..=1.
+    pub weathering: f32,
     pub fence: FenceKind,
     pub path: PathKind,
     /// Path width in metres, 0.8..=4.
@@ -174,26 +183,29 @@ pub struct ToolSettings {
 impl Default for ToolSettings {
     fn default() -> Self {
         Self {
-            tool: Tool::Wall,
-            material: Material::Concrete,
-            roof: RoofStyle::Green,
+            tool: Tool::Dyke,
+            material: Material::Wattle,
+            wall_kind: WallKind::DryStone,
+            roof: RoofStyle::Thatch,
             roof_pitch_deg: 30.0,
-            fins: false,
-            planters: true,
-            ruined: false,
+            carved: false,
+            hangings: true,
+            crest: true,
+            tumbled: false,
             wall_thickness: 0.6,
-            plinth: 0.4,
-            overgrowth: 0.35,
-            fence: FenceKind::Railing,
-            path: PathKind::Slabs,
+            footing: 0.4,
+            stilts: 0.0,
+            weathering: 0.35,
+            fence: FenceKind::Driftwood,
+            path: PathKind::Flagstone,
             path_width: 1.6,
-            stairs: StairKind::Concrete,
-            bridge: BridgeKind::Cable { railing: 0 },
+            stairs: StairKind::Stone,
+            bridge: BridgeKind::Rope { railing: 0 },
             hanging: Hanging::None,
             opening: OpeningKind::Window,
-            tree: TreeKind::Birch,
-            clutter: ClutterKind::Planter,
-            paint: PaintLayer::Ferns,
+            tree: TreeKind::Cypress,
+            clutter: ClutterKind::CrabPots,
+            paint: PaintLayer::DuneGrass,
             lower: false,
             brush_radius: 3.0,
             brush_strength: 0.5,
@@ -269,12 +281,12 @@ const DECK_HEIGHT: f32 = 1.5;
 /// An RMB press that moves less than this (px) is a tap = cancel.
 const RMB_TAP_PX: f32 = 6.0;
 
-const OUTSIDE: &str = "OUTSIDE THE VALLEY";
+const OUTSIDE: &str = "OUTSIDE THE ISLAND";
 const TOO_SHORT: &str = "TOO SHORT";
 const TOO_STEEP: &str = "TOO STEEP";
 const NEEDS_ANCHORS: &str = "NEEDS TWO ANCHORS";
 const NEEDS_WALL: &str = "NEEDS A WALL";
-const NEEDS_RING: &str = "NEEDS A CLOSED WALL RING";
+const NEEDS_RING: &str = "NEEDS A CLOSED DYKE RING";
 
 // =============================================================================================
 // Pure helpers (unit-tested)
@@ -420,16 +432,16 @@ fn pitch_deg(frac: f32) -> f32 {
 
 fn cycle_roof(r: RoofStyle, dir: i32, round: bool) -> RoofStyle {
     let all: &[RoofStyle] = if round {
-        &[RoofStyle::Shell, RoofStyle::Green]
+        &[RoofStyle::Thatch, RoofStyle::Turf]
     } else {
-        &[RoofStyle::Pitched, RoofStyle::Sawtooth, RoofStyle::Shell, RoofStyle::Green]
+        &[RoofStyle::Boat, RoofStyle::Hide, RoofStyle::Thatch, RoofStyle::Turf]
     };
     let i = all.iter().position(|x| *x == r).unwrap_or(0) as i32;
     all[(i + dir).rem_euclid(all.len() as i32) as usize]
 }
 
 fn cycle_fence(k: FenceKind, dir: i32) -> FenceKind {
-    let all = [FenceKind::Railing, FenceKind::Balustrade, FenceKind::Gabion, FenceKind::Hedge];
+    let all = [FenceKind::Driftwood, FenceKind::Wattle, FenceKind::NetLine, FenceKind::Reed];
     let i = all.iter().position(|x| *x == k).unwrap_or(0) as i32;
     all[(i + dir).rem_euclid(4) as usize]
 }
@@ -445,22 +457,22 @@ fn with_structure(doc: &Document, s: Structure) -> Document {
 
 fn line_structure(tool: Tool, s: &ToolSettings, points: Vec<Vec2>) -> Structure {
     match tool {
-        Tool::Fence => Structure::Fence(Fence { points, kind: s.fence, colors: s.colors }),
-        Tool::Path => Structure::Path(Path { points, width: s.path_width, kind: s.path }),
+        Tool::Windbreak => Structure::Fence(Fence { points, kind: s.fence, colors: s.colors }),
+        Tool::Track => Structure::Path(Path { points, width: s.path_width, kind: s.path }),
         _ => Structure::Wall(Wall {
             points,
             height: s.wall_height,
             thickness: s.wall_thickness,
-            material: s.material,
-            planters: s.planters,
-            ruined: s.ruined,
-            foundation: s.plinth,
+            kind: s.wall_kind,
+            crest: s.crest,
+            tumbled: s.tumbled,
+            footing: s.footing,
             roofed: false,
             roof: s.roof,
             roof_pitch: pitch_frac(s.roof_pitch_deg),
             openings: Vec::new(),
             colors: s.colors,
-            overgrowth: s.overgrowth,
+            weathering: s.weathering,
         }),
     }
 }
@@ -493,7 +505,7 @@ impl Shape {
 
 fn shape_structure(tool: Tool, s: &ToolSettings, shape: Shape, height: f32) -> Structure {
     match (tool, shape) {
-        (Tool::Deck, Shape::Rect { center, half, angle }) => {
+        (Tool::Jetty, Shape::Rect { center, half, angle }) => {
             Structure::Platform(Platform { center, half, angle, height, colors: s.colors })
         }
         (_, shape) => {
@@ -501,19 +513,19 @@ fn shape_structure(tool: Tool, s: &ToolSettings, shape: Shape, height: f32) -> S
                 Shape::Rect { center, half, angle } => (Footprint::Rect { center, half, angle }, false),
                 Shape::Circle { center, radius } => (Footprint::Round { center, radius }, true),
             };
-            let roof = if round && matches!(s.roof, RoofStyle::Pitched | RoofStyle::Sawtooth) { RoofStyle::Shell } else { s.roof };
+            let roof = if round && s.roof == RoofStyle::Boat { RoofStyle::Thatch } else { s.roof };
             Structure::House(House {
                 footprint,
                 wall_height: height,
                 roof,
                 roof_pitch: pitch_frac(s.roof_pitch_deg),
                 material: s.material,
-                fins: s.fins && !round,
-                foundation: s.plinth,
-                planters: s.planters,
+                carved: s.carved && !round,
+                hangings: s.hangings,
+                stilts: s.stilts,
                 openings: Vec::new(),
                 colors: s.colors,
-                overgrowth: s.overgrowth,
+                weathering: s.weathering,
             })
         }
     }
@@ -540,7 +552,7 @@ pub fn span_invalid(tool: Tool, kind: StairKind, a: Vec3, b: Vec3, anchored: (bo
     if run.hypot(rise) < 0.8 {
         return Some(TOO_SHORT);
     }
-    (kind != StairKind::Ladder && rise > run * MAX_STAIR_SLOPE).then_some(TOO_STEEP)
+    (kind != StairKind::RopeLadder && rise > run * MAX_STAIR_SLOPE).then_some(TOO_STEEP)
 }
 
 /// Window / door click on a hit structure. Returns the edited document or an invalid reason.
@@ -592,13 +604,13 @@ pub fn roof_click(doc: &Document, hit: &Hit, s: &ToolSettings, remove: bool) -> 
             w.roofed = !remove;
             w.roof = s.roof;
             w.roof_pitch = pitch_frac(s.roof_pitch_deg);
-            w.planters |= s.roof == RoofStyle::Green && s.planters;
+            w.crest |= s.roof == RoofStyle::Turf && s.crest;
         }
         Some(Structure::House(h)) if !remove => {
             let round = matches!(h.footprint, Footprint::Round { .. });
-            h.roof = if round && matches!(s.roof, RoofStyle::Pitched | RoofStyle::Sawtooth) { RoofStyle::Shell } else { s.roof };
+            h.roof = if round && s.roof == RoofStyle::Boat { RoofStyle::Thatch } else { s.roof };
             h.roof_pitch = pitch_frac(s.roof_pitch_deg);
-            h.planters = s.planters;
+            h.hangings = s.hangings;
         }
         _ => return Err(NEEDS_RING),
     }
@@ -609,12 +621,12 @@ pub fn roof_click(doc: &Document, hit: &Hit, s: &ToolSettings, remove: bool) -> 
 pub fn copy_style(st: &Structure, s: &mut ToolSettings) {
     match st {
         Structure::Wall(w) => {
-            s.material = w.material;
-            s.planters = w.planters;
-            s.ruined = w.ruined;
+            s.wall_kind = w.kind;
+            s.crest = w.crest;
+            s.tumbled = w.tumbled;
             s.wall_thickness = w.thickness.clamp(0.3, 1.2);
-            s.plinth = w.foundation.clamp(0.0, 2.0);
-            s.overgrowth = w.overgrowth.clamp(0.0, 1.0);
+            s.footing = w.footing.clamp(0.0, 2.0);
+            s.weathering = w.weathering.clamp(0.0, 1.0);
             s.roof = w.roof;
             s.roof_pitch_deg = pitch_deg(w.roof_pitch);
             s.wall_height = w.height.clamp(2.0, 14.0);
@@ -624,10 +636,10 @@ pub fn copy_style(st: &Structure, s: &mut ToolSettings) {
             s.material = h.material;
             s.roof = h.roof;
             s.roof_pitch_deg = pitch_deg(h.roof_pitch);
-            s.fins = h.fins;
-            s.plinth = h.foundation.clamp(0.0, 2.0);
-            s.planters = h.planters;
-            s.overgrowth = h.overgrowth.clamp(0.0, 1.0);
+            s.carved = h.carved;
+            s.stilts = h.stilts.clamp(0.0, 3.0);
+            s.hangings = h.hangings;
+            s.weathering = h.weathering.clamp(0.0, 1.0);
             s.colors = h.colors;
         }
         Structure::Fence(f) => {
@@ -664,12 +676,12 @@ pub fn copy_style(st: &Structure, s: &mut ToolSettings) {
 pub fn apply_style(st: &mut Structure, s: &ToolSettings) {
     match st {
         Structure::Wall(w) => {
-            w.material = s.material;
-            w.planters = s.planters;
-            w.ruined = s.ruined;
+            w.kind = s.wall_kind;
+            w.crest = s.crest;
+            w.tumbled = s.tumbled;
             w.thickness = s.wall_thickness;
-            w.foundation = s.plinth;
-            w.overgrowth = s.overgrowth;
+            w.footing = s.footing;
+            w.weathering = s.weathering;
             w.roof = s.roof;
             w.roof_pitch = pitch_frac(s.roof_pitch_deg);
             w.colors = s.colors;
@@ -677,12 +689,12 @@ pub fn apply_style(st: &mut Structure, s: &ToolSettings) {
         Structure::House(h) => {
             let round = matches!(h.footprint, Footprint::Round { .. });
             h.material = s.material;
-            h.roof = if round && matches!(s.roof, RoofStyle::Pitched | RoofStyle::Sawtooth) { RoofStyle::Shell } else { s.roof };
+            h.roof = if round && s.roof == RoofStyle::Boat { RoofStyle::Thatch } else { s.roof };
             h.roof_pitch = pitch_frac(s.roof_pitch_deg);
-            h.fins = s.fins && !round;
-            h.foundation = s.plinth;
-            h.planters = s.planters;
-            h.overgrowth = s.overgrowth;
+            h.carved = s.carved && !round;
+            h.stilts = s.stilts;
+            h.hangings = s.hangings;
+            h.weathering = s.weathering;
             h.colors = s.colors;
         }
         Structure::Fence(f) => {
@@ -714,12 +726,12 @@ pub fn apply_style(st: &mut Structure, s: &ToolSettings) {
 fn brush_dab(s: &ToolSettings, center: Vec2, shift: bool, level: f32) -> TerrainDab {
     let radius = s.brush_radius.clamp(1.0, 8.0);
     let op = match s.tool {
-        Tool::Sculpt => {
+        Tool::Raise => {
             let sign = if s.lower ^ shift { -1.0 } else { 1.0 };
             TerrainOp::Sculpt { amount: sign * s.brush_strength.clamp(0.1, 1.0) * 0.35 }
         }
         Tool::Flatten => TerrainOp::Flatten { height: level, strength: s.brush_strength.clamp(0.1, 1.0) },
-        Tool::Water => TerrainOp::Water { depth: s.water_depth.clamp(0.3, 1.5) * 0.4 },
+        Tool::Lagoon => TerrainOp::Water { depth: s.water_depth.clamp(0.3, 1.5) * 0.4 },
         // Shift erases the selected layer; the Clear layer always clears everything.
         _ => match s.paint {
             PaintLayer::Clear => TerrainOp::Paint { layer: PaintLayer::Clear, strength: 1.0 },
@@ -1006,12 +1018,12 @@ fn drive_tools(
             marks: Vec::new(),
         };
         match cx.s.tool {
-            Tool::Wall | Tool::Fence | Tool::Path => line_tool(&mut cx),
-            Tool::Block | Tool::Tower | Tool::Deck => shape_tool(&mut cx),
-            Tool::Stairs | Tool::Bridge => span_tool(&mut cx),
-            Tool::Tree | Tool::Clutter => prop_tool(&mut cx),
-            Tool::Paint | Tool::Sculpt | Tool::Flatten | Tool::Water => brush_tool(&mut cx),
-            Tool::Opening | Tool::Roof | Tool::Style => click_tool(&mut cx),
+            Tool::Dyke | Tool::Windbreak | Tool::Track => line_tool(&mut cx),
+            Tool::Hut | Tool::Roundhouse | Tool::Jetty => shape_tool(&mut cx),
+            Tool::Steps | Tool::Bridge => span_tool(&mut cx),
+            Tool::Tree | Tool::Prop => prop_tool(&mut cx),
+            Tool::Paint | Tool::Raise | Tool::Flatten | Tool::Lagoon => brush_tool(&mut cx),
+            Tool::Opening | Tool::Roof | Tool::Dye => click_tool(&mut cx),
             Tool::Erase => erase_tool(&mut cx),
         }
         let drawing = !matches!(cx.phase, Phase::Idle);
@@ -1106,15 +1118,15 @@ fn line_tool(cx: &mut Cx) {
         }
         Phase::Line { mut pts, end: prev, mut held, mut moved } => {
             match tool {
-                Tool::Wall => cx.s.wall_height = (cx.s.wall_height + inp.steps as f32 * 0.5).clamp(2.0, 14.0),
-                Tool::Path => cx.s.path_width = (cx.s.path_width + inp.steps as f32 * 0.2).clamp(0.8, 4.0),
+                Tool::Dyke => cx.s.wall_height = (cx.s.wall_height + inp.steps as f32 * 0.5).clamp(2.0, 14.0),
+                Tool::Track => cx.s.path_width = (cx.s.path_width + inp.steps as f32 * 0.2).clamp(0.8, 4.0),
                 _ if inp.steps != 0 => cx.s.fence = cycle_fence(cx.s.fence, inp.steps.signum()),
                 _ => {}
             }
             let last = *pts.last().unwrap();
             let raw = inp.ground.map_or(prev, |g| q2(g.xz()));
             let mut end = if inp.shift { snap45(last, raw) } else { raw };
-            let closing = tool != Tool::Path && close_snap(&pts, end);
+            let closing = tool != Tool::Track && close_snap(&pts, end);
             if closing {
                 end = pts[0];
             }
@@ -1173,18 +1185,18 @@ fn line_tool(cx: &mut Cx) {
 
 fn default_height(tool: Tool) -> f32 {
     match tool {
-        Tool::Tower => TOWER_HEIGHT,
-        Tool::Deck => DECK_HEIGHT,
+        Tool::Roundhouse => TOWER_HEIGHT,
+        Tool::Jetty => DECK_HEIGHT,
         _ => BLOCK_HEIGHT,
     }
 }
 
 fn height_range(tool: Tool) -> (f32, f32) {
-    if tool == Tool::Deck { (0.3, 8.0) } else { (0.6, 24.0) }
+    if tool == Tool::Jetty { (0.3, 8.0) } else { (0.6, 24.0) }
 }
 
 fn shape_of(tool: Tool, a: Vec2, b: Vec2, angle: f32, shift: bool) -> Shape {
-    if tool == Tool::Tower {
+    if tool == Tool::Roundhouse {
         Shape::Circle { center: a, radius: q(a.distance(b)) }
     } else {
         let (center, half) = rect_from_drag(a, b, angle, shift);
@@ -1209,7 +1221,7 @@ fn shape_tool(cx: &mut Cx) {
         }
         Phase::Footprint { a, b, mut angle } => {
             let b = inp.ground.map_or(b, |g| q2(g.xz()));
-            if tool != Tool::Tower {
+            if tool != Tool::Roundhouse {
                 angle += inp.steps as f32 * 15f32.to_radians();
             }
             let shape = shape_of(tool, a, b, angle, inp.shift);
@@ -1225,7 +1237,7 @@ fn shape_tool(cx: &mut Cx) {
                 return;
             }
             // Low ghost while dragging the footprint.
-            let h = if tool == Tool::Deck { DECK_HEIGHT } else { 0.6 };
+            let h = if tool == Tool::Jetty { DECK_HEIGHT } else { 0.6 };
             cx.pending = Some(Pending::Add(shape_structure(tool, cx.s, shape, h)));
             if let Some(g) = inp.ground {
                 cx.ring(g, 0.3);
@@ -1235,8 +1247,8 @@ fn shape_tool(cx: &mut Cx) {
         Phase::Raise { shape, mut base, anchor_y } => {
             let (lo, hi) = height_range(tool);
             match tool {
-                Tool::Deck => base += inp.steps as f32 * 0.25,
-                Tool::Tower if inp.steps != 0 => cx.s.roof = cycle_roof(cx.s.roof, inp.steps.signum(), true),
+                Tool::Jetty => base += inp.steps as f32 * 0.25,
+                Tool::Roundhouse if inp.steps != 0 => cx.s.roof = cycle_roof(cx.s.roof, inp.steps.signum(), true),
                 _ if inp.steps != 0 && inp.shift => cx.s.roof = cycle_roof(cx.s.roof, inp.steps.signum(), false),
                 _ => cx.s.roof_pitch_deg = (cx.s.roof_pitch_deg + inp.steps as f32 * 5.0).clamp(15.0, 60.0),
             }
@@ -1262,7 +1274,7 @@ fn shape_tool(cx: &mut Cx) {
 fn span_anchor(cx: &Cx, skip: Option<StructureId>) -> Option<(Vec3, bool)> {
     let (p, id) = cx.surface(skip)?;
     let p = Vec3::new(q(p.x), p.y, q(p.z));
-    if id.is_some() || cx.s.tool == Tool::Stairs {
+    if id.is_some() || cx.s.tool == Tool::Steps {
         return Some((p, true));
     }
     let wet = cx.scene.terrain.water_level(p.xz());
@@ -1385,7 +1397,7 @@ fn brush_tool(cx: &mut Cx) {
                 if let Some(l) = dabs.last() {
                     last = *l;
                     still = 0.0;
-                } else if cx.s.tool == Tool::Sculpt && inp.held {
+                } else if cx.s.tool == Tool::Raise && inp.held {
                     // Holding still keeps raising / lowering.
                     still += inp.dt;
                     if still > 0.12 {
@@ -1557,7 +1569,7 @@ mod tests {
 
     fn wall_doc(points: Vec<Vec2>) -> (Document, StructureId) {
         let mut d = Document::new(1);
-        let id = d.add(line_structure(Tool::Wall, &ToolSettings::default(), points));
+        let id = d.add(line_structure(Tool::Dyke, &ToolSettings::default(), points));
         (d, id)
     }
 
@@ -1590,12 +1602,12 @@ mod tests {
     #[test]
     fn stairs_and_bridge_validity() {
         let a = Vec3::ZERO;
-        assert_eq!(span_invalid(Tool::Stairs, StairKind::Steel, a, Vec3::new(1.0, 4.0, 0.0), (true, true)), Some(TOO_STEEP));
-        assert_eq!(span_invalid(Tool::Stairs, StairKind::Ladder, a, Vec3::new(1.0, 4.0, 0.0), (true, true)), None);
-        assert_eq!(span_invalid(Tool::Stairs, StairKind::Steel, a, Vec3::new(4.0, 3.0, 0.0), (true, true)), None);
-        assert_eq!(span_invalid(Tool::Bridge, StairKind::Steel, a, Vec3::new(2.0, 0.0, 0.0), (true, true)), Some(NEEDS_ANCHORS));
-        assert_eq!(span_invalid(Tool::Bridge, StairKind::Steel, a, Vec3::new(6.0, 0.0, 0.0), (true, false)), Some(NEEDS_ANCHORS));
-        assert_eq!(span_invalid(Tool::Bridge, StairKind::Steel, a, Vec3::new(6.0, 0.0, 0.0), (true, true)), None);
+        assert_eq!(span_invalid(Tool::Steps, StairKind::Log, a, Vec3::new(1.0, 4.0, 0.0), (true, true)), Some(TOO_STEEP));
+        assert_eq!(span_invalid(Tool::Steps, StairKind::RopeLadder, a, Vec3::new(1.0, 4.0, 0.0), (true, true)), None);
+        assert_eq!(span_invalid(Tool::Steps, StairKind::Log, a, Vec3::new(4.0, 3.0, 0.0), (true, true)), None);
+        assert_eq!(span_invalid(Tool::Bridge, StairKind::Log, a, Vec3::new(2.0, 0.0, 0.0), (true, true)), Some(NEEDS_ANCHORS));
+        assert_eq!(span_invalid(Tool::Bridge, StairKind::Log, a, Vec3::new(6.0, 0.0, 0.0), (true, false)), Some(NEEDS_ANCHORS));
+        assert_eq!(span_invalid(Tool::Bridge, StairKind::Log, a, Vec3::new(6.0, 0.0, 0.0), (true, true)), None);
     }
 
     #[test]
@@ -1610,12 +1622,12 @@ mod tests {
 
     #[test]
     fn style_round_trip() {
-        let mut s = ToolSettings { material: Material::Timber, roof: RoofStyle::Sawtooth, roof_pitch_deg: 40.0, ..default() };
-        let mut st = shape_structure(Tool::Block, &ToolSettings::default(), Shape::Rect { center: Vec2::ZERO, half: Vec2::ONE * 3.0, angle: 0.0 }, 5.0);
+        let mut s = ToolSettings { material: Material::Plank, roof: RoofStyle::Hide, roof_pitch_deg: 40.0, ..default() };
+        let mut st = shape_structure(Tool::Hut, &ToolSettings::default(), Shape::Rect { center: Vec2::ZERO, half: Vec2::ONE * 3.0, angle: 0.0 }, 5.0);
         apply_style(&mut st, &s);
         s = ToolSettings::default();
         copy_style(&st, &mut s);
-        assert_eq!((s.material, s.roof), (Material::Timber, RoofStyle::Sawtooth));
+        assert_eq!((s.material, s.roof), (Material::Plank, RoofStyle::Hide));
         assert!((s.roof_pitch_deg - 40.0).abs() < 0.01);
     }
 

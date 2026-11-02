@@ -40,20 +40,19 @@ struct WaterParams {
 
 // Surface ids (cairn_cove_core::Surface).
 const S_GRASS: u32 = 0u;
-const S_GRAVEL: u32 = 3u;
-const S_CONCRETE: u32 = 4u;
-const S_PLINTH: u32 = 5u;
-const S_EARTH: u32 = 6u;
-const S_STEEL: u32 = 8u;
-const S_SEDUM: u32 = 9u;
-const S_PRECAST: u32 = 11u;
-const S_PAVERS: u32 = 12u;
-const S_POURED: u32 = 14u;
-const S_WINDOW: u32 = 15u;
-const S_LEAVES: u32 = 18u;
-const S_FIBER: u32 = 19u;
-const S_GLOW: u32 = 22u;
-const S_WATER: u32 = 23u;
+const S_SAND: u32 = 3u;
+const S_DRYSTONE: u32 = 4u;
+const S_DAUB: u32 = 5u;
+const S_TIMBER: u32 = 7u;
+const S_TURF: u32 = 9u;
+const S_SHELL: u32 = 12u;
+const S_BOARDS: u32 = 15u;
+const S_WINDOW: u32 = 16u;
+const S_DOOR: u32 = 17u;
+const S_LEAVES: u32 = 19u;
+const S_FIBER: u32 = 20u;
+const S_GLOW: u32 = 23u;
+const S_WATER: u32 = 24u;
 const TILE: u32 = 32u;
 const COLS: u32 = 8u;
 
@@ -79,7 +78,7 @@ struct VertexOut {
 // Decals (paths on terrain, windows/doors on walls) win against coplanar terrain despite vertex snapping:
 // pull them 0.12 m towards the camera (orthographic: ndc z is linear in depth).
 fn decal_bias(clip: vec4<f32>, surface: u32) -> vec4<f32> {
-    if surface == 1u || (surface >= S_PAVERS && surface <= 16u) {
+    if surface == 1u || (surface >= S_SHELL && surface <= S_DOOR) {
         return vec4(clip.xy, clip.z + 0.12 * view.clip_from_view[2].z * clip.w, clip.w);
     }
     return clip;
@@ -185,12 +184,12 @@ fn point_lights(world: vec4<f32>, n: vec3<f32>, frag: vec4<f32>) -> vec3<f32> {
 }
 
 fn is_ground(s: u32) -> bool {
-    return s <= S_PLINTH || (s >= S_PAVERS && s <= S_POURED);
+    return s <= S_DRYSTONE || (s >= S_SHELL && s <= S_BOARDS);
 }
 
-// Cast mineral surfaces that weather: moss on tops, rain streaks on faces.
+// Masonry surfaces that weather: lichen on tops, rain streaks on faces.
 fn is_cast(s: u32) -> bool {
-    return s == S_CONCRETE || s == S_PLINTH || s == S_EARTH || s == S_PRECAST;
+    return s == S_DRYSTONE || s == S_DAUB;
 }
 
 @fragment
@@ -242,7 +241,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     let ground = is_ground(s);
     if wet > 0.0 && !snowed && !glass {
         albedo *= 1.0 - wet * select(0.2, 0.38, ground || mineral);
-        if (mineral || s == S_STEEL) && abs(n.y) < 0.4 {
+        if (mineral || s == S_TIMBER) && abs(n.y) < 0.4 {
             let along = dot(world.xz, normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0)));
             let streak = hash2(vec2(floor(along * 5.0), 3.0));
             let run = value_noise(vec2(floor(along * 5.0), world.y * 0.6));
@@ -256,7 +255,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     let ndl = dot(n, sun_dir);
     let light = max(ndl, 0.0) * shadow;
     let amb = hemi_ambient(n);
-    let foliage = s == S_LEAVES || s == S_FIBER || s == S_GRASS || s == S_SEDUM;
+    let foliage = s == S_LEAVES || s == S_FIBER || s == S_GRASS || s == S_TURF;
     var col: vec3<f32>;
     if s == S_GLOW {
         col = albedo * 1.2;
@@ -286,7 +285,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         col += albedo * point_lights(world, n, in.clip);
         // Wet ground: noisy puddles reflect a little sky, with a hard specular glint
         // band (relative to a flat surface, since the iso view never sees a mirror angle).
-        if wet > 0.05 && ground && s != S_GRASS && s != S_GRAVEL && n.y > 0.7 && !snowed {
+        if wet > 0.05 && ground && s != S_GRASS && s != S_SAND && n.y > 0.7 && !snowed {
             let puddle = value_noise(world.xz * 0.9) * 0.7 + value_noise(world.xz * 2.3 + 7.0) * 0.3;
             if puddle > 1.0 - wet * 0.42 {
                 col = mix(col * 0.7, g.sky_hor_snap.xyz * amb * 1.2, 0.35);

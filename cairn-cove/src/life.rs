@@ -179,7 +179,7 @@ fn refresh_world(built: Res<BuiltScene>, glade: Res<Glade>, mut world: ResMut<Li
             break;
         }
         let p = Vec2::new(rng.range(-ROAM_RADIUS, ROAM_RADIUS), rng.range(-ROAM_RADIUS, ROAM_RADIUS));
-        if free(p) && (scene.terrain.paint(PaintLayer::Ferns, p) > 0.25 || near_water(p)) {
+        if free(p) && (scene.terrain.paint(PaintLayer::DuneGrass, p) > 0.25 || near_water(p)) {
             homes.push(p);
         }
     }

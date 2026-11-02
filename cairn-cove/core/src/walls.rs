@@ -8,7 +8,7 @@
 
 use crate::geom::is_closed;
 use crate::mesh::{Marker, MarkerKind, MeshData, Rng, Surface, hash_f};
-use crate::model::{Fence, FenceKind, Material, OpeningKind, Wall};
+use crate::model::{Fence, FenceKind, OpeningKind, Wall, WallKind};
 use crate::palette;
 use crate::terrain::Terrain;
 use glam::{Vec2, Vec3};
@@ -311,17 +311,17 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
     let hgt = w.height.min(40.0);
     let th = if w.thickness.is_finite() { w.thickness.clamp(0.2, 2.5) } else { 0.6 };
     let half = th * 0.5;
-    let wood = w.material == Material::Timber;
-    let og = if w.overgrowth.is_finite() { w.overgrowth.clamp(0.0, 1.0) } else { 0.0 };
+    let wood = w.kind == WallKind::Palisade;
+    let og = if w.weathering.is_finite() { w.weathering.clamp(0.0, 1.0) } else { 0.0 };
     let total = line.total();
-    let fh = if w.foundation.is_finite() { w.foundation.clamp(0.0, hgt * 0.6) } else { 0.0 };
-    // Concrete (coping, lintels, sills, fins) is always the wall colour; the body follows the material.
-    let ccol = palette::wall(w.colors);
-    let cs = Surface::Concrete;
-    let (bs, bcol) = match w.material {
-        Material::Concrete => (Surface::Concrete, ccol),
-        Material::RammedEarth => (Surface::Earth, ccol),
-        Material::Timber => (Surface::Cladding, palette::wood()),
+    let fh = if w.footing.is_finite() { w.footing.clamp(0.0, hgt * 0.6) } else { 0.0 };
+    // Stone details (coping, lintels, sills, buttresses) are dry stone; the body follows the kind.
+    let ccol = palette::dry_stone();
+    let cs = Surface::DryStone;
+    let (bs, bcol) = match w.kind {
+        WallKind::DryStone => (Surface::DryStone, ccol),
+        WallKind::Turf => (Surface::Turf, palette::turf()),
+        WallKind::Palisade => (Surface::Plank, palette::driftwood()),
     };
     let green = palette::leaves();
     let eff = |p: Vec2| {
@@ -443,7 +443,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
     for (i, &c) in line.cum.iter().enumerate() {
         raw.push((c, 3, Some(i)));
     }
-    let step = if w.ruined { 0.7 } else { 1.0 };
+    let step = if w.tumbled { 0.7 } else { 1.0 };
     for i in 0..line.segs() {
         let len = line.cum[i + 1] - line.cum[i];
         let n = (len / step).ceil().max(1.0) as usize;
@@ -509,7 +509,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         let mid = (a.pt + b.pt) * 0.5;
         let top = topat((a.ge + b.ge) * 0.5);
         let mut hi = top;
-        if w.ruined {
+        if w.tumbled {
             // Broken, stepped top: most pieces lose a random chunk, a few keep full height.
             let mut r = Rng::at(seed ^ 0x51, mid.x, mid.y);
             if r.f() >= 0.25 {
@@ -533,10 +533,10 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         pcs.push(Pc { kind, hi });
     }
     // Thick flat coping overhanging both faces (not on ruins: their tops are broken).
-    let lip = !w.ruined;
+    let lip = !w.tumbled;
     let lip_h = 0.18;
     // Thick walls without planters get a walkable top (stairs lead up to it).
-    let walk = lip && th >= WALK_MIN_TH && !w.planters;
+    let walk = lip && th >= WALK_MIN_TH && !w.crest;
     let lip_x = 0.08;
     let pl_x = 0.08;
     let has_pl = |pi: usize| fh > 0.0 && matches!(pcs[pi].kind, PK::Solid | PK::Window(_));
@@ -577,8 +577,8 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
             let (pi, f) = if pa { (a_idx.unwrap_or(0), 1.0) } else { (b_idx.unwrap_or(0), -1.0) };
             let (lp, rp) = (stn.l(half + pl_x), stn.r(half + pl_x));
             let hp = ph(pi, stn.ge);
-            cap(m, lp, l, stn.g - 0.3, hp, f, pcol, Surface::Plinth, UV);
-            cap(m, r, rp, stn.g - 0.3, hp, f, pcol, Surface::Plinth, UV);
+            cap(m, lp, l, stn.g - 0.3, hp, f, pcol, Surface::Rock, UV);
+            cap(m, r, rp, stn.g - 0.3, hp, f, pcol, Surface::Rock, UV);
         }
         if lip {
             let ca = ia.map(|x| (x.1, x.1 + lip_h));
@@ -685,13 +685,13 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
             let pc2 = pcol * tint;
             let (p0, p1, q0, q1) = (a.l(half + pl_x), b.l(half + pl_x), a.r(half + pl_x), b.r(half + pl_x));
             let (h0, h1) = (ph(k, a.ge), ph(k, b.ge));
-            side(m, p0, p1, a.g - 0.3, b.g - 0.3, h0, h1, true, pc2, Surface::Plinth, UV);
-            side(m, q0, q1, a.g - 0.3, b.g - 0.3, h0, h1, false, pc2, Surface::Plinth, UV);
-            m.quad(v3(p0, h0), v3(p1, h1), v3(l1, h1), v3(l0, h0), pc2 * 1.1, Surface::Plinth, UV);
-            m.quad(v3(r0, h0), v3(r1, h1), v3(q1, h1), v3(q0, h0), pc2 * 1.1, Surface::Plinth, UV);
+            side(m, p0, p1, a.g - 0.3, b.g - 0.3, h0, h1, true, pc2, Surface::Rock, UV);
+            side(m, q0, q1, a.g - 0.3, b.g - 0.3, h0, h1, false, pc2, Surface::Rock, UV);
+            m.quad(v3(p0, h0), v3(p1, h1), v3(l1, h1), v3(l0, h0), pc2 * 1.1, Surface::Rock, UV);
+            m.quad(v3(r0, h0), v3(r1, h1), v3(q1, h1), v3(q0, h0), pc2 * 1.1, Surface::Rock, UV);
         }
         // exposed rebar on broken tops
-        if w.ruined {
+        if w.tumbled {
             let full = topat((a.ge + b.ge) * 0.5);
             let mut rg = Rng::at(seed ^ 0x8EBA, mid.x, mid.y);
             if hi < full - 0.05 && rg.f() < 0.8 {
@@ -841,7 +841,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
 
     // ---- top features ---------------------------------------------------------------------
     let top_extra = if lip { lip_h } else { 0.0 };
-    if w.planters {
+    if w.crest {
         let nm = ((total / 1.5).round() as usize).max(1);
         let sp = total / nm as f32;
         let mw = (th * 0.38).clamp(0.2, 0.45);
@@ -859,7 +859,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
                 let mut rg = Rng::at(seed ^ 0xBA77, c.x, c.y);
                 let mut mh = 0.45;
                 let tn = 0.92 + 0.12 * rg.f();
-                if w.ruined {
+                if w.tumbled {
                     if rg.f() < 0.35 {
                         continue;
                     }
@@ -914,7 +914,7 @@ fn build_wall(w: &Wall, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshDat
         }
     }
     // rubble at the foot of ruins
-    if w.ruined {
+    if w.tumbled {
         let (rs, rc) = if wood { (cs, ccol) } else { (bs, bcol) };
         let n = (total / 0.9).ceil() as usize;
         for j in 0..n {
@@ -985,32 +985,32 @@ fn build_fence(f: &Fence, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshD
     };
     for (r0, r1) in runs {
         match f.kind {
-            FenceKind::Railing => {
+            FenceKind::Driftwood => {
                 // steel tube posts + two rails, tiny concrete footings
                 let ss = samples(&line, r0, r1, 1.8);
                 for &s in &ss {
-                    post(m, s, 0.03, 1.05, trim * 0.85, Surface::Steel, 1.0);
-                    post(m, s, 0.08, 0.06, conc * 0.85, Surface::Concrete, UV);
+                    post(m, s, 0.03, 1.05, trim * 0.85, Surface::Timber, 1.0);
+                    post(m, s, 0.08, 0.06, conc * 0.85, Surface::DryStone, UV);
                 }
                 for pair in ss.windows(2) {
                     let (p0, p1) = (line.at(pair[0]).0, line.at(pair[1]).0);
                     let (g0, g1) = (g_at(p0), g_at(p1));
                     for hh in [0.5, 1.0] {
-                        m.beam(v3(p0, g0 + hh), v3(p1, g1 + hh), 0.05, 0.05, trim, Surface::Steel, 1.0);
+                        m.beam(v3(p0, g0 + hh), v3(p1, g1 + hh), 0.05, 0.05, trim, Surface::Timber, 1.0);
                     }
                 }
             }
-            FenceKind::Balustrade => {
+            FenceKind::Wattle => {
                 // concrete base + squat balusters + chunky cap, piers at vertices / every 2.4 m
                 let ss = samples(&line, r0, r1, 2.4);
                 for &s in &ss {
-                    post(m, s, 0.1, 0.95, conc * 0.92, Surface::Concrete, UV);
+                    post(m, s, 0.1, 0.95, conc * 0.92, Surface::DryStone, UV);
                 }
                 for pair in ss.windows(2) {
                     let (p0, p1) = (line.at(pair[0]).0, line.at(pair[1]).0);
                     let (g0, g1) = (g_at(p0), g_at(p1));
-                    m.beam(v3(p0, g0 - 0.2), v3(p1, g1 - 0.2), 0.3, 0.38, conc * 0.9, Surface::Concrete, UV);
-                    m.beam(v3(p0, g0 + 0.72), v3(p1, g1 + 0.72), 0.32, 0.14, conc * 1.05, Surface::Concrete, UV);
+                    m.beam(v3(p0, g0 - 0.2), v3(p1, g1 - 0.2), 0.3, 0.38, conc * 0.9, Surface::DryStone, UV);
+                    m.beam(v3(p0, g0 + 0.72), v3(p1, g1 + 0.72), 0.32, 0.14, conc * 1.05, Surface::DryStone, UV);
                     let len = p0.distance(p1);
                     let nb = (len / 0.32).floor() as usize;
                     let d = (p1 - p0).normalize_or(Vec2::X);
@@ -1023,11 +1023,11 @@ fn build_fence(f: &Fence, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshD
                         let p = p0.lerp(p1, u);
                         let g = g0 + (g1 - g0) * u;
                         let mut rg = Rng::at(seed ^ 0xBA1, p.x, p.y);
-                        m.oriented_box(v3(p, g + 0.445), Vec3::new(0.065, 0.285, 0.065), d3, conc * rg.range(0.88, 1.02), Surface::Concrete, UV);
+                        m.oriented_box(v3(p, g + 0.445), Vec3::new(0.065, 0.285, 0.065), d3, conc * rg.range(0.88, 1.02), Surface::DryStone, UV);
                     }
                 }
             }
-            FenceKind::Gabion => {
+            FenceKind::NetLine => {
                 // wire cages filled with rocks, ~1 m modules, 0.9 m tall
                 let ss = samples(&line, r0, r1, 1.0);
                 let wire = palette::metal() * 1.5;
@@ -1075,14 +1075,14 @@ fn build_fence(f: &Fence, cuts: &[Cut], terr: &Terrain, seed: u64, m: &mut MeshD
                     }
                 }
             }
-            FenceKind::Hedge => {
+            FenceKind::Reed => {
                 // concrete trough with a boxy clipped hedge
                 let ss = samples(&line, r0, r1, 1.0);
                 for pair in ss.windows(2) {
                     let (p0, p1) = (line.at(pair[0]).0, line.at(pair[1]).0);
                     let (g0, g1) = (g_at(p0), g_at(p1));
                     let mut rg = Rng::at(seed ^ 0xA77, p0.x, p0.y);
-                    m.beam(v3(p0, g0 - 0.2), v3(p1, g1 - 0.2), 0.62, 0.62, conc * 0.92, Surface::Concrete, UV);
+                    m.beam(v3(p0, g0 - 0.2), v3(p1, g1 - 0.2), 0.62, 0.62, conc * 0.92, Surface::DryStone, UV);
                     let hh = rg.range(0.62, 0.8);
                     m.beam(v3(p0, g0 + 0.38), v3(p1, g1 + 0.38), 0.52, hh, palette::leaves() * rg.range(0.78, 1.0), Surface::Leaves, 1.0);
                 }
@@ -1120,16 +1120,16 @@ mod tests {
             points,
             height: 3.0,
             thickness: 0.8,
-            material: Material::Concrete,
-            planters: false,
-            ruined: false,
-            foundation: 0.0,
+            kind: WallKind::DryStone,
+            crest: false,
+            tumbled: false,
+            footing: 0.0,
             roofed: false,
             roof: Default::default(),
             roof_pitch: 0.5,
             openings: vec![],
             colors: Colors::default(),
-            overgrowth: 0.5,
+            weathering: 0.5,
         }
     }
     fn flat_terrain() -> Terrain {
@@ -1149,14 +1149,14 @@ mod tests {
     #[test]
     fn all_combinations_valid() {
         let t = flat_terrain();
-        for mat in [Material::Concrete, Material::RammedEarth, Material::Timber] {
+        for mat in [WallKind::DryStone, WallKind::Turf, WallKind::Palisade] {
             for pl in [false, true] {
                 for ruin in [false, true] {
                     for fnd in [0.0, 0.6] {
                         for og in [0.0, 1.0] {
                             for h in [3.0, 7.0] {
                                 let mut w = wall(vec![Vec2::new(-10.0, 0.0), Vec2::new(0.0, 4.0), Vec2::new(10.0, 0.0)]);
-                                (w.material, w.planters, w.ruined, w.foundation, w.overgrowth, w.height) = (mat, pl, ruin, fnd, og, h);
+                                (w.kind, w.crest, w.tumbled, w.footing, w.weathering, w.height) = (mat, pl, ruin, fnd, og, h);
                                 w.openings = vec![Opening { along: 4.0, kind: OpeningKind::Window }, Opening { along: 16.0, kind: OpeningKind::WideDoor }];
                                 let cuts = [Cut { along: 10.0, width: 2.0, height: 2.6 }];
                                 let (m, mk) = wall_mesh(&w, &cuts, &t, 7);
@@ -1177,25 +1177,25 @@ mod tests {
         let t = flat_terrain();
         let has = |m: &MeshData, s: Surface| m.surfaces.contains(&(s as u8));
         let mut w = wall(line20());
-        w.overgrowth = 0.0;
+        w.weathering = 0.0;
         let (clean, _) = wall_mesh(&w, &[], &t, 3);
         assert!(!has(&clean, Surface::Fiber) && !has(&clean, Surface::Leaves) && !has(&clean, Surface::Metal));
-        w.overgrowth = 1.0;
+        w.weathering = 1.0;
         let (grown, _) = wall_mesh(&w, &[], &t, 3);
         assert!(has(&grown, Surface::Fiber) && tris(&grown) > tris(&clean));
-        w.planters = true;
+        w.crest = true;
         let (pl, _) = wall_mesh(&w, &[], &t, 3);
         assert!(has(&pl, Surface::Leaves));
-        w.planters = false;
-        w.ruined = true;
+        w.crest = false;
+        w.tumbled = true;
         let (ru, _) = wall_mesh(&w, &[], &t, 3);
         assert!(has(&ru, Surface::Metal), "rebar");
-        w.ruined = false;
-        w.foundation = 0.5;
+        w.tumbled = false;
+        w.footing = 0.5;
         let (pn, _) = wall_mesh(&w, &[], &t, 3);
-        assert!(has(&pn, Surface::Plinth));
-        w.material = Material::RammedEarth;
-        assert!(has(&wall_mesh(&w, &[], &t, 3).0, Surface::Earth));
+        assert!(has(&pn, Surface::Rock));
+        w.kind = WallKind::Turf;
+        assert!(has(&wall_mesh(&w, &[], &t, 3).0, Surface::Turf));
     }
 
     #[test]
@@ -1203,7 +1203,7 @@ mod tests {
         let t = flat_terrain();
         let top = |m: &MeshData| m.positions.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
         let mut w = wall(line20());
-        w.overgrowth = 0.0;
+        w.weathering = 0.0;
         w.thickness = 1.0;
         let (walk, mk) = wall_mesh(&w, &[], &t, 1);
         assert!((top(&walk) - (3.0 + 0.18 + UPSTAND_H)).abs() < 1e-3, "upstands {}", top(&walk));
@@ -1212,7 +1212,7 @@ mod tests {
         w.thickness = 0.6;
         assert!((top(&wall_mesh(&w, &[], &t, 1).0) - 3.18).abs() < 1e-3, "thin wall keeps plain coping");
         w.thickness = 1.0;
-        w.planters = true;
+        w.crest = true;
         let (pl, _) = wall_mesh(&w, &[], &t, 1);
         assert!(!pl.positions.iter().any(|p| (p[1] - (3.18 + UPSTAND_H)).abs() < 1e-4), "planters replace upstands");
         // portal through a walkway wall: upstands end with caps, mesh stays valid
@@ -1224,8 +1224,8 @@ mod tests {
     fn triangle_budget() {
         let t = flat_terrain();
         let mut w = wall(line20());
-        w.planters = true;
-        w.foundation = 0.5;
+        w.crest = true;
+        w.footing = 0.5;
         let (m, _) = wall_mesh(&w, &[], &t, 3);
         assert!(tris(&m) <= 3000, "{}", tris(&m));
     }
@@ -1293,16 +1293,16 @@ mod tests {
         w.height = 6.0;
         let (tall, _) = wall_mesh(&w, &[], &t, 2);
         assert!(tall.is_valid() && tris(&tall) > tris(&flat));
-        w.material = Material::Timber;
+        w.kind = WallKind::Palisade;
         let (wd, _) = wall_mesh(&w, &[], &t, 2);
-        assert!(wd.surfaces.contains(&(Surface::Concrete as u8)) && wd.surfaces.contains(&(Surface::Cladding as u8)));
+        assert!(wd.surfaces.contains(&(Surface::DryStone as u8)) && wd.surfaces.contains(&(Surface::Plank as u8)));
     }
 
     #[test]
     fn fences_valid_and_gap() {
         let t = flat_terrain();
         let has = |m: &MeshData, s: Surface| m.surfaces.contains(&(s as u8));
-        for k in [FenceKind::Railing, FenceKind::Balustrade, FenceKind::Gabion, FenceKind::Hedge] {
+        for k in [FenceKind::Driftwood, FenceKind::Wattle, FenceKind::NetLine, FenceKind::Reed] {
             let (m, _) = fence_mesh(&fence(k), &[], &t, 4);
             assert!(m.is_valid() && !m.is_empty(), "{k:?}");
             assert_eq!(m, fence_mesh(&fence(k), &[], &t, 4).0, "{k:?} deterministic");
@@ -1313,10 +1313,10 @@ mod tests {
             assert!(!g.positions.iter().any(|p| p[0].abs() < 0.8), "{k:?} gap");
             assert!(g.positions.iter().any(|p| p[0].abs() < 1.3 && p[0].abs() > 0.8), "{k:?} end posts");
             let want: &[Surface] = match k {
-                FenceKind::Railing => &[Surface::Steel],
-                FenceKind::Balustrade => &[Surface::Concrete],
-                FenceKind::Gabion => &[Surface::Rock, Surface::Metal],
-                FenceKind::Hedge => &[Surface::Concrete, Surface::Leaves],
+                FenceKind::Driftwood => &[Surface::Timber],
+                FenceKind::Wattle => &[Surface::DryStone],
+                FenceKind::NetLine => &[Surface::Rock, Surface::Metal],
+                FenceKind::Reed => &[Surface::DryStone, Surface::Leaves],
             };
             assert!(want.iter().all(|&s| has(&m, s)), "{k:?} surfaces");
         }
@@ -1326,11 +1326,11 @@ mod tests {
     fn deterministic() {
         let t = flat_terrain();
         let mut w = wall(line20());
-        w.ruined = true;
-        w.planters = true;
+        w.tumbled = true;
+        w.crest = true;
         assert_eq!(wall_mesh(&w, &[], &t, 9), wall_mesh(&w, &[], &t, 9));
         assert_ne!(wall_mesh(&w, &[], &t, 9).0, wall_mesh(&w, &[], &t, 10).0);
-        let f = fence(FenceKind::Gabion);
+        let f = fence(FenceKind::NetLine);
         assert_eq!(fence_mesh(&f, &[], &t, 1), fence_mesh(&f, &[], &t, 1));
     }
 
@@ -1342,15 +1342,15 @@ mod tests {
         for pts in [vec![], vec![p], vec![p, p, p], vec![p, nan], vec![nan, nan]] {
             let (m, mk) = wall_mesh(&wall(pts.clone()), &[], &t, 1);
             assert!(m.is_empty() && mk.is_empty());
-            for k in [FenceKind::Railing, FenceKind::Balustrade, FenceKind::Gabion, FenceKind::Hedge] {
+            for k in [FenceKind::Driftwood, FenceKind::Wattle, FenceKind::NetLine, FenceKind::Reed] {
                 let f = Fence { points: pts.clone(), kind: k, colors: Colors::default() };
                 assert!(fence_mesh(&f, &[], &t, 1).0.is_empty());
             }
         }
         let mut w = wall(vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(3.0, 0.0), Vec2::new(3.0, 0.0), Vec2::new(3.0, 3.0)]);
         w.thickness = 1.0e9;
-        w.planters = true;
-        w.foundation = 50.0;
+        w.crest = true;
+        w.footing = 50.0;
         w.openings = vec![Opening { along: f32::NAN, kind: OpeningKind::Door }, Opening { along: 1.0, kind: OpeningKind::Window }];
         let cuts = [
             Cut { along: f32::NAN, width: 1.0, height: 1.0 },
@@ -1361,7 +1361,7 @@ mod tests {
         assert!(m.is_valid() && mk.iter().all(|k| k.pos.is_finite()));
         w.height = f32::NAN;
         assert!(wall_mesh(&w, &[], &t, 1).0.is_empty());
-        let (f, _) = fence_mesh(&fence(FenceKind::Balustrade), &cuts, &t, 1);
+        let (f, _) = fence_mesh(&fence(FenceKind::Wattle), &cuts, &t, 1);
         assert!(f.is_valid());
     }
 

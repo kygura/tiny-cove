@@ -1,4 +1,4 @@
-//! GREYWILD core: document model, terrain and procedural geometry. No Bevy.
+//! CAIRN COVE core: document model, island terrain and procedural geometry. No Bevy.
 
 pub mod buildings;
 pub mod demo;

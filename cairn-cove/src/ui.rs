@@ -36,13 +36,13 @@ const SODIUM: Color = hex(0xE8A33C);
 const DIS_TXT: Color = hex(0x6E6F69);
 const DIS_BG: Color = hex(0x3A3B37);
 
-/// Swatch palettes (DESIGN 2.3), by slot (0 roof, 1 concrete, 2 accent); tables live in core.
+/// Swatch palettes (DESIGN 2.3), by slot (0 roof, 1 daub, 2 trim); tables live in core.
 fn palette(slot: u8) -> &'static [(&'static str, u32)] {
-    use cairn_cove_core::palette::{ACCENT_SWATCHES, CONCRETE_SWATCHES, ROOF_SWATCHES};
+    use cairn_cove_core::palette::{ROOF_SWATCHES, TRIM_SWATCHES, WALL_SWATCHES};
     match slot {
         0 => &ROOF_SWATCHES,
-        1 => &CONCRETE_SWATCHES,
-        _ => &ACCENT_SWATCHES,
+        1 => &WALL_SWATCHES,
+        _ => &TRIM_SWATCHES,
     }
 }
 

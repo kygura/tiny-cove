@@ -11,7 +11,7 @@
 
 use crate::geom;
 use crate::mesh::{hash_f, MeshData, Surface};
-use crate::model::{PaintLayer, TerrainDab, TerrainOp, GLADE_HALF};
+use crate::model::{PaintLayer, TerrainDab, TerrainOp, GLADE_HALF, SEA_LEVEL};
 use crate::palette;
 use glam::{Vec2, Vec3};
 
@@ -301,8 +301,24 @@ impl Terrain {
         bilerp(&self.wet, p)
     }
 
-    /// Water surface height at `p` if `p` is under water.
+    /// True if the ground at `p` lies below mean sea level.
+    pub fn is_sea(&self, p: Vec2) -> bool {
+        self.height(p) < SEA_LEVEL
+    }
+
+    /// Water surface height at `p` if `p` is under water: the lagoon's own level over a
+    /// carved lagoon / tide pool, [`SEA_LEVEL`] over the sea (the higher of the two where a
+    /// lagoon bed dips below sea level), `None` on dry ground.
     pub fn water_level(&self, p: Vec2) -> Option<f32> {
+        let lagoon = self.lagoon_level(p);
+        if self.is_sea(p) {
+            return Some(lagoon.map_or(SEA_LEVEL, |l| l.max(SEA_LEVEL)));
+        }
+        lagoon
+    }
+
+    /// Level of the carved lagoon at `p`, if any.
+    fn lagoon_level(&self, p: Vec2) -> Option<f32> {
         if self.wetness(p) <= 0.5 {
             return None;
         }
@@ -399,8 +415,8 @@ impl Terrain {
                     } else if wet > 0.5 {
                         (Surface::Dirt, palette::dirt() * 0.6)
                     } else if wet > 0.02 {
-                        (Surface::Gravel, palette::sand() * (0.95 + 0.1 * jit))
-                    } else if self.paint(PaintLayer::Gravel, cp) > 0.5 {
+                        (Surface::Sand, palette::sand() * (0.95 + 0.1 * jit))
+                    } else if self.paint(PaintLayer::Pebbles, cp) > 0.5 {
                         (Surface::Dirt, palette::dirt() * (0.93 + 0.14 * jit))
                     } else {
                         let k = vnoise(self.seed ^ 9, c.x * 0.12, c.z * 0.12);
@@ -553,6 +569,30 @@ mod tests {
     }
 
     #[test]
+    fn sea_has_sea_level_and_lagoons_keep_their_own() {
+        // Dig a hole well below sea level inside the island, and a lagoon elsewhere.
+        let d = [
+            dab(10.0, 10.0, 4.0, TerrainOp::Sculpt { amount: -6.0 }),
+            dab(-10.0, -10.0, 7.0, TerrainOp::Sculpt { amount: 2.0 }),
+            dab(-10.0, -10.0, 4.0, TerrainOp::Water { depth: 1.0 }),
+        ];
+        let t = Terrain::build(5, &d, &[]);
+        let dug = Vec2::new(10.0, 10.0);
+        assert!(t.is_sea(dug));
+        assert_eq!(t.water_level(dug), Some(SEA_LEVEL));
+        // Beyond the island edge the seabed falls away: sea too.
+        let off = Vec2::new(GLADE_HALF + 4.0, 0.0);
+        assert!(t.is_sea(off) && t.water_level(off) == Some(SEA_LEVEL));
+        // Dry ground is neither.
+        let dry = Vec2::new(-10.0, 10.0);
+        assert!(!t.is_sea(dry) && t.water_level(dry).is_none());
+        // The lagoon keeps its own (higher) level.
+        let lagoon = Vec2::new(-10.0, -10.0);
+        let lv = t.water_level(lagoon).expect("lagoon");
+        assert!(!t.is_sea(lagoon) && lv > SEA_LEVEL && t.height(lagoon) < lv);
+    }
+
+    #[test]
     fn water_mesh_hugs_wet_region() {
         let d = [dab(0.0, 0.0, 5.0, TerrainOp::Water { depth: 1.0 }), dab(9.0, 3.0, 3.0, TerrainOp::Water { depth: 1.0 })];
         let t = Terrain::build(7, &d, &[]);
@@ -586,21 +626,21 @@ mod tests {
     #[test]
     fn paint_and_clear() {
         let d = [
-            dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Flowers, strength: 2.0 }),
-            dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Gravel, strength: 0.6 }),
+            dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::SeaPinks, strength: 2.0 }),
+            dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Pebbles, strength: 0.6 }),
         ];
         let t = Terrain::build(1, &d, &[]);
-        assert_eq!(t.paint(PaintLayer::Flowers, Vec2::ZERO), 1.0);
-        assert!(t.paint(PaintLayer::Gravel, Vec2::ZERO) > 0.5);
-        assert_eq!(t.paint(PaintLayer::Flowers, Vec2::new(10.0, 0.0)), 0.0);
+        assert_eq!(t.paint(PaintLayer::SeaPinks, Vec2::ZERO), 1.0);
+        assert!(t.paint(PaintLayer::Pebbles, Vec2::ZERO) > 0.5);
+        assert_eq!(t.paint(PaintLayer::SeaPinks, Vec2::new(10.0, 0.0)), 0.0);
         assert!(t.ground_mesh().surfaces.contains(&(Surface::Dirt as u8)));
         let mut d2 = d.to_vec();
-        d2.push(dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Flowers, strength: -0.4 }));
-        assert!((Terrain::build(1, &d2, &[]).paint(PaintLayer::Flowers, Vec2::ZERO) - 0.6).abs() < 1e-5);
+        d2.push(dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::SeaPinks, strength: -0.4 }));
+        assert!((Terrain::build(1, &d2, &[]).paint(PaintLayer::SeaPinks, Vec2::ZERO) - 0.6).abs() < 1e-5);
         d2.push(dab(0.0, 0.0, 4.0, TerrainOp::Paint { layer: PaintLayer::Clear, strength: 1.0 }));
         let c = Terrain::build(1, &d2, &[]);
-        assert_eq!(c.paint(PaintLayer::Flowers, Vec2::ZERO), 0.0);
-        assert_eq!(c.paint(PaintLayer::Gravel, Vec2::ZERO), 0.0);
+        assert_eq!(c.paint(PaintLayer::SeaPinks, Vec2::ZERO), 0.0);
+        assert_eq!(c.paint(PaintLayer::Pebbles, Vec2::ZERO), 0.0);
     }
 
     #[test]
@@ -633,7 +673,7 @@ mod tests {
     fn many_dabs() {
         let d: Vec<_> = (0..1000)
             .map(|k| {
-                let op = if k % 3 == 0 { TerrainOp::Sculpt { amount: 0.1 } } else { TerrainOp::Paint { layer: PaintLayer::Moss, strength: 0.2 } };
+                let op = if k % 3 == 0 { TerrainOp::Sculpt { amount: 0.1 } } else { TerrainOp::Paint { layer: PaintLayer::Wrack, strength: 0.2 } };
                 dab((k % 40) as f32 - 20.0, (k / 40) as f32 - 12.0, 3.0, op)
             })
             .collect();

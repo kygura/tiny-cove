@@ -297,25 +297,180 @@ mod tests {
             points: vec![Vec2::new(-6.0, 0.0), Vec2::new(6.0, 0.0)],
             height: 4.0,
             thickness: 1.0,
-            material: Material::Concrete,
-            planters: true,
-            ruined: false,
-            foundation: 0.0,
+            kind: WallKind::DryStone,
+            crest: true,
+            tumbled: false,
+            footing: 0.0,
             roofed: false,
-            roof: RoofStyle::Pitched,
+            roof: RoofStyle::Boat,
             roof_pitch: 0.6,
             openings: vec![],
             colors: Colors::default(),
-            overgrowth: 0.5,
+            weathering: 0.5,
         }));
         doc.add(Structure::Path(Path {
             points: vec![Vec2::new(0.0, -5.0), Vec2::new(0.0, 5.0)],
             width: 1.5,
-            kind: PathKind::Pavers,
+            kind: PathKind::Pebble,
         }));
         let s = build(&doc);
         assert_eq!(s.parts.len(), 2);
         assert_eq!(build(&doc).markers, s.markers);
+    }
+
+    use glam::Vec3Swizzles;
+
+    fn dyke(points: Vec<Vec2>, kind: WallKind) -> Wall {
+        Wall {
+            points,
+            height: 2.0,
+            thickness: 1.0,
+            kind,
+            crest: false,
+            tumbled: false,
+            footing: 0.0,
+            roofed: false,
+            roof: RoofStyle::Thatch,
+            roof_pitch: 0.6,
+            openings: vec![],
+            colors: Colors::default(),
+            weathering: 0.0,
+        }
+    }
+
+    fn hut(footprint: Footprint, wall_height: f32, roof: RoofStyle, material: Material) -> House {
+        House {
+            footprint,
+            wall_height,
+            roof,
+            roof_pitch: 0.8,
+            material,
+            carved: false,
+            hangings: false,
+            stilts: 0.0,
+            openings: vec![],
+            colors: Colors::default(),
+            weathering: 0.0,
+        }
+    }
+
+    fn prop(at: Vec2, kind: PropKind) -> Structure {
+        Structure::Placed(Placed { at, angle: 0.3, scale: 1.0, kind, colors: Colors::default() })
+    }
+
+    /// Every variant of every structure kind (on dry land) builds a non-empty, finite mesh.
+    #[test]
+    fn every_variant_builds_a_valid_mesh() {
+        let mut doc = Document::new(11);
+        let v = |x: f32, z: f32| Vec2::new(x, z);
+        let at = |x: f32, z: f32| Vec3::new(x, 2.0, z);
+        for (i, kind) in [WallKind::DryStone, WallKind::Turf, WallKind::Palisade].into_iter().enumerate() {
+            for (j, (crest, tumbled, footing)) in [(false, false, 0.0), (true, true, 0.5)].into_iter().enumerate() {
+                let z = -20.0 + 3.0 * (2 * i + j) as f32;
+                let mut w = dyke(vec![v(-24.0, z), v(-18.0, z)], kind);
+                (w.crest, w.tumbled, w.footing) = (crest, tumbled, footing);
+                doc.add(Structure::Wall(w));
+            }
+        }
+        let roofs = [RoofStyle::Thatch, RoofStyle::Turf, RoofStyle::Hide, RoofStyle::Boat];
+        let mats = [Material::Wattle, Material::Plank, Material::Stone];
+        for (i, roof) in roofs.into_iter().enumerate() {
+            for (j, material) in mats.into_iter().enumerate() {
+                let c = v(-12.0 + 7.0 * j as f32, -20.0 + 7.0 * i as f32);
+                let mut h = hut(Footprint::Rect { center: c, half: v(2.0, 1.5), angle: 0.2 }, 2.5, roof, material);
+                (h.carved, h.hangings, h.stilts) = (j == 0, j == 1, if j == 2 { 1.0 } else { 0.0 });
+                doc.add(Structure::House(h));
+            }
+            // Roundhouse and beacon.
+            doc.add(Structure::House(hut(Footprint::Round { center: v(10.0, -20.0 + 7.0 * i as f32), radius: 2.0 }, 2.0, roof, Material::Wattle)));
+            doc.add(Structure::House(hut(Footprint::Round { center: v(16.0, -20.0 + 7.0 * i as f32), radius: 1.5 }, 6.0, roof, Material::Stone)));
+        }
+        for (i, kind) in [FenceKind::Wattle, FenceKind::Driftwood, FenceKind::NetLine, FenceKind::Reed].into_iter().enumerate() {
+            let z = 8.0 + 1.5 * i as f32;
+            doc.add(Structure::Fence(Fence { points: vec![v(-24.0, z), v(-18.0, z)], kind, colors: Colors::default() }));
+        }
+        let paths = [PathKind::Shell, PathKind::Pebble, PathKind::Flagstone, PathKind::Boardwalk, PathKind::Stepping];
+        for (i, kind) in paths.into_iter().enumerate() {
+            let x = -14.0 + 2.5 * i as f32;
+            doc.add(Structure::Path(Path { points: vec![v(x, 8.0), v(x, 14.0)], width: 1.4, kind }));
+        }
+        for (i, kind) in [StairKind::Stone, StairKind::Log, StairKind::RopeLadder].into_iter().enumerate() {
+            let x = 0.0 + 2.5 * i as f32;
+            doc.add(Structure::Stairs(Stairs { from: at(x, 8.0), to: at(x, 11.0) + Vec3::Y * 1.5, width: 1.0, kind, colors: Colors::default() }));
+        }
+        doc.add(Structure::Platform(Platform { center: v(10.0, 10.0), half: v(2.0, 1.5), angle: 0.0, height: 1.0, colors: Colors::default() }));
+        let bridges = [
+            BridgeKind::Rope { railing: 0 },
+            BridgeKind::Rope { railing: 1 },
+            BridgeKind::Rope { railing: 2 },
+            BridgeKind::Rope { railing: 3 },
+            BridgeKind::Log,
+            BridgeKind::Causeway,
+        ];
+        let hangings = [Hanging::None, Hanging::Lanterns, Hanging::Pennants];
+        for (i, kind) in bridges.into_iter().enumerate() {
+            let z = 16.0 + 2.5 * i as f32;
+            let hanging = hangings[i % hangings.len()];
+            doc.add(Structure::Bridge(Bridge { a: at(-24.0, z), b: at(-17.0, z), width: 1.4, kind, hanging, colors: Colors::default() }));
+        }
+        let trees = [TreeKind::SeaPine, TreeKind::Palm, TreeKind::Cypress, TreeKind::Fig, TreeKind::Snag];
+        for (i, k) in trees.into_iter().enumerate() {
+            doc.add(prop(v(-10.0 + 4.0 * i as f32, 18.0), PropKind::Tree(k)));
+        }
+        use ClutterKind::*;
+        let clutter = [Canoe, DryingRack, Firepit, Cairn, StandingStone, CarvedPole, NetRack, Baskets, LanternPost, Pennant, Rock, Bush, CrabPots, Woodpile];
+        for (i, k) in clutter.into_iter().enumerate() {
+            doc.add(prop(v(-10.0 + 2.5 * i as f32, 24.0), PropKind::Clutter(k)));
+        }
+        let scene = build(&doc);
+        assert_eq!(scene.parts.len(), doc.structures.len());
+        for (part, (_, s)) in scene.parts.iter().zip(&doc.structures) {
+            assert!(part.mesh.is_valid() && !part.mesh.is_empty(), "{s:?}");
+        }
+        assert!(scene.markers.iter().all(|m| m.pos.is_finite() && m.dir.is_finite()));
+    }
+
+    /// Firepits and beacons burn; a canoe on water floats; a jetty over the sea moors canoes.
+    #[test]
+    fn fire_and_boat_markers() {
+        let count = |s: &Scene, k: MarkerKind| s.markers.iter().filter(|m| m.kind == k).count();
+        let mut doc = Document::new(4);
+        doc.add(prop(Vec2::new(0.0, 0.0), PropKind::Clutter(ClutterKind::Firepit)));
+        let s = build(&doc);
+        assert_eq!(count(&s, MarkerKind::Fire), 1);
+
+        let mut doc = Document::new(4);
+        doc.add(Structure::House(hut(Footprint::Round { center: Vec2::ZERO, radius: 1.5 }, 6.0, RoofStyle::Thatch, Material::Stone)));
+        doc.add(Structure::House(hut(Footprint::Round { center: Vec2::new(10.0, 0.0), radius: 3.0 }, 2.5, RoofStyle::Thatch, Material::Wattle)));
+        let s = build(&doc);
+        let fires: Vec<&Marker> = s.markers.iter().filter(|m| m.kind == MarkerKind::Fire).collect();
+        assert_eq!(fires.len(), 1, "only the beacon burns, not the low roundhouse");
+        assert!(fires[0].pos.xz().length() < 0.1 && fires[0].pos.y > 6.0);
+
+        // Canoes: dug into the sea vs on land.
+        let sea = Vec2::new(-12.0, 6.0);
+        let mut doc = Document::new(4);
+        doc.terrain.push(TerrainDab { center: sea, radius: 7.0, op: TerrainOp::Sculpt { amount: -6.0 } });
+        let afloat = doc.add(prop(sea, PropKind::Clutter(ClutterKind::Canoe)));
+        let ashore = doc.add(prop(Vec2::new(12.0, 6.0), PropKind::Clutter(ClutterKind::Canoe)));
+        let s = build(&doc);
+        assert!(s.terrain.is_sea(sea));
+        let boats: Vec<&Marker> = s.markers.iter().filter(|m| m.kind == MarkerKind::Boat).collect();
+        assert_eq!(boats.len(), 1);
+        assert!((boats[0].pos.y - SEA_LEVEL).abs() < 1e-6 && (boats[0].pos.xz() - sea).length() < 1e-4);
+        assert!((boats[0].dir.length() - 1.0).abs() < 1e-4);
+        let mesh = |id| &s.parts.iter().find(|p| p.id == id).unwrap().mesh;
+        assert!(mesh(afloat).is_empty(), "a floating canoe is a marker, not a static mesh");
+        assert!(!mesh(ashore).is_empty());
+
+        // A jetty out over the sea gets canoes alongside; one on land gets none.
+        let mut doc = Document::new(4);
+        doc.terrain.push(TerrainDab { center: sea, radius: 9.0, op: TerrainOp::Sculpt { amount: -6.0 } });
+        doc.add(Structure::Platform(Platform { center: sea, half: Vec2::new(2.0, 1.0), angle: 0.4, height: 7.0, colors: Colors::default() }));
+        doc.add(Structure::Platform(Platform { center: Vec2::new(12.0, -8.0), half: Vec2::new(2.0, 1.0), angle: 0.0, height: 1.0, colors: Colors::default() }));
+        let s = build(&doc);
+        assert!((1..=4).contains(&count(&s, MarkerKind::Boat)));
+        assert!(s.markers.iter().filter(|m| m.kind == MarkerKind::Boat).all(|m| (m.pos.xz() - sea).length() < 4.0));
     }
 
     #[test]

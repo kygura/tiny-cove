@@ -1,12 +1,19 @@
-//! GREYWILD document: an ordered list of terrain strokes and structures, plus undo history.
+//! CAIRN COVE document: an ordered list of terrain strokes and structures, plus undo history.
 //!
 //! Everything here is plain data. `crate::scene::build` turns a [`Document`] into meshes.
-//! World units are metres, `y` is up, the glade spans `x, z ∈ [-GLADE_HALF, GLADE_HALF]`.
+//! World units are metres, `y` is up, the buildable island spans `x, z ∈ [-GLADE_HALF, GLADE_HALF]`.
+//! Ground below [`SEA_LEVEL`] is sea.
 
 use glam::{Vec2, Vec3};
 
-/// Half the side length of the buildable glade, in metres.
+/// Half the side length of the buildable island area, in metres.
 pub const GLADE_HALF: f32 = 32.0;
+
+/// Mean sea level. Ground below it is sea. Core logic always uses this value.
+pub const SEA_LEVEL: f32 = 0.0;
+
+/// The render-side tide oscillates by ± this many metres around [`SEA_LEVEL`].
+pub const TIDE_RANGE: f32 = 0.3;
 
 /// Stable identifier of a structure inside a document.
 pub type StructureId = u32;
@@ -22,7 +29,7 @@ pub enum TerrainOp {
     Sculpt { amount: f32 },
     /// Pull the ground towards `height` with the given strength in 0..=1.
     Flatten { height: f32, strength: f32 },
-    /// Carve water: lowers the bed and marks it wet. `depth` metres at the centre.
+    /// Carve a lagoon / tide pool: lowers the bed and marks it wet. `depth` metres at the centre.
     Water { depth: f32 },
     /// Paint a vegetation / ground layer with strength in 0..=1 (negative erases).
     Paint { layer: PaintLayer, strength: f32 },
@@ -31,14 +38,14 @@ pub enum TerrainOp {
 /// Paintable ground layers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PaintLayer {
-    /// Wildflowers (mixed colours).
-    Flowers,
-    /// Ferns.
-    Ferns,
-    /// Low moss carpet.
-    Moss,
-    /// Gravel ground.
-    Gravel,
+    /// Sea pinks: a thrift flower carpet in magenta and pink.
+    SeaPinks,
+    /// Marram dune-grass tufts.
+    DuneGrass,
+    /// Wrack: seaweed strewn along the shore.
+    Wrack,
+    /// Beach pebbles.
+    Pebbles,
     /// Remove all painted layers.
     Clear,
 }
@@ -56,31 +63,45 @@ pub struct TerrainDab {
 // Shared style enums
 // ---------------------------------------------------------------------------------------------
 
-/// Main building material of walls and houses.
+/// Wall material of huts, roundhouses and beacons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Material {
-    /// Board-formed concrete.
+    /// Wattle-and-daub limewashed in the wall colour, with timber corner posts.
     #[default]
-    Concrete,
-    /// Rammed earth in warm strata.
-    RammedEarth,
-    /// Charred vertical timber cladding over a concrete core.
-    Timber,
+    Wattle,
+    /// Vertical driftwood planks with painted bands.
+    Plank,
+    /// Dry stone laid in courses.
+    Stone,
 }
 
-/// Roof shapes.
+/// Construction of a dyke (the `Wall` structure).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum WallKind {
+    /// Flat stones stacked in courses, upright copestones on the crest.
+    #[default]
+    DryStone,
+    /// A stone base under bands of turf / sod with a grassy top.
+    Turf,
+    /// Sharpened driftwood stakes with a lashed rail.
+    Palisade,
+}
+
+/// Roof styles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum RoofStyle {
-    /// Sharp slab gable: two thick concrete planes, deep overhang, open gable ends.
-    /// Round footprints fall back to `Shell`.
+    /// Thick steep hipped thatch with a bound ridge and trimmed eaves. A cone with a topknot
+    /// on round footprints.
     #[default]
-    Pitched,
-    /// Saw-tooth north-light roof: repeated monopitch bays with glazed verticals.
-    Sawtooth,
-    /// Shell: shallow dome / cone (round footprints) or folded pyramid (rectangles).
-    Shell,
-    /// Flat green roof with a thick parapet; planter boxes if the structure asks for them.
-    Green,
+    Thatch,
+    /// Low grassy roof with sod edges (a low dome on round footprints).
+    Turf,
+    /// Hide or sailcloth stretched on poles, low and tent-like (a conical tent on round
+    /// footprints).
+    Hide,
+    /// Upturned-hull roof: curved keel ridge, planked and painted strakes. Round footprints
+    /// fall back to a thatch cone.
+    Boat,
 }
 
 /// Palette indices. The renderer owns the actual colours (see `palette` module).
@@ -88,9 +109,10 @@ pub enum RoofStyle {
 pub struct Colors {
     /// Index into the roof palette (0..ROOF_COLORS).
     pub roof: u8,
-    /// Index into the wall/plaster palette (0..WALL_COLORS).
+    /// Index into the daub limewash palette (0..WALL_COLORS).
     pub wall: u8,
-    /// Index into the wood/trim palette (0..TRIM_COLORS), used by timber, doors, louvres, railings.
+    /// Index into the pigment / trim palette (0..TRIM_COLORS): carvings, shutters, painted
+    /// bands, doors, railings.
     pub trim: u8,
 }
 
@@ -107,7 +129,7 @@ pub const TRIM_COLORS: u8 = 5;
 /// A hole the player placed in a wall or house wall.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Opening {
-    /// Distance in metres along the host's centre polyline (walls) or perimeter (houses,
+    /// Distance in metres along the host's centre polyline (dykes) or perimeter (houses,
     /// measured along `geom::footprint_polygon` order from its first corner).
     pub along: f32,
     pub kind: OpeningKind,
@@ -115,11 +137,11 @@ pub struct Opening {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OpeningKind {
-    /// Deep slot window, ~0.8 m wide, sill at 1.0 m.
+    /// Small shuttered window, ~0.8 m wide, sill at 1.0 m.
     Window,
-    /// Recessed door, ~1.1 m wide, 2.0 m tall.
+    /// Hide-curtain doorway, ~1.1 m wide, 2.0 m tall.
     Door,
-    /// Wide portal, ~2.4 m wide.
+    /// Wide boat door, ~2.4 m wide.
     WideDoor,
 }
 
@@ -127,77 +149,80 @@ pub enum OpeningKind {
 // Structures
 // ---------------------------------------------------------------------------------------------
 
-/// Footprint of a house or tower.
+/// Footprint of a hut (rect) or a roundhouse / beacon (round).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Footprint {
     /// Oriented rectangle. `half` are half extents along the local x/z axes, rotated by `angle`
     /// radians in the (x, z) plane, turning +x towards +z (`Vec2::from_angle`).
     Rect { center: Vec2, half: Vec2, angle: f32 },
-    /// Circle. A tall round house is a tower.
+    /// Circle. A tall round house (wall height ≥ 2.5 × radius) is a beacon.
     Round { center: Vec2, radius: f32 },
 }
 
-/// Wall: drawn as a polyline. A closed polyline (first == last point) encloses a courtyard
-/// that the roof tool can cover.
+/// Dyke: drawn as a polyline. Over the sea it becomes a breakwater. A closed polyline
+/// (first == last point) encloses a yard that the roof tool can cover.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Wall {
     /// Centre line on the ground plane, at least 2 points. Closed if first ≈ last.
     pub points: Vec<Vec2>,
-    /// Height above the ground at each point (top of the wall, without coping or planters).
+    /// Height above the ground at each point (top of the dyke, without the crest).
     pub height: f32,
     /// Thickness in metres (0.4 .. 2.0).
     pub thickness: f32,
-    pub material: Material,
-    /// Crenellated planter boxes with spilling greenery along the top.
-    pub planters: bool,
-    /// Broken top with exposed rebar (ruins; the snip tool).
-    pub ruined: bool,
-    /// Height of a darker concrete plinth/foundation (0 = none).
-    pub foundation: f32,
+    pub kind: WallKind,
+    /// Crest: upright copestones (dry stone), painted stake tips (palisade) or flowering
+    /// thrift (turf).
+    pub crest: bool,
+    /// Tumbled: collapsed sections with spilled stones at the foot.
+    pub tumbled: bool,
+    /// Height of a boulder footing (0 = none).
+    pub footing: f32,
     /// Closed walls only: put a roof over the enclosed area.
     pub roofed: bool,
     pub roof: RoofStyle,
     pub roof_pitch: f32,
     pub openings: Vec<Opening>,
     pub colors: Colors,
-    /// 0..=1: moss, ivy and water staining (the brutalist "peeling plaster" slider).
-    pub overgrowth: f32,
+    /// 0..=1: salt bleaching and orange/yellow lichen.
+    pub weathering: f32,
 }
 
-/// Block (rect) or silo tower (round). Walls rise from the ground (flattened under the footprint).
+/// Longhut (rect), roundhouse (low round) or beacon tower (tall round). The ground under it
+/// is flattened unless it stands on stilts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct House {
     pub footprint: Footprint,
-    /// Eave height above ground. 0.6 ..= 24. Low values make tent-like shelters.
+    /// Eave height above ground (or above the stilt floor). 0.6 ..= 24.
     pub wall_height: f32,
     pub roof: RoofStyle,
     /// Roof rise as a fraction of the footprint's smaller half extent / radius (0 = flat).
     pub roof_pitch: f32,
     pub material: Material,
-    /// Brise-soleil: a grid of deep vertical concrete fins on the façades.
-    pub fins: bool,
-    /// Concrete plinth height (0 = none).
-    pub foundation: f32,
-    /// Green roofs only: planter boxes on the parapet.
-    pub planters: bool,
+    /// Crossed carved gable horns and painted bands.
+    pub carved: bool,
+    /// Drying fish, net bundles and shell strings under the eaves.
+    pub hangings: bool,
+    /// Explicit stilt height in metres (0 = automatic: stilts only over water or steep ground).
+    pub stilts: f32,
     /// Player-placed openings. If empty, windows and one door are generated automatically.
     pub openings: Vec<Opening>,
     pub colors: Colors,
-    /// 0..=1: moss, ivy and water staining.
-    pub overgrowth: f32,
+    /// 0..=1: salt bleaching and orange/yellow lichen.
+    pub weathering: f32,
 }
 
+/// Windbreak construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FenceKind {
-    /// Steel tube posts with two rails.
+    /// Woven wattle panels between stakes.
     #[default]
-    Railing,
-    /// Low concrete balustrade with balusters (~1 m).
-    Balustrade,
-    /// Wire-cage gabion of rocks (~0.9 m).
-    Gabion,
-    /// Concrete planter trough with a clipped hedge.
-    Hedge,
+    Wattle,
+    /// Crooked bleached driftwood post-and-rail.
+    Driftwood,
+    /// Posts with fishing nets draped between them and bright floats.
+    NetLine,
+    /// Bundled reed screen.
+    Reed,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -209,16 +234,16 @@ pub struct Fence {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PathKind {
-    /// Loose gravel with a concrete kerb.
+    /// Crushed white shell with a pebble kerb.
     #[default]
-    Gravel,
-    /// Small concrete pavers.
-    Pavers,
-    /// Large concrete slabs with grass joints.
-    Slabs,
-    /// Poured concrete with expansion joints.
-    Poured,
-    /// Separate slabs set into the grass.
+    Shell,
+    /// Cobbled beach pebbles.
+    Pebble,
+    /// Slate slabs with grass joints.
+    Flagstone,
+    /// Planks on sleepers, laid across sand and marsh.
+    Boardwalk,
+    /// Stepping stones.
     Stepping,
 }
 
@@ -232,16 +257,16 @@ pub struct Path {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum StairKind {
-    /// Open steel stair with railings (railing colour = `Colors::trim`).
+    /// Cut-stone steps.
     #[default]
-    Steel,
-    /// Solid cast concrete steps.
-    Concrete,
-    /// Steel ladder.
-    Ladder,
+    Stone,
+    /// Log-and-earth steps held by stakes.
+    Log,
+    /// Rope ladder.
+    RopeLadder,
 }
 
-/// Stairs between two 3-D points (from the ground to a wall top, between levels…).
+/// Steps between two 3-D points (ground, dyke top, jetty, hut floor…).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stairs {
     pub from: Vec3,
@@ -251,7 +276,8 @@ pub struct Stairs {
     pub colors: Colors,
 }
 
-/// Concrete deck on pilotis.
+/// Jetty / stage: a plank deck on log piles. Over water the piles reach the seabed and
+/// moored canoes are emitted as `Boat` markers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Platform {
     pub center: Vec2,
@@ -264,21 +290,24 @@ pub struct Platform {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BridgeKind {
-    /// Light cable bridge with a sagging steel-mesh deck; `railing` 0..4 picks one of four
-    /// railing designs.
-    Cable { railing: u8 },
-    /// Concrete arch bridge.
-    Arch,
-    /// Steel box-girder bridge on concrete piers.
-    Girder,
+    /// Sagging plank-and-rope bridge; `railing` 0..4 picks plain rope, netting, plank
+    /// balusters or knotted rope with floats.
+    Rope { railing: u8 },
+    /// A big driftwood log trestle.
+    Log,
+    /// Stacked stone causeway with culvert arches.
+    Causeway,
 }
 
+/// Things hung from a rope bridge's hand ropes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Hanging {
     #[default]
     None,
-    Lamps,
-    Vines,
+    /// Lanterns (lit at night).
+    Lanterns,
+    /// Cloth pennants that flutter in the wind.
+    Pennants,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -288,38 +317,52 @@ pub struct Bridge {
     pub b: Vec3,
     pub width: f32,
     pub kind: BridgeKind,
-    /// Things hung from Cable bridges' hand cables.
+    /// Things hung from rope bridges' hand ropes.
     pub hanging: Hanging,
     pub colors: Colors,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TreeKind {
-    Oak,
-    Pine,
-    Birch,
-    /// Small fruit tree with blossom.
-    Fruit,
-    /// Tree fern: rough trunk with a crown of fronds.
-    Fern,
+    /// Wind-bent umbrella sea pine.
+    SeaPine,
+    /// Leaning palm with a crown of fronds.
+    Palm,
+    /// Tall dark flame-shaped cypress.
+    Cypress,
+    /// Broad-canopied fig with fruit.
+    Fig,
+    /// Bleached dead driftwood tree.
+    Snag,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ClutterKind {
-    RainBarrel,
-    Planter,
-    Compost,
-    Cistern,
-    Wheelbarrow,
-    Bench,
-    LampPost,
-    WindTurbine,
-    WashingLine,
-    LogPile,
+    /// Outrigger canoe. Placed over water it floats (a `Boat` marker instead of a mesh).
+    Canoe,
+    /// Fish drying on a rack.
+    DryingRack,
+    /// Stone ring with an open fire (a `Fire` marker).
+    Firepit,
+    /// Stacked stones, the island's namesake.
+    Cairn,
+    /// Standing stone carved with a spiral.
+    StandingStone,
+    /// Painted pole with a bird on top.
+    CarvedPole,
+    /// Rack of drying fishing nets.
+    NetRack,
+    /// Woven baskets and clay jars.
+    Baskets,
+    LanternPost,
+    /// Tall pole with a cloth pennant streaming in the wind.
+    Pennant,
     Rock,
+    /// Flowering gorse / flax.
     Bush,
-    Beehive,
-    Solar,
+    CrabPots,
+    /// Stacked driftwood.
+    Woodpile,
 }
 
 /// Single placed object (tree or clutter).
@@ -458,7 +501,7 @@ mod tests {
             at: Vec2::ZERO,
             angle: 0.0,
             scale: 1.0,
-            kind: PropKind::Tree(TreeKind::Oak),
+            kind: PropKind::Tree(TreeKind::Snag),
             colors: Colors::default(),
         }));
         h.push(d.clone());

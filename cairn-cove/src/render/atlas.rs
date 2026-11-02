@@ -20,18 +20,19 @@ const ALL: [Surface; Surface::COUNT] = [
     Surface::Grass,
     Surface::Dirt,
     Surface::Rock,
-    Surface::Gravel,
-    Surface::Concrete,
-    Surface::Plinth,
-    Surface::Earth,
-    Surface::Cladding,
-    Surface::Steel,
-    Surface::Sedum,
-    Surface::Seam,
-    Surface::Precast,
-    Surface::Pavers,
-    Surface::Slabs,
-    Surface::Poured,
+    Surface::Sand,
+    Surface::DryStone,
+    Surface::Daub,
+    Surface::Plank,
+    Surface::Timber,
+    Surface::Thatch,
+    Surface::Turf,
+    Surface::Hide,
+    Surface::Carving,
+    Surface::Shell,
+    Surface::Pebble,
+    Surface::Flagstone,
+    Surface::Boards,
     Surface::Window,
     Surface::Door,
     Surface::Bark,
@@ -132,16 +133,29 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             let v = 0.72 + 0.22 * id + 0.08 * n(4, 3);
             grey(if crack { 0.5 } else { v + if y % 11 == 0 { -0.06 } else { 0.0 } })
         }
-        Surface::Gravel => {
-            // Pea gravel: small round stones with darker gaps, a few dark/light speckles.
-            let (d1, d2, id) = voronoi(x, y, 8, 4);
-            let v = if d2 - d1 < 0.9 { 0.74 } else { 0.86 + 0.12 * id - 0.04 * (d1 / 2.0).min(1.0) };
-            let v = if r > 0.93 { v * 0.82 } else if r < 0.05 { v * 1.08 } else { v };
-            rgb(v, v * 0.98, v * 0.95)
+        Surface::Sand => {
+            // Fine warm grains: the soil speckle, lighter and softer.
+            let d = texel(Surface::Dirt, x, y);
+            let v = 0.9 + 0.1 * (d[0] - 0.8);
+            grey(v)
         }
-        Surface::Concrete => {
-            // Board-formed concrete: horizontal boards (5–6 px), each with its own tone and
-            // a faint grain, 1 px seam lines, tie-hole dots on a 16 px grid with short drips.
+        Surface::DryStone => {
+            // Dry-stone courses (placeholder: chiselled 32×16 blocks with dark joints).
+            let ry = y % 16;
+            let margin = ry < 2 || x < 2 || ry == 15 || x == 31;
+            let joint = ry == 15 || x == 31;
+            let stipple = hash(x, y, 41) * 0.5 + hash(x / 2, y / 2, 42) * 0.5;
+            let v = if joint {
+                0.6
+            } else if margin {
+                0.9 + 0.03 * (r - 0.5)
+            } else {
+                0.78 + 0.14 * stipple + 0.04 * (n(8, 43) - 0.5)
+            };
+            grey(v)
+        }
+        Surface::Daub => {
+            // Daub (placeholder: smooth plaster bands with faint pits and drips).
             const EDGES: [i32; 7] = [0, 6, 11, 16, 22, 27, 32];
             let b = EDGES.iter().rposition(|e| *e <= y).unwrap_or(0).min(5) as i32;
             let top = y == EDGES[b as usize];
@@ -164,23 +178,53 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             }
             grey(v)
         }
-        Surface::Plinth => {
-            // Bush-hammered: dense stipple, chiselled 2 px margin around 32×16 courses.
-            let ry = y % 16;
-            let margin = ry < 2 || x < 2 || ry == 15 || x == 31;
-            let joint = ry == 15 || x == 31;
-            let stipple = hash(x, y, 41) * 0.5 + hash(x / 2, y / 2, 42) * 0.5;
-            let v = if joint {
-                0.6
-            } else if margin {
-                0.9 + 0.03 * (r - 0.5)
-            } else {
-                0.78 + 0.14 * stipple + 0.04 * (n(8, 43) - 0.5)
-            };
+        Surface::Plank => {
+            // Vertical 8 px planks, 1 px shadow gap, weathering cracks, a lighter batten edge.
+            let px = x % 8;
+            let plank = x / 8;
+            let crack = (y + plank * 5).rem_euclid(5) == 0 && hash(plank, y / 5, 9) > 0.35;
+            let grain = vnoise(x * 4, y, 4, 8 + plank as u32);
+            let mut v = 0.84 + 0.08 * hash(plank, 0, 9) + 0.07 * (grain - 0.5);
+            if px == 7 {
+                v = 0.5;
+            } else if px == 0 {
+                v += 0.07;
+            } else if crack {
+                v -= 0.12;
+            }
             grey(v)
         }
-        Surface::Earth => {
-            // Rammed earth: wavy horizontal strata of warm tones, thin darker lifts, pebbles.
+        Surface::Timber => {
+            // Timber (placeholder: faint vertical grain streaks).
+            let streak = vnoise(x, y / 8, 2, 10);
+            let v = 0.88 + 0.07 * (streak - 0.5) + if r > 0.96 { -0.06 } else { 0.0 };
+            rgb(v, v, v * 1.02)
+        }
+        Surface::Thatch => {
+            // Thatch (placeholder: vertical straw ribs every 8 px, lit and shadow side).
+            let px = x % 8;
+            let pan = 0.84 + 0.04 * hash(x / 8, 0, 15) + 0.03 * (n(16, 14) - 0.5);
+            let v = match px {
+                0 => 1.0,
+                1 => 0.68,
+                _ => pan,
+            };
+            rgb(v * 0.98, v, v * 1.03)
+        }
+        Surface::Turf => {
+            // Turf: dense green-tinted speckle of grass tufts, with rare flower dots.
+            let (d1, _, id) = voronoi(x, y, 8, 13);
+            let mut v = 0.95 - (d1 / 2.4).min(1.0) * 0.3 + 0.08 * id;
+            if r > 0.985 {
+                return rgb(1.0, 0.82, 0.62);
+            } else if r > 0.97 {
+                return rgb(1.0, 1.0, 0.72);
+            }
+            v += 0.04 * (n(8, 14) - 0.5);
+            rgb(v * 0.95, v, v * 0.88)
+        }
+        Surface::Hide => {
+            // Hide (placeholder: wavy warm bands with darker seams).
             let wave = (3.0 * (vnoise(x, 0, 16, 44) - 0.5)) as i32;
             let yy = (y + wave).rem_euclid(32);
             const BANDS: [(i32, [f32; 3]); 6] = [
@@ -197,54 +241,8 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             let k = if r > 0.95 { k * 0.85 } else if r < 0.03 { k * 1.06 } else { k };
             rgb(c[0] * k, c[1] * k, c[2] * k)
         }
-        Surface::Cladding => {
-            // Charred timber (shou sugi ban): vertical 8 px boards, 1 px shadow gap,
-            // alligator-crack texture in blocky cells, a lighter batten edge.
-            let px = x % 8;
-            let plank = x / 8;
-            let crack = (y + plank * 5).rem_euclid(5) == 0 && hash(plank, y / 5, 9) > 0.35;
-            let grain = vnoise(x * 4, y, 4, 8 + plank as u32);
-            let mut v = 0.84 + 0.08 * hash(plank, 0, 9) + 0.07 * (grain - 0.5);
-            if px == 7 {
-                v = 0.5;
-            } else if px == 0 {
-                v += 0.07;
-            } else if crack {
-                v -= 0.12;
-            }
-            grey(v)
-        }
-        Surface::Steel => {
-            // Flat steel plate with faint vertical mill streaks.
-            let streak = vnoise(x, y / 8, 2, 10);
-            let v = 0.88 + 0.07 * (streak - 0.5) + if r > 0.96 { -0.06 } else { 0.0 };
-            rgb(v, v, v * 1.02)
-        }
-        Surface::Sedum => {
-            // Sedum mat: dense green-tinted speckle of rosettes, with rare flower dots.
-            let (d1, _, id) = voronoi(x, y, 8, 13);
-            let mut v = 0.95 - (d1 / 2.4).min(1.0) * 0.3 + 0.08 * id;
-            if r > 0.985 {
-                return rgb(1.0, 0.82, 0.62);
-            } else if r > 0.97 {
-                return rgb(1.0, 1.0, 0.72);
-            }
-            v += 0.04 * (n(8, 14) - 0.5);
-            rgb(v * 0.95, v, v * 0.88)
-        }
-        Surface::Seam => {
-            // Standing seam: vertical ribs every 8 px (lit side, shadow side), flat pans.
-            let px = x % 8;
-            let pan = 0.84 + 0.04 * hash(x / 8, 0, 15) + 0.03 * (n(16, 14) - 0.5);
-            let v = match px {
-                0 => 1.0,
-                1 => 0.68,
-                _ => pan,
-            };
-            rgb(v * 0.98, v, v * 1.03)
-        }
-        Surface::Precast => {
-            // Coffered precast: 16 px panels, raised 3 px ribs, recessed centre with a
+        Surface::Carving => {
+            // Carving (placeholder relief): 16 px panels, raised 3 px ribs, recessed centre with a
             // shadowed top/left inner edge and a lit bottom/right one.
             let (cx, cy) = (x % 16, y % 16);
             let rib = cx < 3 || cy < 3;
@@ -259,18 +257,19 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
             };
             grey(v + if r > 0.96 { -0.04 } else { 0.0 })
         }
-        Surface::Pavers => {
-            // Small square pavers in a grid (8 px), 1 px joints, per-paver tone.
-            let joint = x % 8 == 7 || y % 8 == 7;
-            if joint {
-                grey(0.6)
-            } else {
-                let id = hash(x / 8, y / 8, 17);
-                let edge = x % 8 == 0 || y % 8 == 0;
-                grey(0.82 + 0.12 * id + if edge { 0.04 } else { 0.0 } + 0.03 * (r - 0.5))
-            }
+        Surface::Shell => {
+            // Crushed shell: the pebble painter at a finer grain, bright.
+            let p = texel(Surface::Pebble, x * 2, y * 2);
+            grey((p[0] * 1.08).min(1.0))
         }
-        Surface::Slabs => {
+        Surface::Pebble => {
+            // Beach pebbles: small round stones with darker gaps, a few dark/light speckles.
+            let (d1, d2, id) = voronoi(x, y, 8, 4);
+            let v = if d2 - d1 < 0.9 { 0.74 } else { 0.86 + 0.12 * id - 0.04 * (d1 / 2.0).min(1.0) };
+            let v = if r > 0.93 { v * 0.82 } else if r < 0.05 { v * 1.08 } else { v };
+            rgb(v, v * 0.98, v * 0.95)
+        }
+        Surface::Flagstone => {
             // Large slabs (16 px, offset rows) with grassy joints.
             let row = y / 16;
             let xs = (x + if row % 2 == 1 { 8 } else { 0 }).rem_euclid(32);
@@ -283,14 +282,9 @@ fn texel(s: Surface, x: i32, y: i32) -> [f32; 4] {
                 grey(0.84 + 0.1 * id + 0.04 * (n(4, 19) - 0.5) + if jx == 0 || jy == 0 { 0.03 } else { 0.0 })
             }
         }
-        Surface::Poured => {
-            // Poured concrete: smooth, saw-cut joints every 16 px, faint trowel arcs, pits.
-            if x % 16 == 15 || y == 31 {
-                grey(0.66)
-            } else {
-                let arc = ((x as f32 * 0.4).sin() + (y as f32 * 0.3).cos() * 0.6) * 0.012;
-                grey(0.88 + arc + 0.05 * (n(8, 20) - 0.5) - if r > 0.97 { 0.08 } else { 0.0 })
-            }
+        Surface::Boards => {
+            // Deck boards: the plank painter turned to run across the deck.
+            texel(Surface::Plank, y, x)
         }
         Surface::Window => {
             // Deep glazing: 2 px frame, two vertical mullions and a transom; glass untinted
@@ -417,6 +411,6 @@ mod tests {
     fn glow_and_glass_are_emissive() {
         assert_eq!(texel(Surface::Glow, 3, 3)[3], 1.0);
         assert!(texel(Surface::Window, 8, 8)[3] > 0.9);
-        assert!(texel(Surface::Concrete, 8, 8)[3] < 0.9);
+        assert!(texel(Surface::DryStone, 8, 8)[3] < 0.9);
     }
 }

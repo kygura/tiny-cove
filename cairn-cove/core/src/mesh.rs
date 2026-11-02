@@ -13,47 +13,51 @@ use glam::{Vec2, Vec3};
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Surface {
+    /// Lush island grass.
     Grass = 0,
-    /// Bare soil.
+    /// Bare earth.
     Dirt,
+    /// Headland rock and cliffs.
     Rock,
-    /// Loose gravel / sand.
-    Gravel,
-    /// Board-formed concrete: horizontal plank imprint, tie holes (walls, blocks).
-    Concrete,
-    /// Darker bush-hammered concrete plinth.
-    Plinth,
-    /// Rammed earth: warm horizontal strata.
-    Earth,
-    /// Charred vertical timber cladding.
-    Cladding,
-    /// Steel members (beams, posts, rails, fins). Tinted by the accent colour.
-    Steel,
-    /// Green roof: sedum / moss mat.
-    Sedum,
-    /// Standing-seam metal roof.
-    Seam,
-    /// Smooth precast panels with coffers (shell roofs, bridges).
-    Precast,
-    /// Small concrete pavers.
-    Pavers,
-    /// Large concrete slabs with grass joints.
-    Slabs,
-    /// Poured concrete with expansion joints.
-    Poured,
-    /// Deep glazing with thin mullions. Emissive at night.
+    /// Beach sand (wet sand is the same tile, tinted darker).
+    Sand,
+    /// Dry-stone courses: flat stacked stones (dykes, beacons, stone huts).
+    DryStone,
+    /// Wattle-and-daub limewash (tinted by the wall colour).
+    Daub,
+    /// Vertical driftwood planks with painted bands.
+    Plank,
+    /// Timber posts, beams, rails and log piles.
+    Timber,
+    /// Golden straw thatch.
+    Thatch,
+    /// Turf / sod bands with grass.
+    Turf,
+    /// Stretched hide or sailcloth.
+    Hide,
+    /// Painted carved wood, tinted by the trim colour.
+    Carving,
+    /// Crushed white shell.
+    Shell,
+    /// Cobbled beach pebbles.
+    Pebble,
+    /// Slate flagstones with grass joints.
+    Flagstone,
+    /// Deck boards (jetties, boardwalks, bridge decks).
+    Boards,
+    /// Small shuttered window. Emissive at night.
     Window,
-    /// Flush steel / timber door.
+    /// Plank door or hide curtain.
     Door,
     Bark,
     Leaves,
-    /// Moss, ivy, rope, cloth — soft fibrous green-ish.
+    /// Rope, nets, reed and weave.
     Fiber,
     /// Flower petals / small plants: flat colour with a little speckle.
     Petal,
-    /// Dark metal (lamp housings, hinges, panels).
+    /// Iron (fire baskets, hinges, lantern frames).
     Metal,
-    /// Lamp glass / sodium light. Always emissive.
+    /// Lantern glass and fire. Always emissive.
     Glow,
     /// Water surface (only used in the water mesh).
     Water,
@@ -303,16 +307,21 @@ pub enum MarkerKind {
     Lantern,
     /// A window that glows at night (light leaking out).
     WindowLight,
-    /// Vent stack: steam emitter.
+    /// Smoke hole: smoke emitter.
     ChimneySmoke,
-    /// In front of a door: where deer may gather.
+    /// In front of a door: where villagers and animals may gather.
     Door,
-    /// Roof ridge / wall top / tower top: birds land here.
+    /// Roof ridge / dyke top / beacon top: gulls land here.
     Perch,
-    /// Open water: ducks swim here.
+    /// Open water: birds swim here.
     Pond,
-    /// Flag that should flutter (renderer may animate); pos = top of pole.
+    /// Flag or pennant that should flutter (renderer may animate); pos = top of pole.
     Flag,
+    /// Open flame (firepit, beacon basket): flame particles plus a flickering light.
+    Fire,
+    /// A moored or floating canoe the Bevy side spawns as a bobbing entity; `dir` is the
+    /// hull direction.
+    Boat,
 }
 
 /// Deterministic hash of a seed and a position (decoration randomness).
@@ -364,15 +373,15 @@ mod tests {
     #[test]
     fn helpers_emit_valid_meshes() {
         let mut m = MeshData::default();
-        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Concrete, 1.0);
-        m.beam(Vec3::ZERO, Vec3::new(3.0, 1.0, 0.0), 0.2, 0.2, Vec3::ONE, Surface::Steel, 1.0);
-        m.cylinder(Vec3::ZERO, 1.0, 0.0, 2.0, 8, false, true, Vec3::ONE, Surface::Seam, 1.0);
-        m.cylinder(Vec3::ZERO, 1.0, 1.0, 2.0, 8, true, true, Vec3::ONE, Surface::Concrete, 1.0);
+        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::DryStone, 1.0);
+        m.beam(Vec3::ZERO, Vec3::new(3.0, 1.0, 0.0), 0.2, 0.2, Vec3::ONE, Surface::Timber, 1.0);
+        m.cylinder(Vec3::ZERO, 1.0, 0.0, 2.0, 8, false, true, Vec3::ONE, Surface::Thatch, 1.0);
+        m.cylinder(Vec3::ZERO, 1.0, 1.0, 2.0, 8, true, true, Vec3::ONE, Surface::DryStone, 1.0);
         assert!(m.is_valid());
         assert!(!m.is_empty());
         // Box top normal faces up.
         let mut b = MeshData::default();
-        b.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Concrete, 1.0);
+        b.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::DryStone, 1.0);
         assert!(b.normals.iter().any(|n| n[1] > 0.99));
         assert!(b.normals.iter().any(|n| n[1] < -0.99));
         // Every face of a box points away from its centre (outward winding).

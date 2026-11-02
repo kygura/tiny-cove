@@ -166,14 +166,14 @@ fn house(m: &mut MeshData, origin: Vec3, w: f32, d: f32, h: f32, colors: Colors,
     let trim = palette::trim(colors);
     let roofc = palette::roof(colors);
     let o = origin;
-    m.aabb_out(o + Vec3::new(-w / 2.0 - 0.1, 0.0, -d / 2.0 - 0.1), o + Vec3::new(w / 2.0 + 0.1, 0.5, d / 2.0 + 0.1), palette::foundation(), Surface::Plinth, 1.0);
-    m.aabb_out(o + Vec3::new(-w / 2.0, 0.5, -d / 2.0), o + Vec3::new(w / 2.0, h, d / 2.0), wall, Surface::Earth, 1.0);
+    m.aabb_out(o + Vec3::new(-w / 2.0 - 0.1, 0.0, -d / 2.0 - 0.1), o + Vec3::new(w / 2.0 + 0.1, 0.5, d / 2.0 + 0.1), palette::foundation(), Surface::Rock, 1.0);
+    m.aabb_out(o + Vec3::new(-w / 2.0, 0.5, -d / 2.0), o + Vec3::new(w / 2.0, h, d / 2.0), wall, Surface::Daub, 1.0);
     // Half-timbering on the front (+z) face.
     let fz = o.z + d / 2.0 + 0.04;
     for x in [-w / 2.0, -w / 6.0, w / 6.0, w / 2.0] {
-        m.obox_out(Vec3::new(o.x + x, o.y + (h + 0.5) / 2.0, fz), Vec3::new(0.12, (h - 0.5) / 2.0, 0.06), Vec3::X, trim, Surface::Steel, 1.0);
+        m.obox_out(Vec3::new(o.x + x, o.y + (h + 0.5) / 2.0, fz), Vec3::new(0.12, (h - 0.5) / 2.0, 0.06), Vec3::X, trim, Surface::Timber, 1.0);
     }
-    m.beam(Vec3::new(o.x - w / 2.0, o.y + h * 0.62, fz), Vec3::new(o.x + w / 2.0, o.y + h * 0.62, fz), 0.12, 0.2, trim, Surface::Steel, 1.0);
+    m.beam(Vec3::new(o.x - w / 2.0, o.y + h * 0.62, fz), Vec3::new(o.x + w / 2.0, o.y + h * 0.62, fz), 0.12, 0.2, trim, Surface::Timber, 1.0);
     // Door + windows (front), windows (side).
     let p = |x: f32, y: f32| Vec3::new(o.x + x, o.y + y, fz + 0.03);
     m.quad(p(-0.45, 0.5), p(0.45, 0.5), p(0.45, 2.3), p(-0.45, 2.3), trim, Surface::Door, 1.0 / 1.8);
@@ -196,10 +196,10 @@ fn house(m: &mut MeshData, origin: Vec3, w: f32, d: f32, h: f32, colors: Colors,
         let a = Vec3::new(x, o.y + h, o.z - d / 2.0);
         let b = Vec3::new(x, o.y + h, o.z + d / 2.0);
         let c = Vec3::new(x, ridge - 0.15, o.z);
-        if flip { m.tri(a, b, c, wall, Surface::Earth, 1.0) } else { m.tri(b, a, c, wall, Surface::Earth, 1.0) }
+        if flip { m.tri(a, b, c, wall, Surface::Daub, 1.0) } else { m.tri(b, a, c, wall, Surface::Daub, 1.0) }
     }
     // Chimney.
-    m.aabb_out(Vec3::new(o.x + w / 4.0 - 0.35, o.y + h, o.z - 0.9), Vec3::new(o.x + w / 4.0 + 0.35, ridge + 0.9, o.z - 0.2), palette::stone(), Surface::Concrete, 1.0);
+    m.aabb_out(Vec3::new(o.x + w / 4.0 - 0.35, o.y + h, o.z - 0.9), Vec3::new(o.x + w / 4.0 + 0.35, ridge + 0.9, o.z - 0.2), palette::stone(), Surface::DryStone, 1.0);
 }
 
 fn diorama() -> (MeshData, MeshData, Vec3) {
@@ -220,40 +220,40 @@ fn diorama() -> (MeshData, MeshData, Vec3) {
         }
     }
     // Pond bed (sand) under the water.
-    m.quad(Vec3::new(-16.0, -0.4, 12.0), Vec3::new(0.0, -0.4, 12.0), Vec3::new(0.0, -0.4, 0.0), Vec3::new(-16.0, -0.4, 0.0), palette::sand(), Surface::Gravel, 1.0);
+    m.quad(Vec3::new(-16.0, -0.4, 12.0), Vec3::new(0.0, -0.4, 12.0), Vec3::new(0.0, -0.4, 0.0), Vec3::new(-16.0, -0.4, 0.0), palette::sand(), Surface::Sand, 1.0);
     // Cobble path and flagstones.
     for k in 0..8 {
         let z = -2.0 + k as f32 * 1.6;
-        m.quad(Vec3::new(4.2, 0.02, z + 1.6), Vec3::new(5.8, 0.02, z + 1.6), Vec3::new(5.8, 0.02, z), Vec3::new(4.2, 0.02, z), palette::rock(), Surface::Pavers, 0.6);
+        m.quad(Vec3::new(4.2, 0.02, z + 1.6), Vec3::new(5.8, 0.02, z + 1.6), Vec3::new(5.8, 0.02, z), Vec3::new(4.2, 0.02, z), palette::rock(), Surface::Pebble, 0.6);
     }
     m.quad(Vec3::new(5.8, 0.02, 1.0), Vec3::new(12.0, 0.02, 1.0), Vec3::new(12.0, 0.02, -0.6), Vec3::new(5.8, 0.02, -0.6), palette::dirt(), Surface::Dirt, 0.5);
-    m.quad(Vec3::new(-2.0, 0.02, 12.0), Vec3::new(4.2, 0.02, 12.0), Vec3::new(4.2, 0.02, 9.6), Vec3::new(-2.0, 0.02, 9.6), palette::stone(), Surface::Slabs, 0.5);
+    m.quad(Vec3::new(-2.0, 0.02, 12.0), Vec3::new(4.2, 0.02, 12.0), Vec3::new(4.2, 0.02, 9.6), Vec3::new(-2.0, 0.02, 9.6), palette::stone(), Surface::Flagstone, 0.5);
 
-    house(&mut m, Vec3::new(0.0, 0.0, 0.0), 6.0, 4.5, 3.2, Colors { roof: 0, wall: 0, trim: 0 }, Surface::Sedum);
-    house(&mut m, Vec3::new(9.0, 0.0, -6.0), 4.5, 4.0, 2.6, Colors { roof: 1, wall: 2, trim: 2 }, Surface::Seam);
-    house(&mut m, Vec3::new(-6.0, 0.0, -8.0), 5.0, 4.0, 2.4, Colors { roof: 4, wall: 3, trim: 1 }, Surface::Precast);
+    house(&mut m, Vec3::new(0.0, 0.0, 0.0), 6.0, 4.5, 3.2, Colors { roof: 0, wall: 0, trim: 0 }, Surface::Turf);
+    house(&mut m, Vec3::new(9.0, 0.0, -6.0), 4.5, 4.0, 2.6, Colors { roof: 1, wall: 2, trim: 2 }, Surface::Thatch);
+    house(&mut m, Vec3::new(-6.0, 0.0, -8.0), 5.0, 4.0, 2.4, Colors { roof: 4, wall: 3, trim: 1 }, Surface::Thatch);
 
     // Stone wall with battlements and a tower.
     let stone = palette::stone();
-    m.beam(Vec3::new(-14.0, 0.0, -14.0), Vec3::new(14.0, 0.0, -14.0), 1.0, 3.0, stone, Surface::Concrete, 0.7);
+    m.beam(Vec3::new(-14.0, 0.0, -14.0), Vec3::new(14.0, 0.0, -14.0), 1.0, 3.0, stone, Surface::DryStone, 0.7);
     let mut x = -13.6;
     while x < 14.0 {
-        m.aabb_out(Vec3::new(x, 3.0, -14.5), Vec3::new(x + 0.8, 3.6, -13.5), stone, Surface::Concrete, 0.7);
+        m.aabb_out(Vec3::new(x, 3.0, -14.5), Vec3::new(x + 0.8, 3.6, -13.5), stone, Surface::DryStone, 0.7);
         x += 1.6;
     }
     let t = Vec3::new(14.0, 0.0, -14.0);
-    m.cylinder(t, 2.2, 2.0, 7.0, 10, true, false, stone, Surface::Concrete, 0.7);
-    m.cylinder(t + Vec3::Y * 7.0, 2.6, 0.0, 4.0, 10, false, true, palette::roof(Colors { roof: 1, wall: 0, trim: 0 }), Surface::Seam, 1.0);
+    m.cylinder(t, 2.2, 2.0, 7.0, 10, true, false, stone, Surface::DryStone, 0.7);
+    m.cylinder(t + Vec3::Y * 7.0, 2.6, 0.0, 4.0, 10, false, true, palette::roof(Colors { roof: 1, wall: 0, trim: 0 }), Surface::Thatch, 1.0);
     m.quad(t + Vec3::new(-0.3, 4.0, 2.05), t + Vec3::new(0.3, 4.0, 2.05), t + Vec3::new(0.3, 5.2, 2.05), t + Vec3::new(-0.3, 5.2, 2.05), Vec3::ONE, Surface::Window, 1.0);
 
     // Wooden fence.
     let wood = palette::wood();
     for k in 0..7 {
         let x = -16.0 + k as f32 * 1.5;
-        m.obox_out(Vec3::new(x, 0.5, 14.0), Vec3::new(0.08, 0.5, 0.08), Vec3::X, wood, Surface::Steel, 1.0);
+        m.obox_out(Vec3::new(x, 0.5, 14.0), Vec3::new(0.08, 0.5, 0.08), Vec3::X, wood, Surface::Timber, 1.0);
     }
-    m.beam(Vec3::new(-16.0, 0.65, 14.0), Vec3::new(-7.0, 0.65, 14.0), 0.08, 0.12, wood, Surface::Cladding, 1.0);
-    m.beam(Vec3::new(-16.0, 0.3, 14.0), Vec3::new(-7.0, 0.3, 14.0), 0.08, 0.12, wood, Surface::Cladding, 1.0);
+    m.beam(Vec3::new(-16.0, 0.65, 14.0), Vec3::new(-7.0, 0.65, 14.0), 0.08, 0.12, wood, Surface::Plank, 1.0);
+    m.beam(Vec3::new(-16.0, 0.3, 14.0), Vec3::new(-7.0, 0.3, 14.0), 0.08, 0.12, wood, Surface::Plank, 1.0);
 
     // Trees.
     for (p, pine) in [(Vec3::new(-12.0, 0.0, -3.0), false), (Vec3::new(12.0, 0.0, 8.0), true), (Vec3::new(-3.0, 0.0, -11.0), false), (Vec3::new(16.0, 0.0, 2.0), true)] {
@@ -275,8 +275,8 @@ fn diorama() -> (MeshData, MeshData, Vec3) {
         m.aabb_out(p, p + Vec3::new(0.25, 0.3, 0.25), palette::flower(k), Surface::Petal, 1.0);
     }
     // Haystack, crate, lantern post.
-    m.cylinder(Vec3::new(6.5, 0.0, 6.0), 1.0, 0.2, 1.8, 8, false, false, palette::hay(), Surface::Precast, 1.0);
-    m.aabb_out(Vec3::new(3.5, 0.0, 3.0), Vec3::new(4.2, 0.7, 3.7), wood, Surface::Cladding, 1.0);
+    m.cylinder(Vec3::new(6.5, 0.0, 6.0), 1.0, 0.2, 1.8, 8, false, false, palette::hay(), Surface::Thatch, 1.0);
+    m.aabb_out(Vec3::new(3.5, 0.0, 3.0), Vec3::new(4.2, 0.7, 3.7), wood, Surface::Plank, 1.0);
     let lamp = Vec3::new(3.8, 0.0, 6.0);
     m.obox_out(lamp + Vec3::Y * 1.1, Vec3::new(0.07, 1.1, 0.07), Vec3::X, palette::metal(), Surface::Metal, 1.0);
     m.aabb_out(lamp + Vec3::new(-0.18, 2.2, -0.18), lamp + Vec3::new(0.18, 2.6, 0.18), palette::glow(), Surface::Glow, 1.0);
@@ -286,10 +286,10 @@ fn diorama() -> (MeshData, MeshData, Vec3) {
     water.quad(Vec3::new(-15.0, -0.15, 11.0), Vec3::new(-1.0, -0.15, 11.0), Vec3::new(-1.0, -0.15, 1.0), Vec3::new(-15.0, -0.15, 1.0), Vec3::ONE, Surface::Water, 1.0);
     // Pond banks (sand) from ground level down to the bed.
     let s = palette::sand();
-    m.quad(Vec3::new(-15.0, 0.0, 1.0), Vec3::new(-1.0, 0.0, 1.0), Vec3::new(-1.0, -0.4, 1.0), Vec3::new(-15.0, -0.4, 1.0), s, Surface::Gravel, 1.0);
-    m.quad(Vec3::new(-1.0, 0.0, 11.0), Vec3::new(-15.0, 0.0, 11.0), Vec3::new(-15.0, -0.4, 11.0), Vec3::new(-1.0, -0.4, 11.0), s, Surface::Gravel, 1.0);
-    m.quad(Vec3::new(-1.0, 0.0, 1.0), Vec3::new(-1.0, 0.0, 11.0), Vec3::new(-1.0, -0.4, 11.0), Vec3::new(-1.0, -0.4, 1.0), s, Surface::Gravel, 1.0);
-    m.quad(Vec3::new(-15.0, 0.0, 11.0), Vec3::new(-15.0, 0.0, 1.0), Vec3::new(-15.0, -0.4, 1.0), Vec3::new(-15.0, -0.4, 11.0), s, Surface::Gravel, 1.0);
+    m.quad(Vec3::new(-15.0, 0.0, 1.0), Vec3::new(-1.0, 0.0, 1.0), Vec3::new(-1.0, -0.4, 1.0), Vec3::new(-15.0, -0.4, 1.0), s, Surface::Sand, 1.0);
+    m.quad(Vec3::new(-1.0, 0.0, 11.0), Vec3::new(-15.0, 0.0, 11.0), Vec3::new(-15.0, -0.4, 11.0), Vec3::new(-1.0, -0.4, 11.0), s, Surface::Sand, 1.0);
+    m.quad(Vec3::new(-1.0, 0.0, 1.0), Vec3::new(-1.0, 0.0, 11.0), Vec3::new(-1.0, -0.4, 11.0), Vec3::new(-1.0, -0.4, 1.0), s, Surface::Sand, 1.0);
+    m.quad(Vec3::new(-15.0, 0.0, 11.0), Vec3::new(-15.0, 0.0, 1.0), Vec3::new(-15.0, -0.4, 1.0), Vec3::new(-15.0, -0.4, 11.0), s, Surface::Sand, 1.0);
     (m, water, lamp + Vec3::Y * 2.4)
 }
 

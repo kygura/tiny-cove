@@ -149,7 +149,7 @@ fn fern_clump(m: &mut MeshData, at: Vec3, scale: f32, rng: &mut Rng) {
 fn build_tree(kind: TreeKind, rng: &mut Rng) -> (MeshData, Vec<Marker>) {
     let mut m = MeshData::default();
     match kind {
-        TreeKind::Oak => {
+        TreeKind::Snag => {
             let bark = tint(palette::bark(), rng, 0.3);
             cyl(&mut m, Vec3::ZERO, 0.30, 0.18, 2.4, 6, (false, false), bark, Surface::Bark);
             let spots = [(0.0, 3.7, 0.0, 1.45), (0.95, 3.1, 0.35, 1.05), (-0.85, 3.2, -0.4, 1.15), (0.2, 3.2, -1.0, 0.95), (-0.2, 4.2, 0.5, 0.95)];
@@ -159,7 +159,7 @@ fn build_tree(kind: TreeKind, rng: &mut Rng) -> (MeshData, Vec<Marker>) {
                 blob(&mut m, V(x, y, z), V(r, r * 0.85, r), 0.18, col, Surface::Leaves, rng, None);
             }
         }
-        TreeKind::Fern => {
+        TreeKind::Palm => {
             let bark = tint(palette::bark() * V(0.9, 0.7, 0.6), rng, 0.3);
             cyl(&mut m, Vec3::ZERO, 0.17, 0.11, 2.5, 6, (false, false), bark, Surface::Bark);
             for y in [0.5, 1.2, 1.9] {
@@ -175,7 +175,7 @@ fn build_tree(kind: TreeKind, rng: &mut Rng) -> (MeshData, Vec<Marker>) {
             }
             cyl(&mut m, V(0.0, 2.45, 0.0), 0.1, 0.0, 0.4, 5, (false, false), palette::leaves() * 0.9, Surface::Leaves);
         }
-        TreeKind::Pine => {
+        TreeKind::SeaPine => {
             let bark = tint(palette::bark(), rng, 0.3) * 0.8;
             cyl(&mut m, Vec3::ZERO, 0.26, 0.16, 1.4, 6, (false, false), bark, Surface::Bark);
             let four = rng.f() < 0.6;
@@ -189,7 +189,7 @@ fn build_tree(kind: TreeKind, rng: &mut Rng) -> (MeshData, Vec<Marker>) {
                 cyl(&mut m, V(0.0, y, 0.0), r, 0.0, h, 7, (false, true), col, Surface::Leaves);
             }
         }
-        TreeKind::Birch => {
+        TreeKind::Cypress => {
             let white = V(0.88, 0.87, 0.82);
             cyl(&mut m, Vec3::ZERO, 0.12, 0.07, 3.6, 6, (false, false), white, Surface::Bark);
             for _ in 0..6 {
@@ -204,7 +204,7 @@ fn build_tree(kind: TreeKind, rng: &mut Rng) -> (MeshData, Vec<Marker>) {
                 blob(&mut m, V(x, y, z), V(r, r * 0.9, r), 0.2, col, Surface::Leaves, rng, None);
             }
         }
-        TreeKind::Fruit => {
+        TreeKind::Fig => {
             let bark = tint(palette::bark(), rng, 0.3);
             cyl(&mut m, Vec3::ZERO, 0.2, 0.14, 1.3, 6, (false, false), bark, Surface::Bark);
             let c = V(0.0, 2.0, 0.0);
@@ -237,22 +237,22 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
     let trim = palette::trim(colors);
     let metal = palette::metal();
     match kind {
-        ClutterKind::RainBarrel => {
+        ClutterKind::Baskets => {
             let rust = tint(V(0.34, 0.14, 0.07), rng, 0.25);
-            cyl(&mut m, Vec3::ZERO, 0.38, 0.38, 0.9, 8, (true, true), rust, Surface::Steel);
+            cyl(&mut m, Vec3::ZERO, 0.38, 0.38, 0.9, 8, (true, true), rust, Surface::Timber);
             for y in [0.1, 0.45, 0.78] {
-                cyl(&mut m, V(0.0, y, 0.0), 0.4, 0.4, 0.05, 8, (false, false), rust * 0.7, Surface::Steel);
+                cyl(&mut m, V(0.0, y, 0.0), 0.4, 0.4, 0.05, 8, (false, false), rust * 0.7, Surface::Timber);
             }
             cyl(&mut m, V(0.0, 0.9, 0.0), 0.3, 0.3, 0.03, 8, (true, false), V(0.02, 0.03, 0.04), Surface::Metal);
             // Downpipe stub dropping into the drum.
-            m.beam(V(0.0, 1.22, -0.5), V(0.0, 1.22, -0.2), 0.07, 0.07, trim, Surface::Steel, 1.0);
-            cyl(&mut m, V(0.0, 0.9, -0.2), 0.035, 0.035, 0.34, 6, (false, false), trim, Surface::Steel);
-            cyl(&mut m, V(0.0, 0.0, -0.5), 0.035, 0.035, 1.25, 6, (false, false), trim, Surface::Steel);
+            m.beam(V(0.0, 1.22, -0.5), V(0.0, 1.22, -0.2), 0.07, 0.07, trim, Surface::Timber, 1.0);
+            cyl(&mut m, V(0.0, 0.9, -0.2), 0.035, 0.035, 0.34, 6, (false, false), trim, Surface::Timber);
+            cyl(&mut m, V(0.0, 0.0, -0.5), 0.035, 0.035, 1.25, 6, (false, false), trim, Surface::Timber);
         }
-        ClutterKind::Planter => {
+        ClutterKind::CrabPots => {
             let c = palette::wall(colors);
-            m.aabb(V(-0.5, 0.0, -0.5), V(0.5, 0.55, 0.5), c, Surface::Concrete, 1.0);
-            m.aabb(V(-0.54, 0.5, -0.54), V(0.54, 0.6, 0.54), c * 0.9, Surface::Plinth, 1.0);
+            m.aabb(V(-0.5, 0.0, -0.5), V(0.5, 0.55, 0.5), c, Surface::DryStone, 1.0);
+            m.aabb(V(-0.54, 0.5, -0.54), V(0.54, 0.6, 0.54), c * 0.9, Surface::Rock, 1.0);
             m.aabb(V(-0.44, 0.6, -0.44), V(0.44, 0.62, 0.44), palette::dirt() * 0.45, Surface::Dirt, 1.0);
             blob(&mut m, V(-0.05, 0.9, 0.0), V(0.42, 0.3, 0.42), 0.2, tint(palette::leaves(), rng, 0.3), Surface::Leaves, rng, None);
             for _ in 0..4 {
@@ -263,87 +263,88 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
                 m.aabb(V(x - 0.06, h, z - 0.06), V(x + 0.06, h + 0.07, z + 0.06), col, Surface::Petal, 1.0);
             }
         }
-        ClutterKind::Compost => {
+        ClutterKind::Firepit => {
             let slat = |m: &mut MeshData, a: Vec3, b: Vec3| {
                 for k in 0..4 {
                     let y = 0.1 + 0.2 * k as f32;
-                    m.beam(a + Vec3::Y * y, b + Vec3::Y * y, 0.04, 0.15, wood * (0.9 + 0.05 * k as f32), Surface::Cladding, 1.0);
+                    m.beam(a + Vec3::Y * y, b + Vec3::Y * y, 0.04, 0.15, wood * (0.9 + 0.05 * k as f32), Surface::Plank, 1.0);
                 }
             };
             for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                m.aabb(V(sx * 0.62 - 0.05, 0.0, sz * 0.5 - 0.05), V(sx * 0.62 + 0.05, 0.9, sz * 0.5 + 0.05), wood * 0.8, Surface::Cladding, 1.0);
+                m.aabb(V(sx * 0.62 - 0.05, 0.0, sz * 0.5 - 0.05), V(sx * 0.62 + 0.05, 0.9, sz * 0.5 + 0.05), wood * 0.8, Surface::Plank, 1.0);
             }
             slat(&mut m, V(-0.62, 0.0, -0.5), V(0.62, 0.0, -0.5));
             slat(&mut m, V(-0.62, 0.0, -0.5), V(-0.62, 0.0, 0.5));
             slat(&mut m, V(0.62, 0.0, -0.5), V(0.62, 0.0, 0.5));
             blob(&mut m, V(0.0, 0.3, 0.0), V(0.55, 0.45, 0.4), 0.2, palette::dirt() * 0.4, Surface::Dirt, rng, Some(0.05));
             blob(&mut m, V(0.2, 0.65, 0.05), V(0.22, 0.14, 0.22), 0.3, tint(palette::leaves() * 0.8, rng, 0.3), Surface::Leaves, rng, None);
+            markers.push(Marker { kind: MarkerKind::Fire, pos: V(0.0, 0.75, 0.0), dir: Vec3::Y });
         }
-        ClutterKind::Cistern => {
+        ClutterKind::CarvedPole => {
             let c = palette::wall(colors);
-            cyl(&mut m, Vec3::ZERO, 0.9, 0.85, 1.1, 10, (false, true), c, Surface::Concrete);
-            cyl(&mut m, V(0.0, 1.1, 0.0), 0.95, 0.95, 0.12, 10, (true, false), c * 0.9, Surface::Plinth);
+            cyl(&mut m, Vec3::ZERO, 0.9, 0.85, 1.1, 10, (false, true), c, Surface::DryStone);
+            cyl(&mut m, V(0.0, 1.1, 0.0), 0.95, 0.95, 0.12, 10, (true, false), c * 0.9, Surface::Rock);
             m.aabb(V(-0.25, 1.22, -0.25), V(0.25, 1.3, 0.25), metal, Surface::Metal, 1.0);
-            m.aabb(V(-0.1, 1.3, -0.03), V(0.1, 1.34, 0.03), trim, Surface::Steel, 1.0);
-            m.beam(V(0.0, 0.7, 0.9), V(0.0, 0.7, 1.15), 0.08, 0.08, trim, Surface::Steel, 1.0);
+            m.aabb(V(-0.1, 1.3, -0.03), V(0.1, 1.34, 0.03), trim, Surface::Timber, 1.0);
+            m.beam(V(0.0, 0.7, 0.9), V(0.0, 0.7, 1.15), 0.08, 0.08, trim, Surface::Timber, 1.0);
         }
-        ClutterKind::Wheelbarrow => {
+        ClutterKind::NetRack => {
             let rust = tint(V(0.34, 0.14, 0.07), rng, 0.25);
-            m.aabb(V(-0.8, 0.5, -0.5), V(0.8, 0.58, 0.5), rust, Surface::Steel, 1.0);
+            m.aabb(V(-0.8, 0.5, -0.5), V(0.8, 0.58, 0.5), rust, Surface::Timber, 1.0);
             for sz in [-1.0f32, 1.0] {
-                m.aabb(V(-0.8, 0.58, sz * 0.5 - 0.02), V(0.8, 0.85, sz * 0.5 + 0.02), rust * 0.95, Surface::Steel, 1.0);
+                m.aabb(V(-0.8, 0.58, sz * 0.5 - 0.02), V(0.8, 0.85, sz * 0.5 + 0.02), rust * 0.95, Surface::Timber, 1.0);
             }
             for sx in [-1.0f32, 1.0] {
-                m.aabb(V(sx * 0.8 - 0.02, 0.58, -0.5), V(sx * 0.8 + 0.02, 0.85, 0.5), rust * 0.95, Surface::Steel, 1.0);
+                m.aabb(V(sx * 0.8 - 0.02, 0.58, -0.5), V(sx * 0.8 + 0.02, 0.85, 0.5), rust * 0.95, Surface::Timber, 1.0);
             }
-            m.aabb(V(-0.03, 0.42, -0.6), V(0.03, 0.48, 0.6), trim, Surface::Steel, 1.0);
+            m.aabb(V(-0.03, 0.42, -0.6), V(0.03, 0.48, 0.6), trim, Surface::Timber, 1.0);
             for sz in [-1.0f32, 1.0] {
                 let z = sz * 0.58;
-                prism(&mut m, V(0.0, 0.45, z), V(0.0, 0.45, z + sz * 0.08), 0.45, 8, trim, trim * 0.8, Surface::Steel);
-                m.beam(V(0.8, 0.5, sz * 0.3), V(2.0, 0.35, sz * 0.3), 0.08, 0.08, wood, Surface::Cladding, 1.0);
+                prism(&mut m, V(0.0, 0.45, z), V(0.0, 0.45, z + sz * 0.08), 0.45, 8, trim, trim * 0.8, Surface::Timber);
+                m.beam(V(0.8, 0.5, sz * 0.3), V(2.0, 0.35, sz * 0.3), 0.08, 0.08, wood, Surface::Plank, 1.0);
             }
             blob(&mut m, V(0.0, 0.62, 0.0), V(0.6, 0.2, 0.4), 0.2, palette::dirt() * 0.45, Surface::Dirt, rng, None);
         }
-        ClutterKind::Bench => {
+        ClutterKind::Canoe => {
             let c = palette::wall(colors);
             for sx in [-0.55f32, 0.55] {
-                m.aabb(V(sx - 0.14, 0.0, -0.2), V(sx + 0.14, 0.38, 0.2), c * 0.9, Surface::Concrete, 1.0);
+                m.aabb(V(sx - 0.14, 0.0, -0.2), V(sx + 0.14, 0.38, 0.2), c * 0.9, Surface::DryStone, 1.0);
             }
-            m.aabb(V(-0.85, 0.38, -0.25), V(0.85, 0.52, 0.25), c, Surface::Concrete, 1.0);
+            m.aabb(V(-0.85, 0.38, -0.25), V(0.85, 0.52, 0.25), c, Surface::DryStone, 1.0);
             if rng.f() < 0.7 {
-                m.aabb(V(-0.5 + rng.f() * 0.5, 0.52, -0.2), V(0.1 + rng.f() * 0.6, 0.55, 0.0), palette::leaves() * 0.7, Surface::Sedum, 1.0);
+                m.aabb(V(-0.5 + rng.f() * 0.5, 0.52, -0.2), V(0.1 + rng.f() * 0.6, 0.55, 0.0), palette::leaves() * 0.7, Surface::Turf, 1.0);
             }
         }
-        ClutterKind::LampPost => {
+        ClutterKind::LanternPost => {
             let c = palette::wall(colors);
-            m.aabb(V(-0.17, 0.0, -0.17), V(0.17, 0.4, 0.17), c, Surface::Concrete, 1.0);
-            cyl(&mut m, V(0.0, 0.4, 0.0), 0.08, 0.05, 2.05, 6, (true, false), trim, Surface::Steel);
-            m.beam(V(0.0, 2.4, 0.0), V(0.5, 2.4, 0.0), 0.06, 0.06, trim, Surface::Steel, 1.0);
+            m.aabb(V(-0.17, 0.0, -0.17), V(0.17, 0.4, 0.17), c, Surface::DryStone, 1.0);
+            cyl(&mut m, V(0.0, 0.4, 0.0), 0.08, 0.05, 2.05, 6, (true, false), trim, Surface::Timber);
+            m.beam(V(0.0, 2.4, 0.0), V(0.5, 2.4, 0.0), 0.06, 0.06, trim, Surface::Timber, 1.0);
             m.aabb(V(0.49, 2.3, -0.015), V(0.51, 2.41, 0.015), metal, Surface::Metal, 1.0);
             m.aabb(V(0.38, 2.25, -0.12), V(0.62, 2.3, 0.12), metal, Surface::Metal, 1.0);
             m.aabb(V(0.38, 1.95, -0.12), V(0.62, 2.0, 0.12), metal, Surface::Metal, 1.0);
             m.aabb(V(0.41, 2.0, -0.09), V(0.59, 2.25, 0.09), palette::glow(), Surface::Glow, 1.0);
             markers.push(Marker { kind: MarkerKind::Lantern, pos: V(0.5, 2.12, 0.0), dir: Vec3::Y });
         }
-        ClutterKind::WindTurbine => {
+        ClutterKind::Pennant => {
             let c = palette::white() * 0.85;
-            cyl(&mut m, Vec3::ZERO, 0.12, 0.05, 5.3, 6, (true, false), c, Surface::Steel);
+            cyl(&mut m, Vec3::ZERO, 0.12, 0.05, 5.3, 6, (true, false), c, Surface::Timber);
             m.aabb(V(-0.12, 5.3, -0.1), V(0.3, 5.5, 0.1), metal, Surface::Metal, 1.0);
             let hub = V(0.4, 5.4, 0.0);
-            m.aabb(hub - V(0.0, 0.07, 0.07), hub + V(0.12, 0.07, 0.07), c, Surface::Steel, 1.0);
+            m.aabb(hub - V(0.0, 0.07, 0.07), hub + V(0.12, 0.07, 0.07), c, Surface::Timber, 1.0);
             let a0 = rng.f() * std::f32::consts::TAU;
             for k in 0..3 {
                 let a = a0 + k as f32 * std::f32::consts::TAU / 3.0;
                 let (d, s) = (V(0.0, a.cos(), a.sin()), V(0.0, -a.sin(), a.cos()));
                 let tip = hub + d * 1.1;
                 let (r0, r1) = (hub + d * 0.1 + s * 0.12, hub + d * 0.1 - s * 0.04);
-                tri2(&mut m, r0, r1, tip, c, Surface::Steel);
+                tri2(&mut m, r0, r1, tip, c, Surface::Timber);
             }
             markers.push(Marker { kind: MarkerKind::Flag, pos: hub, dir: Vec3::X });
         }
-        ClutterKind::WashingLine => {
+        ClutterKind::DryingRack => {
             for sx in [-1.6f32, 1.6] {
-                cyl(&mut m, V(sx, 0.0, 0.0), 0.06, 0.05, 2.1, 6, (true, false), trim, Surface::Steel);
+                cyl(&mut m, V(sx, 0.0, 0.0), 0.06, 0.05, 2.1, 6, (true, false), trim, Surface::Timber);
             }
             let line = |t: f32| V(-1.6 + 3.2 * t, 1.95 - 0.25 * (1.0 - (2.0 * t - 1.0).powi(2)), 0.0);
             for i in 0..6 {
@@ -357,7 +358,7 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
                 quad2(&mut m, V(p.x - w, p.y - drop, 0.0), V(p.x + w, p.y - drop, 0.0), V(p.x + w, p.y - 0.02, 0.0), V(p.x - w, p.y - 0.02, 0.0), cols[k], Surface::Fiber);
             }
         }
-        ClutterKind::LogPile => {
+        ClutterKind::Woodpile => {
             let bark = tint(palette::bark(), rng, 0.2);
             let cap = palette::wood() * 1.15;
             let rows: [(&[f32], f32); 3] = [(&[-0.3, 0.0, 0.3], 0.14), (&[-0.15, 0.15], 0.38), (&[0.0], 0.62)];
@@ -378,32 +379,32 @@ fn build_clutter(kind: ClutterKind, rng: &mut Rng, colors: Colors) -> (MeshData,
             let n = 2 + (rng.f() * 2.0) as usize;
             bush_into(&mut m, Vec3::ZERO, 1.0, n, rng);
         }
-        ClutterKind::Beehive => {
+        ClutterKind::Cairn => {
             for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                m.aabb(V(sx * 0.28 - 0.03, 0.0, sz * 0.28 - 0.03), V(sx * 0.28 + 0.03, 0.45, sz * 0.28 + 0.03), trim, Surface::Steel, 1.0);
+                m.aabb(V(sx * 0.28 - 0.03, 0.0, sz * 0.28 - 0.03), V(sx * 0.28 + 0.03, 0.45, sz * 0.28 + 0.03), trim, Surface::Timber, 1.0);
             }
-            m.aabb(V(-0.34, 0.45, -0.34), V(0.34, 0.5, 0.34), wood, Surface::Cladding, 1.0);
+            m.aabb(V(-0.34, 0.45, -0.34), V(0.34, 0.5, 0.34), wood, Surface::Plank, 1.0);
             // Stacked timber hive boxes under a small overhanging lid.
             for k in 0..3 {
                 let y = 0.5 + k as f32 * 0.17;
-                m.aabb(V(-0.26, y, -0.26), V(0.26, y + 0.16, 0.26), wood * (1.0 - 0.06 * k as f32), Surface::Cladding, 1.0);
+                m.aabb(V(-0.26, y, -0.26), V(0.26, y + 0.16, 0.26), wood * (1.0 - 0.06 * k as f32), Surface::Plank, 1.0);
             }
-            m.aabb(V(-0.31, 1.01, -0.31), V(0.31, 1.06, 0.31), trim, Surface::Cladding, 1.0);
+            m.aabb(V(-0.31, 1.01, -0.31), V(0.31, 1.06, 0.31), trim, Surface::Plank, 1.0);
         }
-        ClutterKind::Solar => {
+        ClutterKind::StandingStone => {
             let panel = V(0.04, 0.08, 0.2);
             // Steel A-frame: tall back legs, short front legs, rail along the panel underside.
             for sx in [-1.1f32, 0.0, 1.1] {
-                m.beam(V(sx, 0.0, 0.5), V(sx, 0.62, 0.5), 0.06, 0.06, trim, Surface::Steel, 1.0);
-                m.beam(V(sx, 0.0, -0.55), V(sx, 1.45, -0.55), 0.06, 0.06, trim, Surface::Steel, 1.0);
+                m.beam(V(sx, 0.0, 0.5), V(sx, 0.62, 0.5), 0.06, 0.06, trim, Surface::Timber, 1.0);
+                m.beam(V(sx, 0.0, -0.55), V(sx, 1.45, -0.55), 0.06, 0.06, trim, Surface::Timber, 1.0);
             }
-            m.beam(V(-1.25, 0.6, 0.54), V(1.25, 0.6, 0.54), 0.05, 0.05, trim, Surface::Steel, 1.0);
-            m.beam(V(-1.25, 1.44, -0.58), V(1.25, 1.44, -0.58), 0.05, 0.05, trim, Surface::Steel, 1.0);
+            m.beam(V(-1.25, 0.6, 0.54), V(1.25, 0.6, 0.54), 0.05, 0.05, trim, Surface::Timber, 1.0);
+            m.beam(V(-1.25, 1.44, -0.58), V(1.25, 1.44, -0.58), 0.05, 0.05, trim, Surface::Timber, 1.0);
             for k in 0..3 {
                 let (x0, x1) = (-1.2 + k as f32 * 0.82, -0.44 + k as f32 * 0.82);
                 m.quad(V(x0, 0.64, 0.56), V(x1, 0.64, 0.56), V(x1, 1.5, -0.56), V(x0, 1.5, -0.56), panel, Surface::Window, 1.0);
             }
-            m.aabb(V(1.35, 0.0, 0.3), V(1.65, 0.45, 0.6), palette::wall(colors), Surface::Concrete, 1.0);
+            m.aabb(V(1.35, 0.0, 0.3), V(1.65, 0.45, 0.6), palette::wall(colors), Surface::DryStone, 1.0);
         }
     }
     (m, markers)
@@ -420,6 +421,14 @@ pub fn placed_mesh(placed: &Placed, terrain: &Terrain, seed: u64) -> (MeshData, 
     let scale = if placed.scale.is_finite() { placed.scale.clamp(0.3, 3.0) } else { 1.0 };
     let y = terrain.height(at);
     let y = if y.is_finite() { y } else { 0.0 };
+
+    // A canoe on water floats: the Bevy side spawns it as a bobbing entity.
+    if placed.kind == PropKind::Clutter(ClutterKind::Canoe) {
+        if let Some(level) = terrain.water_level(at).filter(|l| l.is_finite()) {
+            let d = Vec2::from_angle(angle);
+            return (MeshData::default(), vec![Marker { kind: MarkerKind::Boat, pos: V(at.x, level, at.y), dir: V(d.x, 0.0, d.y) }]);
+        }
+    }
 
     let salt = match placed.kind {
         PropKind::Tree(k) => k as u64 + 1,
@@ -533,10 +542,10 @@ fn scatter_pass(seed: u64, blockers: &[Vec<Vec2>], probe: &Probe, keep: f32) -> 
                 continue;
             }
             let at = V(p.x, y, p.y);
-            let flowers = (probe.paint)(PaintLayer::Flowers, p).clamp(0.0, 1.0);
-            let fern_s = (probe.paint)(PaintLayer::Ferns, p).clamp(0.0, 1.0);
-            let moss = (probe.paint)(PaintLayer::Moss, p).clamp(0.0, 1.0);
-            let gravel = (probe.paint)(PaintLayer::Gravel, p).clamp(0.0, 1.0);
+            let flowers = (probe.paint)(PaintLayer::SeaPinks, p).clamp(0.0, 1.0);
+            let fern_s = (probe.paint)(PaintLayer::DuneGrass, p).clamp(0.0, 1.0);
+            let moss = (probe.paint)(PaintLayer::Wrack, p).clamp(0.0, 1.0);
+            let gravel = (probe.paint)(PaintLayer::Pebbles, p).clamp(0.0, 1.0);
 
             // Fern clumps (min spacing): painted, plus the odd one hugging water.
             let mut fern_p = 0.07 * fern_s;
@@ -623,7 +632,7 @@ fn up_tri(m: &mut MeshData, a: Vec3, b: Vec3, c: Vec3, col: Vec3, s: Surface) {
 fn moss_mound(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
     let r = rng.range(0.22, 0.4);
     let col = tint(palette::leaves() * V(0.55, 0.95, 0.45), rng, 0.3);
-    blob(m, at, V(r, r * 0.4, r), 0.2, col, Surface::Sedum, rng, Some(at.y - 0.01));
+    blob(m, at, V(r, r * 0.4, r), 0.2, col, Surface::Turf, rng, Some(at.y - 0.01));
 }
 
 /// Small flattened stone: jittered octahedron.
@@ -659,11 +668,11 @@ fn clover(m: &mut MeshData, at: Vec3, rng: &mut Rng) {
 mod tests {
     use super::*;
 
-    const TREES: [TreeKind; 5] = [TreeKind::Oak, TreeKind::Pine, TreeKind::Birch, TreeKind::Fruit, TreeKind::Fern];
+    const TREES: [TreeKind; 5] = [TreeKind::Snag, TreeKind::SeaPine, TreeKind::Cypress, TreeKind::Fig, TreeKind::Palm];
     const CLUTTER: [ClutterKind; 14] = [
-        ClutterKind::RainBarrel, ClutterKind::Planter, ClutterKind::Compost, ClutterKind::Cistern, ClutterKind::Wheelbarrow,
-        ClutterKind::Bench, ClutterKind::LampPost, ClutterKind::WindTurbine, ClutterKind::WashingLine,
-        ClutterKind::LogPile, ClutterKind::Rock, ClutterKind::Bush, ClutterKind::Beehive, ClutterKind::Solar,
+        ClutterKind::Baskets, ClutterKind::CrabPots, ClutterKind::Firepit, ClutterKind::CarvedPole, ClutterKind::NetRack,
+        ClutterKind::Canoe, ClutterKind::LanternPost, ClutterKind::Pennant, ClutterKind::DryingRack,
+        ClutterKind::Woodpile, ClutterKind::Rock, ClutterKind::Bush, ClutterKind::Cairn, ClutterKind::StandingStone,
     ];
 
     fn terrain() -> Terrain {
@@ -681,7 +690,7 @@ mod tests {
 
     #[test]
     fn trees_valid_and_sized() {
-        let ranges = [(TreeKind::Oak, 4.0, 6.5), (TreeKind::Pine, 5.5, 8.5), (TreeKind::Birch, 4.0, 6.5), (TreeKind::Fruit, 2.4, 4.0), (TreeKind::Fern, 2.6, 4.2)];
+        let ranges = [(TreeKind::Snag, 4.0, 6.5), (TreeKind::SeaPine, 5.5, 8.5), (TreeKind::Cypress, 4.0, 6.5), (TreeKind::Fig, 2.4, 4.0), (TreeKind::Palm, 2.6, 4.2)];
         for (k, lo, hi) in ranges {
             let (m, mk) = put(PropKind::Tree(k), 1.0);
             assert!(m.is_valid() && !m.is_empty(), "{k:?}");
@@ -700,20 +709,20 @@ mod tests {
             assert!(m.is_valid() && !m.is_empty(), "{k:?}");
             assert!(tris(&m) <= 400, "{k:?} {}", tris(&m));
             let (lo, hi) = match k {
-                ClutterKind::RainBarrel => (1.0, 1.5),
-                ClutterKind::Planter => (0.9, 1.4),
-                ClutterKind::Compost => (0.7, 1.2),
-                ClutterKind::Cistern => (1.1, 1.6),
-                ClutterKind::Wheelbarrow => (0.6, 1.4),
-                ClutterKind::Bench => (0.45, 0.8),
-                ClutterKind::LampPost => (2.0, 3.0),
-                ClutterKind::WindTurbine => (5.0, 7.0),
-                ClutterKind::WashingLine => (1.6, 2.5),
-                ClutterKind::LogPile => (0.5, 1.0),
+                ClutterKind::Baskets => (1.0, 1.5),
+                ClutterKind::CrabPots => (0.9, 1.4),
+                ClutterKind::Firepit => (0.7, 1.2),
+                ClutterKind::CarvedPole => (1.1, 1.6),
+                ClutterKind::NetRack => (0.6, 1.4),
+                ClutterKind::Canoe => (0.45, 0.8),
+                ClutterKind::LanternPost => (2.0, 3.0),
+                ClutterKind::Pennant => (5.0, 7.0),
+                ClutterKind::DryingRack => (1.6, 2.5),
+                ClutterKind::Woodpile => (0.5, 1.0),
                 ClutterKind::Rock => (0.3, 1.6),
                 ClutterKind::Bush => (0.5, 1.7),
-                ClutterKind::Beehive => (0.6, 1.5),
-                ClutterKind::Solar => (1.3, 1.8),
+                ClutterKind::Cairn => (0.6, 1.5),
+                ClutterKind::StandingStone => (1.3, 1.8),
             };
             let top = m.bounds().unwrap().1.y - terrain().height(Vec2::new(3.0, -2.0));
             assert!(top > lo && top < hi, "{k:?} height {top}");
@@ -722,16 +731,16 @@ mod tests {
 
     #[test]
     fn markers_for_lantern_and_flag() {
-        let (_, mk) = put(PropKind::Clutter(ClutterKind::LampPost), 1.0);
+        let (_, mk) = put(PropKind::Clutter(ClutterKind::LanternPost), 1.0);
         assert!(mk.iter().any(|x| x.kind == MarkerKind::Lantern));
-        let (_, mk) = put(PropKind::Clutter(ClutterKind::WindTurbine), 1.0);
+        let (_, mk) = put(PropKind::Clutter(ClutterKind::Pennant), 1.0);
         let f = mk.iter().find(|x| x.kind == MarkerKind::Flag).unwrap();
         assert!(f.pos.y > 5.0);
     }
 
     #[test]
     fn scale_is_clamped_and_rotation_keeps_position() {
-        let k = PropKind::Clutter(ClutterKind::RainBarrel);
+        let k = PropKind::Clutter(ClutterKind::Baskets);
         assert_eq!(put(k, 100.0).0, put(k, 3.0).0);
         assert_eq!(put(k, 0.001).0, put(k, 0.3).0);
         assert_eq!(put(k, f32::NAN).0, put(k, 1.0).0);
@@ -802,22 +811,22 @@ mod tests {
     fn scatter_layers_add_vegetation_within_budget() {
         let none = |_: PaintLayer, _: Vec2| 0.0;
         let base = tris(&scatter_with(1, &[], &fake(&|_| false, &|_| 1.0, &none)));
-        for layer in [PaintLayer::Flowers, PaintLayer::Moss, PaintLayer::Ferns, PaintLayer::Gravel] {
+        for layer in [PaintLayer::SeaPinks, PaintLayer::Wrack, PaintLayer::DuneGrass, PaintLayer::Pebbles] {
             let paint = move |l: PaintLayer, _: Vec2| if l == layer { 1.0 } else { 0.0 };
             let m = scatter_with(1, &[], &fake(&|_| false, &|_| 1.0, &paint));
             assert!(m.is_valid() && !m.is_empty());
             assert!(tris(&m) <= MAX_TRIS, "{layer:?} {}", tris(&m));
-            if layer == PaintLayer::Flowers || layer == PaintLayer::Moss {
+            if layer == PaintLayer::SeaPinks || layer == PaintLayer::Wrack {
                 assert!(tris(&m) > base, "{layer:?}");
             }
         }
-        let dirt = |l: PaintLayer, _: Vec2| if l == PaintLayer::Gravel { 1.0 } else { 0.0 };
+        let dirt = |l: PaintLayer, _: Vec2| if l == PaintLayer::Pebbles { 1.0 } else { 0.0 };
         assert!(tris(&scatter_with(1, &[], &fake(&|_| false, &|_| 1.0, &dirt))) < base / 4);
     }
 
     #[test]
     fn scatter_thins_uniformly_when_over_budget() {
-        let paint = |l: PaintLayer, _: Vec2| if l == PaintLayer::Flowers || l == PaintLayer::Moss { 1.0 } else { 0.0 };
+        let paint = |l: PaintLayer, _: Vec2| if l == PaintLayer::SeaPinks || l == PaintLayer::Wrack { 1.0 } else { 0.0 };
         let probe = fake(&|_| false, &|_| 1.0, &paint);
         let full = tris(&scatter_pass(1, &[], &probe, 1.0));
         assert!(full > MAX_TRIS, "test needs an over-budget glade, got {full}");
@@ -833,7 +842,7 @@ mod tests {
 
     #[test]
     fn bushes_keep_min_spacing() {
-        let paint = |l: PaintLayer, _: Vec2| if l == PaintLayer::Ferns { 1.0 } else { 0.0 };
+        let paint = |l: PaintLayer, _: Vec2| if l == PaintLayer::DuneGrass { 1.0 } else { 0.0 };
         let m = scatter_with(1, &[], &fake(&|_| false, &|_| 1.0, &paint));
         assert!(m.surfaces.iter().any(|&s| s == Surface::Leaves as u8));
     }

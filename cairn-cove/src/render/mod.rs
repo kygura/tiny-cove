@@ -409,13 +409,13 @@ mod tests {
     #[test]
     fn mesh_conversion_keeps_surfaces() {
         let mut m = MeshData::default();
-        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Seam, 1.0);
+        m.aabb(Vec3::ZERO, Vec3::ONE, Vec3::ONE, Surface::Thatch, 1.0);
         let b = to_bevy_mesh(&m);
         assert_eq!(b.count_vertices(), 24);
         let Some(bevy::mesh::VertexAttributeValues::Float32x2(s)) = b.attribute(Mesh::ATTRIBUTE_UV_1) else {
             panic!("uv1 missing")
         };
-        assert_eq!(s[0][0], Surface::Seam as u8 as f32);
+        assert_eq!(s[0][0], Surface::Thatch as u8 as f32);
     }
 
     #[test]
