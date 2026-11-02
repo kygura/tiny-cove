@@ -481,16 +481,28 @@ pub fn shade(c: Vec3, band: Band, tint: Vec3) -> Vec3 {
     mixed
 }
 
+/// Below this value a yellow-to-olive colour (hue [`MUD_HUES`]) reads as brown / khaki mud
+/// however saturated it is (a warm albedo under a cool storm or night light).
+pub const MUD_V: f32 = 0.45;
+pub const MUD_HUES: std::ops::Range<f32> = 30.0..100.0;
+
 /// DESIGN A3 anti-mud floor (after lighting): low-chroma darks are pulled toward the tint
-/// hue and given S = 0.35; nothing drops below V = 0.22.
+/// hue and given S = 0.35; dark ochres and olives (hue in [`MUD_HUES`], V < [`MUD_V`]) turn
+/// toward the tint along the direction rule too (to maroon / plum, or teal for greens), by
+/// how dark they are; nothing drops below V = 0.22. Mirrored in `glade.wesl`.
 pub fn anti_mud(c: Vec3, tint: Vec3) -> Vec3 {
     let mut a = rgb_to_hsv(c);
+    let t = rgb_to_hsv(tint).x;
+    let dist = |h: f32| if (60.0..t).contains(&h) { t - h } else { (h - t).rem_euclid(360.0) };
     if a.z < 0.80 && a.y < 0.35 {
-        let t = rgb_to_hsv(tint).x;
         let k = (0.35 - a.y) / 0.35;
-        let dist = if (60.0..t).contains(&a.x) { t - a.x } else { (a.x - t).rem_euclid(360.0) };
-        a.x = rotate_toward(a.x, t, dist * k).0;
+        a.x = rotate_toward(a.x, t, dist(a.x) * k).0;
         a.y = 0.35;
+    }
+    if a.z < MUD_V && MUD_HUES.contains(&a.x) {
+        let k = 0.25 + 0.5 * (MUD_V - a.z) / MUD_V;
+        a.x = rotate_toward(a.x, t, dist(a.x) * k).0;
+        a.y = a.y.max(0.4);
     }
     a.z = a.z.max(0.22);
     hsv_to_rgb(a)
@@ -622,6 +634,22 @@ mod tests {
             let hsv = rgb_to_hsv(s);
             assert!(hsv.y >= 0.299 && hsv.z >= 0.219, "{name} shadow muddy: {hsv:?}");
         }
+    }
+
+    /// A warm albedo under a cool light (storm fill, night) never comes out brown or olive.
+    #[test]
+    fn dark_warm_is_not_mud() {
+        for tint in [0x31107B, 0x21197B, 0x4A3AAD] {
+            let tint = hex_to_unit(tint);
+            for (r, g, b) in [(0.25, 0.235, 0.157), (0.23, 0.23, 0.16), (0.29, 0.26, 0.19), (0.35, 0.3, 0.1), (0.2, 0.25, 0.08)] {
+                let out = rgb_to_hsv(anti_mud(Vec3::new(r, g, b), tint));
+                assert!(!(MUD_HUES.contains(&out.x) && out.z < MUD_V), "({r},{g},{b}) -> {out:?} still mud");
+                assert!(out.y >= 0.35 && out.z >= 0.22);
+            }
+        }
+        // Bright warm colours are left alone.
+        let thatch = hex_to_unit(0xEFB53A);
+        assert_eq!(anti_mud(thatch, hex_to_unit(0x4A3AAD)), hsv_to_rgb(rgb_to_hsv(thatch)));
     }
 
     #[test]

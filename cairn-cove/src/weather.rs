@@ -369,6 +369,50 @@ pub fn ground_focus(pos: Vec3, fwd: Vec3) -> Vec3 {
     if fwd.y < -0.05 { pos + fwd * (-pos.y / fwd.y) } else { Vec3::new(pos.x, 0.0, pos.z) }
 }
 
+/// Rain / snow volume that fills an orthographic view of half size `half` (m) pitched with
+/// `pitch_sin`, for particles falling from `top` m: returns the box centre offset along the
+/// ground-forward axis and its half extents (right, forward). A particle at height y shows
+/// y·cos(pitch) higher on screen, so the box reaches further back for falling particles to
+/// cover the frame's foreground as well as its top.
+pub fn precip_box(half: Vec2, pitch_sin: f32, top: f32) -> (f32, Vec2) {
+    let s = if pitch_sin.is_finite() { pitch_sin.clamp(0.25, 1.0) } else { 0.5 };
+    let c = (1.0 - s * s).sqrt();
+    let half = if half.is_finite() { half.clamp(Vec2::splat(1.0), Vec2::splat(400.0)) } else { Vec2::splat(20.0) };
+    let lift = top.clamp(0.0, 100.0) * c;
+    (-0.5 * lift / s, Vec2::new(half.x + 2.0, (half.y + 0.5 * lift) / s + 2.0))
+}
+
+/// Rain streak direction and drift: wind × this (exaggerated so the slant reads at 240p).
+const RAIN_SLANT: f32 = 3.0;
+/// Least on-screen lean (horizontal / vertical) of a rain streak in a full wind, so the
+/// 1×4 px streak steps at least one pixel sideways whatever the wind's angle to the view.
+const RAIN_MIN_LEAN: f32 = 0.75;
+
+/// Horizontal velocity of rain falling at `speed` in `wind` (m/s, world xz), seen by a
+/// camera with ground axes `right_h` / `fwd_h` pitched down by `pitch_sin`: the wind × the
+/// slant factor, plus a sideways push when the wind blows along the view so the streak
+/// still leans on screen (DESIGN A4: "slanted by wind"). No wind, no lean.
+pub fn rain_velocity(wind: Vec2, speed: f32, right_h: Vec2, fwd_h: Vec2, pitch_sin: f32) -> Vec2 {
+    let wind = if wind.is_finite() { wind } else { Vec2::ZERO };
+    let mut vel = wind * RAIN_SLANT;
+    let s = pitch_sin.clamp(0.0, 1.0);
+    let c = (1.0 - s * s).sqrt();
+    // Screen motion: right = vel·right, down = fall·cos + toward-camera drift·sin.
+    let down = (speed * c - vel.dot(fwd_h) * s).abs().max(1e-3);
+    let side = vel.dot(right_h);
+    let want = RAIN_MIN_LEAN * down * (wind.length() / 3.0).min(1.0);
+    if side.abs() < want {
+        let sign = if side < 0.0 { -1.0 } else { 1.0 };
+        vel += right_h * (sign * want - side);
+    }
+    vel
+}
+/// Precipitation density: particles per m² of ground box (rain, snow) and caps.
+const RAIN_PER_M2: f32 = 450.0 / 1600.0;
+const SNOW_PER_M2: f32 = 800.0 / 1600.0;
+const MAX_RAIN: f32 = 7000.0;
+const MAX_SNOW: f32 = 5000.0;
+
 fn wrap(x: f32, center: f32, size: f32) -> f32 {
     center - size * 0.5 + (x - center + size * 0.5).rem_euclid(size)
 }
@@ -649,12 +693,12 @@ fn particles(
     time: Res<Time>,
     env: Res<Environment>,
     mut st: ResMut<State>,
-    cam: Query<&GlobalTransform, With<GameCamera>>,
+    cam: Query<(&GlobalTransform, &Projection), With<GameCamera>>,
     assets: Option<Res<GladeAssets>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
 ) {
-    let (Some(assets), Ok(cam)) = (assets, cam.single()) else { return };
+    let (Some(assets), Ok((cam, projection))) = (assets, cam.single()) else { return };
     if !st.drive {
         return;
     }
@@ -663,7 +707,22 @@ fn particles(
         commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(assets.particle.clone()), NoFrustumCulling));
         st.mesh = Some(h);
     }
-    let focus = ground_focus(cam.translation(), cam.forward().as_vec3());
+    let fwd3 = cam.forward().as_vec3();
+    let focus = ground_focus(cam.translation(), fwd3);
+    // Fill the whole view (not a column around the focus): a box in the camera's ground axes.
+    let half_view = match projection {
+        Projection::Orthographic(o) => o.area.half_size(),
+        _ => Vec2::new(crate::render::VIEW_HEIGHT * 0.89, crate::render::VIEW_HEIGHT * 0.5),
+    };
+    let fwd_h = Vec2::new(fwd3.x, fwd3.z).normalize_or(Vec2::NEG_Y);
+    let right_h = Vec2::new(-fwd_h.y, fwd_h.x);
+    let pitch_sin = -fwd3.y;
+    let place = |u: f32, v: f32, drift: Vec2, top: f32| -> (Vec2, f32) {
+        let (off, h) = precip_box(half_view, pitch_sin, top);
+        let u = wrap(u * h.x + drift.dot(right_h), 0.0, 2.0 * h.x);
+        let v = wrap(off + v * h.y + drift.dot(fwd_h), off, 2.0 * h.y);
+        (focus.xz() + right_h * u + fwd_h * v, 4.0 * h.x * h.y)
+    };
     let t = time.elapsed_secs() + 1000.0;
     let sum: f32 = st.w.iter().sum::<f32>().max(1e-3);
     let wn = |k: WeatherKind| st.w[k.index()] / sum;
@@ -676,13 +735,15 @@ fn particles(
     if rain > 0.01 {
         // Pale cyan streaks, slanted by the wind.
         let (speed, hgt) = (18.0 + 4.0 * rain, 24.0);
-        let dir = Vec3::new(wind.x * 0.9, -speed, wind.y * 0.9).normalize();
+        let slant = rain_velocity(wind, speed, right_h, fwd_h, pitch_sin);
+        let dir = Vec3::new(slant.x, -speed, slant.y).normalize();
         let col = cairn_cove_core::palette::rain() * (1.0 - 0.55 * env.dark);
-        for i in 0..(1100.0 * rain) as u32 {
+        let area = place(0.0, 0.0, Vec2::ZERO, hgt).1;
+        for i in 0..(RAIN_PER_M2 * area * rain).min(MAX_RAIN) as u32 {
             let s = (hash(i, 3) + t * speed / hgt).fract();
             let (y, fall) = (hgt * (1.0 - s), s * hgt / speed);
-            let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.9 * fall, focus.x, 40.0);
-            let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.9 * fall, focus.z, 40.0);
+            let (xz, _) = place(hash(i, 1) * 2.0 - 1.0, hash(i, 2) * 2.0 - 1.0, slant * fall, hgt);
+            let (x, z) = (xz.x, xz.y);
             if y < 0.6 {
                 ps.push(Particle::new(ParticleKind::Flake, Vec3::new(x, env.tide.max(0.0) + 0.08, z), 0.12, col.extend(0.6)));
             } else {
@@ -694,12 +755,13 @@ fn particles(
     }
     if snow > 0.01 {
         // 1-px white flakes with a lilac pixel below, drifting with the wind.
-        for i in 0..(800.0 * snow) as u32 {
+        let area = place(0.0, 0.0, Vec2::ZERO, 20.0).1;
+        for i in 0..(SNOW_PER_M2 * area * snow).min(MAX_SNOW) as u32 {
             let speed = 1.1 + 0.8 * hash(i, 4);
             let y = 20.0 * (1.0 - (hash(i, 3) + t * speed / 20.0).fract());
             let sway = Vec2::new((t * 0.8 + i as f32).sin(), (t * 0.6 + i as f32 * 1.7).cos()) * 0.35;
-            let x = wrap(focus.x + hash(i, 1) * 40.0 - 20.0 + wind.x * 0.6 * t + sway.x, focus.x, 40.0);
-            let z = wrap(focus.z + hash(i, 2) * 40.0 - 20.0 + wind.y * 0.6 * t + sway.y, focus.z, 40.0);
+            let (xz, _) = place(hash(i, 1) * 2.0 - 1.0, hash(i, 2) * 2.0 - 1.0, wind * 0.6 * t + sway, 20.0);
+            let (x, z) = (xz.x, xz.y);
             ps.push(Particle::new(ParticleKind::Snow, Vec3::new(x, y, z), 0.1, Vec4::ONE));
         }
     }
@@ -856,6 +918,59 @@ mod tests {
         m.w = [0.5, 0.0, 0.5, 0.0, 0.0, 0.0];
         let e = environment(12.0, &m);
         assert!(e.sun_color.x < 1.0 && e.sun_color.x > 0.45);
+    }
+
+    /// The precipitation box fills the whole view: at the ground and at the top of the fall,
+    /// every screen point maps inside it (no central column), at any zoom and pitch.
+    #[test]
+    fn precipitation_fills_the_view() {
+        for (half, pitch) in [(Vec2::new(21.3, 12.0), 35f32), (Vec2::new(63.0, 35.5), 35.0), (Vec2::new(98.0, 55.0), 25.0), (Vec2::new(10.0, 5.6), 55.0)] {
+            let (s, c) = (pitch.to_radians().sin(), pitch.to_radians().cos());
+            for top in [20.0f32, 24.0] {
+                let (off, h) = precip_box(half, s, top);
+                assert!(h.x >= half.x, "covers the width");
+                for y in [0.0, top] {
+                    for sy in [-half.y, 0.0, half.y] {
+                        let v = (sy - y * c) / s;
+                        assert!(v >= off - h.y - 1e-3 && v <= off + h.y + 1e-3, "{half} {pitch}: screen y {sy} at height {y} uncovered");
+                    }
+                }
+            }
+            // Much wider than the old 40 m column at the demo-shot zoom.
+            if half.x > 60.0 {
+                assert!(precip_box(half, s, 24.0).1.x * 2.0 > 120.0);
+            }
+        }
+        let (off, h) = precip_box(Vec2::NAN, f32::NAN, f32::INFINITY);
+        assert!(off.is_finite() && h.is_finite());
+    }
+
+    /// Rain leans at least 1 px per 1×4 px streak on screen, whatever the wind's angle to
+    /// the view (yaw), and stays upright without wind.
+    #[test]
+    fn rain_slant_reads_at_low_res() {
+        let pitch = 35f32.to_radians();
+        let (s, c) = (pitch.sin(), pitch.cos());
+        for kind in [2usize, 3] {
+            let speed = 18.0 + 4.0 * if kind == 3 { 1.3 } else { 1.0 };
+            for yaw in 0..16 {
+                let a = yaw as f32 * std::f32::consts::TAU / 16.0;
+                let fwd_h = Vec2::new(a.sin(), a.cos());
+                let right_h = Vec2::new(-fwd_h.y, fwd_h.x);
+                for wa in 0..8 {
+                    let wind = Vec2::from_angle(wa as f32 * 0.8) * WIND[kind] * 0.85;
+                    let v = rain_velocity(wind, speed, right_h, fwd_h, s);
+                    let side = v.dot(right_h).abs();
+                    let down = speed * c - v.dot(fwd_h) * s;
+                    assert!(down > 0.0, "rain falls down the screen");
+                    assert!(side / down >= 1.0 / 3.0, "kind {kind} yaw {yaw} wind {wa}: lean {}", side / down);
+                    assert!(v.length() < speed * 2.0, "still mostly falling");
+                }
+            }
+        }
+        let calm = rain_velocity(Vec2::ZERO, 22.0, Vec2::X, Vec2::Y, s);
+        assert_eq!(calm, Vec2::ZERO);
+        assert!(rain_velocity(Vec2::NAN, 22.0, Vec2::X, Vec2::Y, s).is_finite());
     }
 
     #[test]

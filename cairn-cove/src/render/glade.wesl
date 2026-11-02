@@ -2,7 +2,9 @@
 // "Folk Pigment" cel lighting (DESIGN.md A3): three hard bands from N.L x the sun shadow map,
 // band maths in sRGB with hue-shifted, saturated shadows (never grey), an anti-mud floor, rim
 // light, emissive windows / glow / fire at night, a wet-sand honey band above the current
-// tide, snow ramp on up-facing surfaces, wind sway on leaves and fibres, height sea fog.
+// tide, snow ramp on up-facing surfaces, wind sway on leaves and fibres, pennant flutter
+// (vertex colour alpha = 1 - flutter weight), height sea fog mixed without greying, and the
+// open sea cut at the horizon so the post pass shows the sky.
 // 15-bit quantise + Bayer dither happen in the post pass (post.wesl).
 //
 // Entry points: vertex/fragment (GladeMaterial), water_fragment (WaterMaterial),
@@ -38,6 +40,8 @@ struct Globals {
     outline: vec4<f32>,         // 15 outline
     field: vec4<f32>,           // 16 heightfield min x, min z, spacing, samples per side
     amb: vec4<f32>,             // 17 ambient sky (particles)
+    n_lights: vec4<f32>,        // 18 x = number of lit lanterns / fires in `lights`
+    lights: array<vec4<f32>>,   // 19.. xyz position of each lit lantern / fire
 }
 
 struct WaterParams {
@@ -180,36 +184,86 @@ fn rot_lit(c: vec3<f32>, tint: vec3<f32>, deg: f32) -> vec3<f32> {
     return hsv2rgb(a);
 }
 
-// DESIGN A3 anti-mud floor: low-chroma darks pulled toward the tint hue, V >= 0.22.
+fn tint_dist(h: f32, t: f32) -> f32 {
+    if h >= 60.0 && h < t {
+        return t - h;
+    }
+    return modp(h - t, 360.0);
+}
+
+// DESIGN A3 anti-mud floor: low-chroma darks pulled toward the tint hue; dark ochres and
+// olives (hue 30-100, V < 0.45: a warm albedo under a cool storm / night light) turned toward
+// it too; V >= 0.22. CPU port: cairn_cove_core::palette::anti_mud.
 fn anti_mud(c: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
     var a = rgb2hsv(c);
+    let t = rgb2hsv(tint).x;
     if a.z < 0.80 && a.y < 0.35 {
-        let t = rgb2hsv(tint).x;
         let k = (0.35 - a.y) / 0.35;
-        var dist = modp(a.x - t, 360.0);
-        if a.x >= 60.0 && a.x < t {
-            dist = t - a.x;
-        }
-        a.x = rotate_toward(a.x, t, dist * k);
+        a.x = rotate_toward(a.x, t, tint_dist(a.x, t) * k);
         a.y = 0.35;
+    }
+    if a.z < 0.45 && a.x >= 30.0 && a.x < 100.0 {
+        let k = 0.25 + 0.5 * (0.45 - a.z) / 0.45;
+        a.x = rotate_toward(a.x, t, tint_dist(a.x, t) * k);
+        a.y = max(a.y, 0.4);
     }
     a.z = max(a.z, 0.22);
     return hsv2rgb(a);
 }
 
-fn hex_lin(r: f32, gg: f32, b: f32) -> vec3<f32> {
-    return to_linear(vec3(r, gg, b) / 255.0);
+// Fog mix that never greys (DESIGN A0.3, A0.5, A4 sea fog): a linear mix, but where it
+// would drop below the blend of the two saturations (capped at A4's S 0.30 floor, so it only
+// steps in against grey), saturation is held there and the hue walks from the
+// object's hue toward the fog's along the A3 direction rule (analogous path, never through
+// the complement). A pale fog (pearl sea fog, snow) barely turns the hue, so things keep
+// their identity behind the veil; a saturated fog (storm, dusk, night) pulls them all the
+// way. Linear in, linear out.
+fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
+    let m = mix(c, fog, k);
+    if k <= 0.001 {
+        return m;
+    }
+    let a = rgb2hsv(to_srgb(c));
+    let f = rgb2hsv(to_srgb(fog));
+    var o = rgb2hsv(to_srgb(m));
+    let s_min = min(mix(a.y, f.y, k), 0.3);
+    if o.y >= s_min {
+        return m;
+    }
+    // The mix's own hue is kept while it still carries one (analogous inputs); only a
+    // near-grey mix (complementary inputs) takes the walked hue.
+    var h = select(f.x, o.x, o.y >= 0.5 * s_min);
+    if a.y > 0.08 && o.y < 0.5 * s_min {
+        var dist = modp(a.x - f.x, 360.0);
+        if a.x >= 60.0 && a.x < f.x {
+            dist = f.x - a.x;
+        }
+        h = rotate_toward(a.x, f.x, dist * k * smoothstep(0.1, 0.5, f.y));
+    }
+    o.x = h;
+    o.y = s_min;
+    return to_linear(hsv2rgb(o));
 }
 
-// Trim pigments (palette::TRIM_SWATCHES), linear.
-fn pigment(i: u32) -> vec3<f32> {
-    switch i {
-        case 0u: { return hex_lin(255.0, 90.0, 74.0); }
-        case 1u: { return hex_lin(230.0, 58.0, 156.0); }
-        case 2u: { return hex_lin(49.0, 82.0, 255.0); }
-        case 3u: { return hex_lin(255.0, 197.0, 25.0); }
-        default: { return hex_lin(49.0, 222.0, 165.0); }
+// Lantern / fire pool: the warm light adds to the albedo (2 hard bands from
+// point_lights), but a pool that lands in the yellow-green zone below V 0.8 (olive / khaki,
+// DESIGN A0.3 "no mud", A3 "grass never goes olive") is pushed to a bright amber-gold
+// instead. `c` sRGB, `albedo` and `pl` linear; returns sRGB.
+fn lamp_pool(c: vec3<f32>, albedo: vec3<f32>, pl: vec3<f32>) -> vec3<f32> {
+    if max(pl.r, max(pl.g, pl.b)) <= 0.01 {
+        return c;
     }
+    var o = rgb2hsv(to_srgb(to_linear(c) + albedo * pl));
+    if o.x > 50.0 && o.x < 105.0 && o.z < 0.8 {
+        o.x = 45.0 + (o.x - 50.0) * 0.2;
+        o.y = max(o.y, 0.6);
+        o.z = max(o.z, 0.7);
+    }
+    return hsv2rgb(o);
+}
+
+fn hex_lin(r: f32, gg: f32, b: f32) -> vec3<f32> {
+    return to_linear(vec3(r, gg, b) / 255.0);
 }
 
 // ---------------------------------------------------------------- vertex
@@ -233,8 +287,23 @@ fn snap_clip(clip: vec4<f32>) -> vec4<f32> {
     return vec4(round(ndc * half) / half * clip.w, clip.zw);
 }
 
-// Wind sway for leaves and fibres; vertices at the same position move together, so flat-
-// shaded meshes never tear. Mirrored in glade_prepass.wesl.
+// Wind sway for leaves and fibres, plus pennant flutter: vertex colour alpha = 1 - flutter
+// weight, so any vertex with alpha < 0.999 streams with the wind vector, scaled by its
+// weight and a travelling gust. Vertices at the same position move together, so flat-shaded
+// meshes never tear. Mirrored in glade_prepass.wesl.
+fn flutter(world: vec3<f32>, alpha: f32) -> vec3<f32> {
+    if alpha >= 0.999 {
+        return world;
+    }
+    let w = g.wind_tide.xy;
+    let strength = length(w);
+    let dir = select(vec2(1.0, 0.0), w / max(strength, 1e-4), strength > 1e-3);
+    let t = g.sky_top_time.w;
+    let along = dot(world.xz, dir);
+    let gust = 0.11 + 0.05 * sin(t * (5.0 + 0.4 * min(strength, 10.0)) - along * 3.1) + 0.03 * sin(t * 1.3 + along);
+    return world + vec3(w.x, 0.0, w.y) * (1.0 - clamp(alpha, 0.0, 1.0)) * gust;
+}
+
 fn sway(world: vec3<f32>, s: u32) -> vec3<f32> {
     if s != S_LEAVES && s != S_FIBER {
         return world;
@@ -256,7 +325,7 @@ fn vertex(v: Vertex) -> VertexOut {
     let world0 = mesh_position_local_to_world(get_world_from_local(v.instance_index), vec4(v.position, 1.0));
     var out: VertexOut;
     out.surface = u32(max(v.uv_b.x, 0.0) + 0.5);
-    let world = vec4(sway(world0.xyz, out.surface), 1.0);
+    let world = vec4(flutter(sway(world0.xyz, out.surface), v.color.a), 1.0);
     out.clip = decal_bias(snap_clip(position_world_to_clip(world.xyz)), out.surface);
     out.uv = v.uv;
     out.color = v.color;
@@ -284,6 +353,13 @@ fn view_depth(world: vec4<f32>) -> f32 {
         view.view_from_world[2].z, view.view_from_world[3].z), world);
 }
 
+// Sea-fog bank layers (fog amount) below 1/3, 2/3 and 3/3 of the bank top; mirrored in
+// post.wesl. Thick enough to swallow the shore in a pearl wash, thin enough that the jetty,
+// tracks, dykes and beach still read through it (SPEC Done #3).
+const BANK_LOW: f32 = 0.6;
+const BANK_MID: f32 = 0.48;
+const BANK_TOP: f32 = 0.36;
+
 // Distance fog plus the sea-fog bank: dense below `fog_top` with a hard, banded top edge.
 fn fog_amount(depth: f32, y: f32) -> f32 {
     let d = max(depth - g.fog_start.w, 0.0);
@@ -292,11 +368,11 @@ fn fog_amount(depth: f32, y: f32) -> f32 {
     let top = g.sea2.w;
     var b = 0.0;
     if y < top * 0.34 {
-        b = 0.82;
+        b = BANK_LOW;
     } else if y < top * 0.67 {
-        b = 0.68;
+        b = BANK_MID;
     } else if y < top {
-        b = 0.5;
+        b = BANK_TOP;
     }
     return 1.0 - (1.0 - dist) * (1.0 - b * bank);
 }
@@ -420,15 +496,20 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     if tex.a < 0.25 {
         discard;
     }
+    // Sea bed past the horizon would show once the sea is cut there: the sky owns it.
+    if world.y < g.wind_tide.z - 0.05 && past_horizon(world.xz) {
+        discard;
+    }
     let accent = tex.a > 0.6 && tex.a < 0.95;
     let hot = tex.a > 0.8 && tex.a < 0.95;
     let emissive_texel = tex.a >= 0.95;
     var albedo = tex.rgb * in.color.rgb;
     if accent {
         albedo = tex.rgb;
+        // Trim sentinel: a deeper cut of the vertex tint. (Vertex alpha is the pennant
+        // flutter weight, not a trim index.)
         if max(tex.r, max(tex.g, tex.b)) < 0.002 {
-            let idx = u32(round(in.color.a * 8.0));
-            albedo = select(in.color.rgb * 0.82, pigment(idx), idx < 5u);
+            albedo = in.color.rgb * 0.82;
         }
         // The basket rim is plain iron by day and glows iron_hot while fires burn.
         if hot {
@@ -444,7 +525,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         // Flames and lantern glass: always emissive, untinted, hard bands.
         let fog = fog_amount(view_depth(world), world.y);
         let c = select(tex.rgb * in.color.rgb, tex.rgb, emissive_texel);
-        return vec4(mix(c * (1.0 + 0.4 * g.tint_flash.w), g.fog_start.xyz, fog * 0.5), 1.0);
+        return vec4(fog_mix(c * (1.0 + 0.4 * g.tint_flash.w), g.fog_start.xyz, fog * 0.5), 1.0);
     }
 
     var a = to_srgb(albedo);
@@ -520,9 +601,9 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         c = min(c + g.rim_fogd.xyz * 0.6, vec3(1.0));
     }
 
+    // Lanterns and fires (warm pools, never olive).
+    c = lamp_pool(c, albedo, point_lights(world, n, in.clip));
     var col = to_linear(c);
-    // Lanterns and fires.
-    col += albedo * point_lights(world, n, in.clip);
 
     // Emissive: window slots and hot iron glow at night.
     var emissive = vec3(0.0);
@@ -535,7 +616,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     }
 
     let fog = fog_amount(view_depth(world), world.y);
-    var out = mix(col, g.fog_start.xyz, fog) + emissive * (1.0 - 0.5 * fog);
+    var out = fog_mix(col, g.fog_start.xyz, fog) + emissive * (1.0 - 0.5 * fog);
     let halo = fog_halo(world, in.clip);
     if any(halo > vec3(0.0)) {
         out = halo;
@@ -619,32 +700,53 @@ fn sea_band(depth: f32, px: vec2<u32>) -> vec3<f32> {
     return g.sea3.xyz;
 }
 
-// Broken vertical reflection streaks (glow_fire dashes) under lanterns and fires at night.
+// Screen position (low-res px, y down) of a world point.
+fn to_screen(p: vec3<f32>) -> vec2<f32> {
+    let c = view.clip_from_world * vec4(p, 1.0);
+    let ndc = c.xy / c.w;
+    return vec2((ndc.x * 0.5 + 0.5) * view.viewport.z, (0.5 - ndc.y * 0.5) * view.viewport.w);
+}
+
+// Broken vertical reflection streak (glow_fire dashes, 1 px wide, 2 px gaps) on the water
+// under each lit lantern / fire near the sea (DESIGN A6, A8 night). The streak
+// runs down the light's screen column from just below the light to past its mirror image in
+// the water plane, so it lands on the sea even when the light stands on a cliff or a tower;
+// it spreads up to 18 m out over the ripples. Lights come from the globals list (not the
+// clusters, which only hold lights in range).
 fn light_streaks(world: vec4<f32>, frag: vec4<f32>) -> f32 {
-    let view_z = -view_depth(world);
-    let is_ortho = view.clip_from_view[3].w == 1.0;
-    let cluster = view_fragment_cluster_index(frag.xy, view_z, is_ortho);
-    let ranges = unpack_clusterable_object_index_ranges(cluster);
-    for (var i = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i++) {
-        let light = clustered_lights.data[get_clusterable_object_id(i)];
-        let lp = light.position_radius.xyz;
-        if length(lp.xz - world.xz) > 12.0 || max(light.color_inverse_square_range.x, 0.0) <= 0.0 {
+    let n = min(u32(max(g.n_lights.x, 0.0)), arrayLength(&g.lights));
+    let tide = g.wind_tide.z;
+    for (var i = 0u; i < n; i++) {
+        let lp = g.lights[i].xyz;
+        if length(lp.xz - world.xz) > 18.0 {
             continue;
         }
-        let c = view.clip_from_world * vec4(lp, 1.0);
-        let ndc = c.xy / c.w;
-        let lpx = vec2((ndc.x * 0.5 + 0.5) * view.viewport.z, (0.5 - ndc.y * 0.5) * view.viewport.w);
-        let dy = frag.y - lpx.y;
-        if abs(frag.x - lpx.x) < 0.75 && dy > 2.0 && dy < 36.0 && u32(dy / 2.0) % 2u == 0u {
+        let top = to_screen(lp);
+        let mirror = to_screen(vec3(lp.x, 2.0 * tide - lp.y, lp.z));
+        let dy = frag.y - top.y;
+        // Dashes shimmer with the swell: the pattern slides one step every 0.25 s.
+        let phase = u32(dy * 0.5 + floor(g.sky_top_time.w * 4.0) + f32(i) * 3.0);
+        if abs(frag.x - top.x) < 0.75 && dy > 2.0 && frag.y < mirror.y + 36.0 && phase % 2u == 0u {
             return 1.0;
         }
     }
     return 0.0;
 }
 
+// Open sea beyond the horizon line (outline.w m from the island centre along the camera's
+// ground-forward axis) is cut away so the post pass paints the sky there (DESIGN A4, A8).
+fn past_horizon(xz: vec2<f32>) -> bool {
+    let back = view.world_from_view[2].xyz;
+    let l = length(back.xz);
+    return l > 1e-3 && dot(xz, -back.xz / l) > g.outline.w;
+}
+
 @fragment
 fn sea_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let world = in.world_pos;
+    if past_horizon(world.xz) {
+        discard;
+    }
     let p = world.xz;
     let t = g.sky_top_time.w;
     let px = vec2<u32>(in.clip.xy);
@@ -728,7 +830,7 @@ fn sea_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     if lit_px {
         fog *= 0.7;
     }
-    return vec4(mix(out, g.fog_start.xyz, fog), 1.0);
+    return vec4(fog_mix(out, g.fog_start.xyz, fog), 1.0);
 }
 
 // ---------------------------------------------------------------- lagoons
@@ -765,7 +867,7 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     }
     out += col * point_lights(world, vec3(0.0, 1.0, 0.0), in.clip) * 0.6;
     let fog = fog_amount(view_depth(world), world.y);
-    return vec4(mix(out, g.fog_start.xyz, fog), 1.0);
+    return vec4(fog_mix(out, g.fog_start.xyz, fog), 1.0);
 }
 
 // ---------------------------------------------------------------- particles
@@ -816,7 +918,8 @@ fn particle_vertex(v: ParticleVertex) -> ParticleOut {
             ay = normalize(d);
             ax = vec2(ay.y, -ay.x);
         }
-        half = vec2(px * 0.6, max(size * 0.5, px * 1.5));
+        // 1 px wide, 4 px long (DESIGN says 1x3; one more pixel lets the wind slant read).
+        half = vec2(px * 0.6, max(size * 0.5, px * 2.0));
     } else if kind == P_SNOW {
         // 1 px wide, 2 px tall: white over a lilac pixel.
         half = vec2(px * 0.55, px * 1.05);
@@ -854,6 +957,13 @@ fn particle_fragment(in: ParticleOut) -> @location(0) vec4<f32> {
             if r > 1.0 { discard; }
             alpha *= 1.0 - r * r * 0.8;
             col *= lit * mix(0.85, 1.1, step(0.0, c.y));
+            // Smoke and fog puffs are pale and hued, never grey (DESIGN A0.3).
+            var ph = rgb2hsv(to_srgb(col));
+            if ph.z < 0.85 && ph.y < 0.25 {
+                ph.x = select(ph.x, rgb2hsv(g.tint_flash.xyz).x, ph.y < 0.02);
+                ph.y = 0.25;
+                col = to_linear(hsv2rgb(ph));
+            }
         }
         case P_BIRD: {
             // Flapping V silhouette.
@@ -872,7 +982,9 @@ fn particle_fragment(in: ParticleOut) -> @location(0) vec4<f32> {
             alpha *= select(1.0 - r, 1.0, r < 0.35);
         }
     }
-    if alpha < bayer4(vec2<u32>(in.clip.xy)) {
+    // Streaks screen-door per streak, not per pixel, so a 1x4 px streak keeps its slant.
+    let door = select(bayer4(vec2<u32>(in.clip.xy)), fract(in.seed * 97.13), in.kind == P_STREAK);
+    if alpha < door {
         discard;
     }
     col *= 1.0 + 0.5 * g.tint_flash.w;
@@ -880,5 +992,5 @@ fn particle_fragment(in: ParticleOut) -> @location(0) vec4<f32> {
     if in.kind == P_SPARK {
         fog *= 0.5;
     }
-    return vec4(mix(col, g.fog_start.xyz, fog), 1.0);
+    return vec4(fog_mix(col, g.fog_start.xyz, fog), 1.0);
 }

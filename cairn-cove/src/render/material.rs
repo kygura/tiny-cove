@@ -53,12 +53,17 @@ impl Default for SeaField {
     }
 }
 
+/// Most lit lanterns / fires whose reflection streaks the sea (`Globals::lights`).
+pub const MAX_STREAK_LIGHTS: usize = 48;
+
 /// Packs [`Environment`] into the std430 vec4 layout of `Globals` in `glade.wesl`
-/// (`glade_prepass.wesl` mirrors the first 9 slots).
-pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4) -> Vec<[f32; 4]> {
+/// (`glade_prepass.wesl` mirrors the fixed head). `horizon` = distance (m) from the island
+/// centre where the open sea is cut away for the sky; `lights` = positions of the lit
+/// lanterns and fires (at most [`MAX_STREAK_LIGHTS`] are kept).
+pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4, horizon: f32, lights: &[Vec3]) -> Vec<[f32; 4]> {
     let v = |a: Vec3, w: f32| [a.x, a.y, a.z, w];
     let s = &env.sea;
-    vec![
+    let mut g = vec![
         v(env.sun_dir.normalize_or(Vec3::Y), env.night.clamp(0.0, 1.0)),
         v(env.sun_color, env.wetness.clamp(0.0, 1.0)),
         v(env.fill_color, env.snow.clamp(0.0, 1.0)),
@@ -74,10 +79,18 @@ pub fn globals_from_env(env: &Environment, time: f32, snap: f32, field: Vec4) ->
         v(s[3], if env.tide_falling { 1.0 } else { 0.0 }),
         v(s[4], env.dark.clamp(0.0, 1.0)),
         v(s[5], env.wind.length()),
-        v(env.outline, 0.0),
+        v(env.outline, if horizon.is_finite() { horizon.max(1.0) } else { super::sea::SEA_HALF }),
         field.to_array(),
         v(env.ambient_sky, 0.0),
-    ]
+    ];
+    let lights: Vec<[f32; 4]> = lights.iter().filter(|p| p.is_finite()).take(MAX_STREAK_LIGHTS).map(|p| v(*p, 1.0)).collect();
+    g.push([lights.len() as f32, 0.0, 0.0, 0.0]);
+    // A runtime-sized array binding needs at least one element.
+    if lights.is_empty() {
+        g.push([0.0; 4]);
+    }
+    g.extend(lights);
+    g
 }
 
 /// Uploads the globals every frame (time changes every frame anyway).
@@ -85,10 +98,15 @@ pub(super) fn sync_globals(
     env: Res<Environment>,
     snap: Res<VertexSnap>,
     field: Res<SeaField>,
+    horizon: Res<super::sea::Horizon>,
+    camera: Query<&Transform, With<super::GameCamera>>,
     time: Res<Time>,
+    point_lights: Query<(&PointLight, &GlobalTransform, &InheritedVisibility)>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
-    let data = globals_from_env(&env, time.elapsed_secs_wrapped(), snap.0, field.0);
+    let lit: Vec<Vec3> = point_lights.iter().filter(|(l, _, v)| l.intensity > 1.0 && v.get()).map(|(_, tf, _)| tf.translation()).collect();
+    let fwd = camera.single().map_or(Vec3::NEG_Z, |tf| tf.forward().as_vec3());
+    let data = globals_from_env(&env, time.elapsed_secs_wrapped(), snap.0, field.0, horizon.distance(fwd), &lit);
     if let Some(mut buf) = buffers.get_mut(&GLOBALS) {
         buf.clear();
         buf.extend(data);
@@ -102,7 +120,8 @@ fn is_prepass(descriptor: &RenderPipelineDescriptor) -> bool {
 }
 
 /// Shared vertex layouts: main pass (pos 0, normal 1, uv 2, uv1 3, colour 5) and
-/// prepass/shadow pass (pos 0, uv1 2, normal 3, uv 4).
+/// prepass/shadow pass (pos 0, uv1 2, normal 3, uv 4, colour 5: alpha = 1 - pennant flutter
+/// weight, so the cloth moves identically in every pass).
 fn specialize_solid(
     descriptor: &mut RenderPipelineDescriptor,
     layout: &MeshVertexBufferLayoutRef,
@@ -115,6 +134,7 @@ fn specialize_solid(
             Mesh::ATTRIBUTE_UV_1.at_shader_location(2),
             Mesh::ATTRIBUTE_NORMAL.at_shader_location(3),
             Mesh::ATTRIBUTE_UV_0.at_shader_location(4),
+            Mesh::ATTRIBUTE_COLOR.at_shader_location(5),
         ])?];
         descriptor.vertex.entry_point = Some(vertex_entry.into());
         return Ok(());
@@ -309,12 +329,22 @@ mod tests {
 
     #[test]
     fn globals_layout() {
-        let g = globals_from_env(&Environment::default(), 1.5, 0.5, Vec4::new(-40.0, -40.0, 0.5, 161.0));
-        assert_eq!(g.len(), 18);
+        let g = globals_from_env(&Environment::default(), 1.5, 0.5, Vec4::new(-40.0, -40.0, 0.5, 161.0), 44.0, &[]);
+        assert_eq!(g.len(), 20, "head + count + one padding light (WGSL runtime array)");
+        assert_eq!(g[15][3], 44.0, "horizon distance");
+        assert_eq!(g[18][0], 0.0, "no lights");
         assert_eq!(g[6][3], 1.5);
         assert_eq!(g[7][3], 0.5);
         assert_eq!(g[5][3], FOG_START);
         assert_eq!(g[16], [-40.0, -40.0, 0.5, 161.0]);
+        assert!(g.iter().flatten().all(|v| v.is_finite()));
+        // Lights are appended after the count, capped, and non-finite ones dropped.
+        let mut lights = vec![Vec3::new(1.0, 2.0, 3.0), Vec3::NAN];
+        lights.extend(std::iter::repeat_n(Vec3::ONE, 100));
+        let g = globals_from_env(&Environment::default(), 0.0, 0.5, Vec4::ONE, f32::NAN, &lights);
+        assert_eq!(g[18][0] as usize, MAX_STREAK_LIGHTS);
+        assert_eq!(g.len(), 19 + MAX_STREAK_LIGHTS);
+        assert_eq!(g[19], [1.0, 2.0, 3.0, 1.0]);
         assert!(g.iter().flatten().all(|v| v.is_finite()));
     }
 }

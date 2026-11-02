@@ -36,6 +36,79 @@ fn to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(pow((x + 0.055) / 1.055, vec3(2.4)), x / 12.92, x <= vec3(0.04045));
 }
 
+// Colour helpers mirrored from glade.wesl.
+fn modp(x: f32, m: f32) -> f32 {
+    return x - m * floor(x / m);
+}
+
+// sRGB -> HSV (hue in degrees).
+fn rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+    let mx = max(c.r, max(c.g, c.b));
+    let mn = min(c.r, min(c.g, c.b));
+    let d = mx - mn;
+    var h = 0.0;
+    if d > 1e-6 {
+        if mx == c.r {
+            h = 60.0 * modp((c.g - c.b) / d, 6.0);
+        } else if mx == c.g {
+            h = 60.0 * ((c.b - c.r) / d + 2.0);
+        } else {
+            h = 60.0 * ((c.r - c.g) / d + 4.0);
+        }
+    }
+    return vec3(h, select(0.0, d / mx, mx > 1e-6), mx);
+}
+
+fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+    let h = modp(c.x, 360.0) / 60.0;
+    let s = clamp(c.y, 0.0, 1.0);
+    let k = (vec3(5.0, 3.0, 1.0) + h) - 6.0 * floor((vec3(5.0, 3.0, 1.0) + h) / 6.0);
+    return c.z - c.z * s * max(min(min(k, 4.0 - k), vec3(1.0)), vec3(0.0));
+}
+
+// DESIGN A3 direction rule: positive when 60 <= h < t, else the warm (negative) path.
+fn rotate_toward(h: f32, t: f32, amount: f32) -> f32 {
+    if h >= 60.0 && h < t {
+        return h + min(amount, t - h);
+    }
+    let dist = modp(h - t, 360.0);
+    return modp(h - min(amount, dist), 360.0);
+}
+
+// Fog mix that never greys (DESIGN A0.3, A0.5, A4 sea fog): a linear mix, but where it
+// would drop below the blend of the two saturations (capped at A4's S 0.30 floor, so it only
+// steps in against grey), saturation is held there and the hue walks from the
+// object's hue toward the fog's along the A3 direction rule (analogous path, never through
+// the complement). A pale fog (pearl sea fog, snow) barely turns the hue, so things keep
+// their identity behind the veil; a saturated fog (storm, dusk, night) pulls them all the
+// way. Linear in, linear out.
+fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
+    let m = mix(c, fog, k);
+    if k <= 0.001 {
+        return m;
+    }
+    let a = rgb2hsv(to_srgb(c));
+    let f = rgb2hsv(to_srgb(fog));
+    var o = rgb2hsv(to_srgb(m));
+    let s_min = min(mix(a.y, f.y, k), 0.3);
+    if o.y >= s_min {
+        return m;
+    }
+    // The mix's own hue is kept while it still carries one (analogous inputs); only a
+    // near-grey mix (complementary inputs) takes the walked hue.
+    var h = select(f.x, o.x, o.y >= 0.5 * s_min);
+    if a.y > 0.08 && o.y < 0.5 * s_min {
+        var dist = modp(a.x - f.x, 360.0);
+        if a.x >= 60.0 && a.x < f.x {
+            dist = f.x - a.x;
+        }
+        h = rotate_toward(a.x, f.x, dist * k * smoothstep(0.1, 0.5, f.y));
+    }
+    o.x = h;
+    o.y = s_min;
+    return to_linear(hsv2rgb(o));
+}
+
 fn hex_lin(r: f32, g: f32, b: f32) -> vec3<f32> {
     return to_linear(vec3(r, g, b) / 255.0);
 }
@@ -183,16 +256,17 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let wy = s.ycoef.x + s.ycoef.y * ndc.x + s.ycoef.z * ndc.y + s.ycoef.w * d;
         var bank = 0.0;
         let top = s.bank.y;
+        // Bank layers mirror glade.wesl BANK_LOW / BANK_MID / BANK_TOP.
         if wy < top * 0.34 {
-            bank = 0.82;
+            bank = 0.6;
         } else if wy < top * 0.67 {
-            bank = 0.68;
+            bank = 0.48;
         } else if wy < top {
-            bank = 0.5;
+            bank = 0.36;
         }
         let dist_fog = 1.0 - exp(-s.fog.w * max(d - s.sky_top.w, 0.0));
         let fog = 1.0 - (1.0 - dist_fog) * (1.0 - bank * s.bank.x);
-        let ink = mix(s.outline.xyz, s.fog.xyz, fog);
+        let ink = fog_mix(s.outline.xyz, s.fog.xyz, fog);
         if silhouette && cls != 1 {
             col = ink;
         } else if crease && cls == 3 {

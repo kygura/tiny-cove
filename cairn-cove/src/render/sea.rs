@@ -31,6 +31,45 @@ pub const FIELD_SPACING: f32 = 0.5;
 /// Fire light intensity (lumens before the night factor), cf. `world::LANTERN_LUMENS`.
 pub const FIRE_LUMENS: f32 = 1800.0;
 
+/// Horizon distance (m) before any scene is built.
+pub const DEFAULT_HORIZON: f32 = 46.0;
+/// Sea kept behind the farthest land / shallows (foam rings, the turquoise wedge) before the
+/// horizon line cuts the open sea for the sky.
+const HORIZON_MARGIN: f32 = 6.0;
+/// Seabed height above which a sample counts as shore (the shallow band, DESIGN A6).
+const SHORE_DEPTH: f32 = -1.5;
+
+/// Where the open sea ends and the post pass paints the sky (DESIGN A4/A8: sky above the
+/// sea line). Holds the land and shallow-water points of the built terrain; the horizon sits
+/// [`HORIZON_MARGIN`] behind the farthest of them along the camera's ground-forward axis, so
+/// the island, its shallows and the sea stacks always stay in front of it at any yaw.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct Horizon {
+    pub points: Vec<Vec2>,
+}
+
+impl Horizon {
+    /// Shore points (1 m grid) of a heightfield from [`heightfield`].
+    pub fn from_heightfield(heights: &[f32], field: Vec4) -> Self {
+        let n = if field.w.is_finite() { field.w.max(0.0) as usize } else { 0 };
+        let step = ((1.0 / field.z.max(1e-3)).round() as usize).max(1);
+        let points = (0..n.saturating_mul(n).min(heights.len()))
+            .filter(|i| (i % n) % step == 0 && (i / n) % step == 0 && heights[*i] > SHORE_DEPTH)
+            .map(|i| Vec2::new(field.x + (i % n) as f32 * field.z, field.y + (i / n) as f32 * field.z))
+            .filter(|p| p.is_finite())
+            .collect();
+        Self { points }
+    }
+
+    /// Horizon distance (m from the island centre) for a camera looking along `fwd` (its
+    /// ground projection is used).
+    pub fn distance(&self, fwd: Vec3) -> f32 {
+        let f = Vec2::new(fwd.x, fwd.z).normalize_or(Vec2::NEG_Y);
+        let far = self.points.iter().map(|p| p.dot(f)).fold(f32::NEG_INFINITY, f32::max);
+        if far.is_finite() { (far + HORIZON_MARGIN).clamp(12.0, SEA_HALF - 10.0) } else { DEFAULT_HORIZON }
+    }
+}
+
 /// Marker for the sea entity.
 #[derive(Component)]
 pub struct Sea;
@@ -118,10 +157,15 @@ pub(super) fn update_heightfield(
     assets: Option<Res<GladeAssets>>,
     mut images: ResMut<Assets<Image>>,
     mut field: ResMut<SeaField>,
+    mut horizon: ResMut<Horizon>,
 ) {
     let (Some(built), Some(assets)) = (built, assets) else { return };
     let Some(scene) = built.0.as_ref().filter(|_| built.is_changed()) else { return };
     let (h, f) = heightfield(&scene.terrain);
+    let r = Horizon::from_heightfield(&h, f);
+    if *horizon != r {
+        *horizon = r;
+    }
     if let Some(mut img) = images.get_mut(&assets.heightfield) {
         // Terrain unchanged (e.g. only a hut moved): keep the texture.
         let same = img.data.as_ref().is_some_and(|d| d.len() == h.len() * 4 && d.chunks_exact(4).zip(&h).all(|(b, v)| b == v.to_le_bytes()));
@@ -202,6 +246,30 @@ mod tests {
         let small = heightfield_image(&[1.0], 2);
         let d = small.data.unwrap();
         assert_eq!(f32::from_le_bytes([d[4], d[5], d[6], d[7]]), -24.0);
+    }
+
+    #[test]
+    fn horizon_keeps_every_shore_sample_in_front() {
+        let t = Terrain::build(3, &[], &[]);
+        let (h, f) = heightfield(&t);
+        let hz = Horizon::from_heightfield(&h, f);
+        assert!(!hz.points.is_empty());
+        let n = f.w as usize;
+        for yaw in 0..16 {
+            let a = yaw as f32 * std::f32::consts::TAU / 16.0;
+            let fwd = Vec3::new(a.sin(), -0.6, a.cos());
+            let r = hz.distance(fwd);
+            assert!((12.0..SEA_HALF).contains(&r));
+            for (i, v) in h.iter().enumerate() {
+                let p = Vec2::new(f.x + (i % n) as f32 * f.z, f.y + (i / n) as f32 * f.z);
+                if *v > 0.0 {
+                    assert!(p.dot(Vec2::new(a.sin(), a.cos())) + 4.0 < r, "land at {p} behind the horizon {r}");
+                }
+            }
+        }
+        assert_eq!(Horizon::default().distance(Vec3::NEG_Z), DEFAULT_HORIZON);
+        let bad = Horizon::from_heightfield(&[f32::NAN; 4], Vec4::new(f32::NAN, 0.0, 1.0, 2.0));
+        assert_eq!(bad.distance(Vec3::new(f32::NAN, 0.0, 1.0)), DEFAULT_HORIZON);
     }
 
     #[test]
