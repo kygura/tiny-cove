@@ -297,7 +297,10 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
                 col = mix(ink, s.rim.xyz, s.rim.w * (1.0 - fog));
             }
         } else if crease && cls == 3 {
-            col = mix(col, ink, s.depth.w);
+            // In the sea-fog bank the ink has taken the pale fog's hue, the complement of warm
+            // stone: a plain half mix of the two is grey (DESIGN A0.3), so the crease goes
+            // through the fog mix's saturation hold.
+            col = select(mix(col, ink, s.depth.w), fog_mix(col, ink, s.depth.w), s.bank.x > 0.0);
         }
     }
 
