@@ -140,8 +140,9 @@ fn row(sun: (u32, f32), fill: (u32, f32), tint: u32, lit_rot: f32, rim: u32, sky
     }
 }
 
-/// Storm lit-band pre-rotation toward the tint (degrees) and its cold crest glint.
-const STORM_LIT_ROT: f32 = 40.0;
+/// Storm lit-band rotation of greens toward the tint (degrees; glade.wesl `storm_lit` stops
+/// them at jade H 152) and the storm's cold crest glint.
+const STORM_LIT_ROT: f32 = 44.0;
 const STORM_GLINT: u32 = 0xCEF7FF;
 
 const OUTLINE_DAY: u32 = 0x31217B;
@@ -305,9 +306,10 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
             // the storm frame stays readable at 240p. The fill outshines the sun, so it lights
             // every band; under that cobalt light a warm albedo (wet honey sand, ochre dirt,
             // thatch, boards) lands at hue 340-10, V 0.3: brick-brown mud, which the anti-mud
-            // floor (S < 0.35, or hue 15-100) never catches. The lit band is pre-rotated 40°
-            // toward the tint instead (A3 litRot, like night's 30°): warm albedos go plum
-            // and slate, cliffs violet, grass jade.
+            // floor (S < 0.35, or hue 15-100) never catches. So the storm lit band takes a set
+            // hue instead (glade.wesl `storm_lit`): greens rotate STORM_LIT_ROT toward the
+            // tint but stop at jade, warm albedos rotate on to plum (wet sand, dirt, thatch)
+            // and violet (cliffs).
             r.sun = set(r.sun, 0x8CEFE6);
             r.sun_i = base.sun_i * 0.45;
             r.fill = set(r.fill, 0x6B7BDE);
