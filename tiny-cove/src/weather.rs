@@ -320,7 +320,9 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
             for c in r.sky.iter_mut() {
                 *c = c.lerp(base.sea_fog, 0.4);
             }
-            r.fog_density = 0.012;
+            // The height bank (dense below 3 m) does the swallowing; distance fog stays near
+            // a clear day's, so roofs, palms and beacons above the bank keep their chroma.
+            r.fog_density = 0.004;
             r.bank = 1.0;
         }
         WeatherKind::Snow => {
