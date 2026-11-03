@@ -591,6 +591,8 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     // sand gets. Under a storm's cold light honey would go brown: storm sand stays sand and
     // takes the slate-blue of the storm.
     let honey = s == S_SAND && n.y > 0.5 && wet > 0.0 && g.sea0.w < 0.5;
+    // Lowest hue the lit band of rain-soaked sand may take (wet_sand #DEA54A is 37).
+    const HONEY_HUE: f32 = 34.0;
     if honey {
         a = mix(a, vec3(222.0, 165.0, 74.0) / 255.0, clamp(wet, 0.0, 1.0));
     }
@@ -629,6 +631,16 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         c = anti_mud(min(c, vec3(1.0)), tint);
     } else {
         c = cel(a, light);
+        // Rain-soaked sand stays wet honey in sun (DESIGN A8): under a dusk rain the lit band
+        // is the pink-violet fill on a pre-rotated albedo, which takes honey to rust (hue 20)
+        // and merges the beach into the plum cliffs. Hold its hue at the honey edge.
+        if honey && light >= 0.30 {
+            var hv = rgb2hsv(c);
+            if hv.x < HONEY_HUE || hv.x > 270.0 {
+                hv.x = HONEY_HUE;
+                c = hsv2rgb(hv);
+            }
+        }
     }
 
     // Glistening wet sand while the tide goes out; puddle glints in the rain.
