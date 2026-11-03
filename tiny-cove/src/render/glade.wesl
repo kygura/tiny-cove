@@ -594,6 +594,8 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     // sand gets. Under a storm's cold light honey would go brown: storm sand stays sand and
     // takes the slate-blue of the storm.
     let honey = s == S_SAND && n.y > 0.5 && wet > 0.0 && g.sea0.w < 0.5;
+    // Every rain-wet honey surface: soaked sand, and the tide band on any shore (same token).
+    let wet_honey = honey || (shore_wet && wet > 0.0 && g.sea0.w < 0.5);
     // Lowest hue the lit band of rain-soaked sand may take (wet_sand #DEA54A is 37).
     const HONEY_HUE: f32 = 34.0;
     if honey {
@@ -603,7 +605,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     if wet > 0.0 && !slot {
         var w = rgb2hsv(a);
         w.y = min(w.y * (1.0 + 0.15 * wet), 1.0);
-        w.z *= 1.0 - select(0.18, 0.0, honey) * wet;
+        w.z *= 1.0 - select(0.18, 0.0, wet_honey) * wet;
         a = hsv2rgb(w);
     }
 
@@ -634,14 +636,38 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         c = anti_mud(min(c, vec3(1.0)), tint);
     } else {
         c = cel(a, light);
-        // Rain-soaked sand stays wet honey in sun (DESIGN A8): under a dusk rain the lit band
-        // is the pink-violet fill on a pre-rotated albedo, which takes honey to rust (hue 20)
-        // and merges the beach into the plum cliffs. Hold its hue at the honey edge.
-        if honey && light >= 0.30 {
-            var hv = rgb2hsv(c);
+        // Rain-soaked sand stays wet honey under a warm sky (DESIGN A8 dusk rain). There every
+        // band is lit by the pink-violet fill, which takes honey to rust (lit, hue 20), the
+        // lit-cliff brick (mid, hue 6) and the soil's oxblood (shadow, 354): the beach merges
+        // into the cliffs and the dirt. Instead the bands step down from the lit colour held at
+        // the honey edge along the warm path, with A3's V x0.90 / x0.78 (S x1.2 in shadow) but
+        // only 7 / 15 deg of hue, so the dirt's hues (340-10) stay free: at 18:30 lit #B5843A,
+        // mid #A5633A, shadow #8C4219 (honey, terracotta, rust). The rain haze (a blue fog)
+        // walks a dark amber back through brick, so far sand is pre-turned by 0.6 of what the
+        // fog will take off: it lands on terracotta, still paled by the haze (the full turn
+        // leaves a grey khaki, A0.3). Faded by wetness (no snap as the sand dries), the sun's
+        // warmth (off under noon's white and the moon's blue) and the lit value (a dim honey is
+        // mud), then anti-mud again. CPU port: tests/wet_honey.rs.
+        if wet_honey {
+            let sun = g.sun_wet.xyz;
+            let warm = smoothstep(0.02, 0.15, (sun.r - sun.b) / max(sun.r, 1e-3));
+            var hv = rgb2hsv(cel(a, 1.0));
             if hv.x < HONEY_HUE || hv.x > 270.0 {
                 hv.x = HONEY_HUE;
-                c = hsv2rgb(hv);
+            }
+            let k = clamp(wet, 0.0, 1.0) * warm * smoothstep(0.50, 0.62, hv.z);
+            if k > 0.0 {
+                if light < 0.08 {
+                    hv = vec3(hv.x - 15.0, min(hv.y * 1.2, 1.0), hv.z * 0.78);
+                } else if light < 0.30 {
+                    hv = vec3(hv.x - 7.0, hv.y, hv.z * 0.90);
+                }
+                let haze = fog_amount(view_depth(world), world.y);
+                if haze > 0.001 {
+                    let seen = rgb2hsv(to_srgb(fog_mix(to_linear(hsv2rgb(hv)), g.fog_start.xyz, haze)));
+                    hv.x += 0.6 * clamp(modp(hv.x - seen.x + 180.0, 360.0) - 180.0, 0.0, 20.0);
+                }
+                c = anti_mud(mix(c, hsv2rgb(hv), k), tint);
             }
         }
     }
