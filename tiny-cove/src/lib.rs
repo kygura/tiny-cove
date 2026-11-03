@@ -3,6 +3,7 @@
 pub mod camera;
 pub mod env;
 pub mod life;
+pub mod record;
 pub mod render;
 pub mod shot;
 pub mod tools;
@@ -22,6 +23,7 @@ impl Plugin for GladePlugin {
             .init_resource::<env::Tide>()
             .insert_resource(shot::Cli::parse(std::env::args()))
             .add_plugins((render::RenderPlugin, world::WorldPlugin, weather::WeatherPlugin, camera::CameraPlugin, shot::ShotPlugin))
+            .add_plugins(record::RecordPlugin)
             .add_plugins((tools::ToolsPlugin, ui::UiPlugin, life::LifePlugin));
     }
 }

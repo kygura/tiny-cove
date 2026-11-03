@@ -1,10 +1,13 @@
 //! Hidden `--tool-smoke [out.png]` self-test: drives every tool through its real gesture code
 //! with synthetic mouse / keyboard input and a [`CursorOverride`], checks the committed
 //! document after each gesture, logs `SMOKE ok|FAIL <step>`, optionally saves a screenshot and
-//! exits with status 0 (all passed) or 1.
+//! exits with status 0 (all passed) or 1. With `--record DIR` every frame of the run is
+//! recorded too (see [`crate::record`]): the script starts once the recorder is warm and the run
+//! exits only after every frame is on disk.
 
 use super::{CursorOverride, Tool, ToolSettings, hash01, q2};
 use crate::camera::CameraRig;
+use crate::record::Recorder;
 use crate::weather::Clock;
 use crate::world::{BuiltScene, Glade};
 use bevy::{
@@ -66,6 +69,8 @@ struct Smoke {
     passed: usize,
     failed: usize,
     stage: Stage,
+    /// Frames spent in [`Stage::Shooting`].
+    shooting: u32,
     release_keys: Vec<KeyCode>,
 }
 
@@ -595,6 +600,7 @@ fn drive(
     mut settings: ResMut<ToolSettings>,
     mut glade: ResMut<Glade>,
     built: Res<BuiltScene>,
+    mut recorder: Option<ResMut<Recorder>>,
     mut commands: Commands,
 ) {
     let sm = &mut *smoke;
@@ -604,15 +610,21 @@ fn drive(
     }
     match sm.stage {
         Stage::Starting => {
-            if built.0.is_some() && sm.frames > 20 {
+            if built.0.is_some() && sm.frames > 20 && recorder.as_ref().is_none_or(|r| r.ready()) {
                 sm.stage = Stage::Running;
             }
             return;
         }
         Stage::Shooting => {
+            sm.shooting += 1;
             let done = sm.shot.as_ref().is_none_or(|p| std::fs::metadata(p).is_ok_and(|m| m.len() > 0));
-            if (done && sm.wait == 0) || sm.frames > 2000 {
-                std::process::exit(if sm.failed == 0 { 0 } else { 1 });
+            let recorded = recorder.as_ref().map_or(Some(true), |r| r.finished());
+            let timed_out = sm.shooting > 2000 || recorder.as_ref().is_some_and(|r| r.timed_out());
+            if (done && sm.wait == 0 && recorded.is_some()) || timed_out {
+                if recorded != Some(true) {
+                    println!("SMOKE recording incomplete");
+                }
+                std::process::exit(if sm.failed == 0 && recorded == Some(true) { 0 } else { 1 });
             }
             sm.wait = sm.wait.saturating_sub(1);
             return;
@@ -632,6 +644,9 @@ fn drive(
         }
         *cursor = CursorOverride::default();
         sm.stage = Stage::Shooting;
+        if let Some(r) = recorder.as_mut() {
+            r.stop();
+        }
         sm.wait = 10;
         if let Some(p) = sm.shot.clone() {
             let _ = std::fs::remove_file(&p);
