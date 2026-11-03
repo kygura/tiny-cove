@@ -4,7 +4,7 @@
 # even where rendering is slow (software Vulkan in CI or a container).
 #
 # Output (default tiny-cove/docs/footage/):
-#   <clip>.mp4        one clip each: H.264, yuv420p, CRF 18, 30 fps, 1280x720 native pixels
+#   <clip>.mp4        one clip each: H.264, yuv420p, CRF 20 (env CRF overrides), 30 fps, 1280x720 native pixels
 #   tiny-cove.mp4     every clip back to back
 #   tiny-cove.gif     README preview, 640x360 at 15 fps (sped-up spans of the clips, <= ~8 MB)
 #   stills/<clip>-N.png  lossless frames picked from each clip
@@ -29,6 +29,7 @@ WORK=${TMPDIR:-/tmp}/tiny-cove-footage
 OUT=$here/docs/footage
 BIN=${CARGO_TARGET_DIR:-$here/../target}/release/tiny-cove
 CAP=""
+CRF=${CRF:-20}
 KEEP=0
 GIF=1
 CONCAT=1
@@ -81,7 +82,7 @@ clip_args() {
         # Golden-hour close-up of the harbour at real game speed: sea, canoes, gulls, pennants.
         harbour) echo "--time 17.5 --zoom 1.0 --focus 7,2 --yaw 90 --seconds 8" ;;
         # Mid-day weather tour (the game blends each change over a few seconds).
-        weather) echo "--time 11 --weathers clear,rain,storm,fog,snow --orbit 45 --seconds 15" ;;
+        weather) echo "--time 11 --weathers clear,rain,storm,fog,snow --orbit 45 --seconds 35" ;;
         # Fires, lanterns, window glow and stars.
         night) echo "--time 23 --orbit 30 --seconds 6" ;;
     esac
@@ -135,7 +136,7 @@ encode() {
         unset IFS
     fi
     ffmpeg -hide_banner -loglevel error -y -framerate "$FPS" -i "$frames/frame_%05d.png" "${vf[@]}" \
-        -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r "$FPS" -movflags +faststart "$OUT/$name.mp4"
+        -c:v libx264 -preset slow -crf "$CRF" -pix_fmt yuv420p -r "$FPS" -movflags +faststart "$OUT/$name.mp4"
     # A lossless RGB copy for the GIF: H.264 4:2:0 noise defeats GIF frame differencing and
     # roughly doubles its size.
     ffmpeg -hide_banner -loglevel error -y -framerate "$FPS" -i "$frames/frame_%05d.png" "${vf[@]}" \
