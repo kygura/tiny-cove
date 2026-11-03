@@ -239,9 +239,12 @@ fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
     // The mix's own hue is kept while it still carries one (analogous inputs); only a
     // near-grey mix (complementary inputs) takes the walked hue.
     var h = select(f.x, o.x, o.y >= 0.5 * s_min);
-    if f.y < 0.3 {
+    if f.y < 0.3 || a.y < 0.15 {
+        // A pale fog, or a near-white input (A3 near-white: S < 0.15, a glint or foam that
+        // carries no hue of its own): the held pixel takes the fog's hue, so a cream glint
+        // never walks through orange into a blue storm fog.
         h = f.x;
-    } else if a.y > 0.08 && o.y < 0.5 * s_min {
+    } else if o.y < 0.5 * s_min {
         var dist = modp(a.x - f.x, 360.0);
         if a.x >= WARM_EDGE && a.x < f.x {
             dist = f.x - a.x;

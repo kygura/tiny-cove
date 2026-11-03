@@ -94,9 +94,9 @@ fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
         return m;
     }
     var h = select(f.x, o.x, o.y >= 0.5 * s_min);
-    if f.y < 0.3 {
+    if f.y < 0.3 || a.y < 0.15 {
         h = f.x;
-    } else if a.y > 0.08 && o.y < 0.5 * s_min {
+    } else if o.y < 0.5 * s_min {
         var dist = modp(a.x - f.x, 360.0);
         if a.x >= WARM_EDGE && a.x < f.x {
             dist = f.x - a.x;

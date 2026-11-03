@@ -140,6 +140,10 @@ fn row(sun: (u32, f32), fill: (u32, f32), tint: u32, lit_rot: f32, rim: u32, sky
     }
 }
 
+/// Storm lit-band pre-rotation toward the tint (degrees) and its cold crest glint.
+const STORM_LIT_ROT: f32 = 40.0;
+const STORM_GLINT: u32 = 0xCEF7FF;
+
 const OUTLINE_DAY: u32 = 0x31217B;
 const OUTLINE_NIGHT: u32 = 0x10104A;
 
@@ -295,13 +299,19 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
             r.outline = r.outline.lerp(h(OUTLINE_NIGHT), 0.5 * day);
         }
         WeatherKind::Storm => {
-            // DESIGN: sun ×0.30, fill ×0.90. Lifted (×0.45, ×1.3) so the storm frame stays
-            // readable at 240p: warm albedos go plum and slate, not near-black mud.
+            // DESIGN: sun ×0.30, fill #5A7BDE ×0.90. Lifted (×0.45, a lilac #6B7BDE ×1.5) so
+            // the storm frame stays readable at 240p. The fill outshines the sun, so it lights
+            // every band; under that cobalt light a warm albedo (wet honey sand, ochre dirt,
+            // thatch, boards) lands at hue 340-10, V 0.3: brick-brown mud, which the anti-mud
+            // floor (S < 0.35, or hue 15-100) never catches. The lit band is pre-rotated 40°
+            // toward the tint instead (A3 litRot, like night's 30°): warm albedos go plum
+            // and slate, cliffs violet, grass jade.
             r.sun = set(r.sun, 0x8CEFE6);
             r.sun_i = base.sun_i * 0.45;
-            r.fill = set(r.fill, 0x5A7BDE);
-            r.fill_i = seti(r.fill_i, 1.3);
+            r.fill = set(r.fill, 0x6B7BDE);
+            r.fill_i = seti(r.fill_i, 1.5);
             r.tint = set(r.tint, 0x31107B);
+            r.lit_rot = seti(r.lit_rot, STORM_LIT_ROT);
             r.rim = h(0x42FFE6);
             // Night ink: the day keyline (#31217B) is lighter than the storm-dark land.
             r.outline = h(OUTLINE_NIGHT);
@@ -310,6 +320,9 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
             for (i, hx) in [0x10C5B5, 0x1084AD, 0x103A9C, 0x10216B].into_iter().enumerate() {
                 r.sea[i] = set(r.sea[i], hx);
             }
+            // Cold crest glint (the hour's cream #FFFFDE would be a warm spark; A8: the
+            // beacon is the only warm point).
+            r.sea[5] = set(r.sea[5], STORM_GLINT);
             r.fog_density = 0.009;
         }
         WeatherKind::Fog => {
