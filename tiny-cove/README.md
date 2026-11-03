@@ -173,5 +173,5 @@ xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/tiny-cove --tool-smoke 
   uneven.
 - A track through a roofed ring raises the whole ring by about 2 m.
 
-The engine started as a fork of the `greywild` prototype (now in `../archive/greywild`)
+The engine started as a fork of the `greywild` prototype (now in `../experiments/greywild`)
 and was rebuilt for the coast.

@@ -18,17 +18,21 @@ cargo run --release -- --demo   # start in the showcase cove
 |---|---|---|
 | ![](tiny-cove/docs/noon.png) | ![](tiny-cove/docs/storm.png) | ![](tiny-cove/docs/seafog.png) |
 
+## Foundational experiments
+
+Tiny Cove grew out of these two. Both are cozy builders with the
+same PS1 cel renderer, and each is a standalone Cargo workspace
+(`cd experiments/<name> && cargo run --release`). They are no longer developed.
+
+| [`greywild`](experiments/greywild) | [`thistle-glade`](experiments/thistle-glade) |
+|---|---|
+| ![](experiments/greywild/docs/noon.png) | ![](experiments/thistle-glade/docs/demo-noon.png) |
+| Eco-brutalist valley builder: board-formed concrete taken back by moss and birch. Tiny Cove's engine is a fork of it. | Medieval glade builder with walls, houses, towers, sheep and ducks. |
+
+Tiny Cove and both experiments share one build cache in `target/` at the
+repository root.
+
 ## Archive
 
-Earlier prototypes live in [`archive/`](archive). Each one is a standalone Cargo
-workspace (`cd archive/<name> && cargo run --release`), and none of them is maintained.
-
-| Project | What it is |
-|---|---|
-| [`greywild`](archive/greywild) | Eco-brutalist valley builder with board-formed concrete taken back by moss and birch. Tiny Cove's engine started as a fork of it. |
-| [`thistle-glade`](archive/thistle-glade) | Medieval glade builder with walls, houses, towers, sheep and ducks |
-| [`hollow-acre`](archive/hollow-acre) | Brutalist concrete poured into regrown post-apocalyptic farmland with aether crystals |
-| [`concrete-glade`](archive/concrete-glade) | Brutalist megastructures on a dead glade |
-
-Tiny Cove, greywild, thistle-glade and hollow-acre share one build cache in `target/` at
-the repository root. concrete-glade keeps its own.
+[`archive/`](archive) holds two early prototypes, `hollow-acre` and
+`concrete-glade`. They are frozen: kept for history, not built or maintained.
