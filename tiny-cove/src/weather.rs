@@ -332,7 +332,14 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
         WeatherKind::Fog => {
             r.sun_i *= 0.65;
             r.fog = base.sea_fog;
-            r.fill = base.sea_fog;
+            // Fill = fog colour × 0.85, but a mint fog lends the fill its pearl end: the fill
+            // outshines the dimmed sun and lights every band, and a mint light turns buff
+            // stone, thatch and sand olive, which the anti-mud floor then pushes to lime. The
+            // bank and the sky keep the mint; what pokes out of it keeps its own hue. The
+            // pearl is a cream white: a peach one (#FFF7EF) tipped the lilac roof pink.
+            const FOG_PEARL: u32 = 0xFFFFF7;
+            let mint = ((base.sea_fog.y - base.sea_fog.x) / 0.15).clamp(0.0, 1.0) * day;
+            r.fill = base.sea_fog.lerp(h(FOG_PEARL), 0.85 * mint);
             r.fill_i = 0.85 + 0.15 * (1.0 - day);
             for c in r.sky.iter_mut() {
                 *c = c.lerp(base.sea_fog, 0.4);
@@ -916,6 +923,23 @@ mod tests {
         let storm = environment(12.0, &WeatherMix::settled(WeatherKind::Storm));
         assert!(fog.night > 0.5 && storm.night > 0.5, "beacons burn in fog and storms");
         assert_eq!(environment(12.0, &WeatherMix::settled(WeatherKind::Clear)).night, 0.0);
+    }
+
+    #[test]
+    fn sea_fog_fill_keeps_warm_albedos_warm() {
+        // The bank stays mint, but the fill that lights what pokes out is a cream pearl: buff
+        // stone (#E6CE9C) under it keeps a buff hue instead of going olive / lime, and the
+        // lilac roof (#AD73AD, hue 300 under the white noon sun) does not drift pink.
+        for hour in [8.0, 12.0] {
+            let fog = environment(hour, &WeatherMix::settled(WeatherKind::Fog));
+            let f = fog_unit(fog.fog_color);
+            assert!(f.y - f.x > 0.1, "mint bank at {hour}");
+            let light = fog.fill_color.max(fog.sun_color);
+            let hue = rgb_to_hsv(light * hex_to_unit(0xE6CE9C)).x;
+            assert!((25.0..50.0).contains(&hue), "buff under the sea-fog fill at {hour}: hue {hue}");
+            let hue = rgb_to_hsv(light * hex_to_unit(0xAD73AD)).x;
+            assert!((295.0..305.0).contains(&hue), "lilac roof under the sea-fog fill at {hour}: hue {hue}");
+        }
     }
 
     #[test]

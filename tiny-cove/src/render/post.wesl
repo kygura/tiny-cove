@@ -108,6 +108,28 @@ fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
     return to_linear(hsv2rgb(o));
 }
 
+// Mirrors glade.wesl `bank_fog`: what the day bank veils colour `c` toward when the pixel is
+// inside the bank (`inside`), so the ink fades to a lilac pearl.
+fn bank_fog(c: vec3<f32>, inside: bool) -> vec3<f32> {
+    let f = s.fog.xyz;
+    let fs = to_srgb(f);
+    let pearl = clamp((fs.g - fs.r) / 0.15, 0.0, 1.0)
+        * smoothstep(0.55, 0.75, min(fs.r, min(fs.g, fs.b)));
+    if s.bank.x < 0.05 || !inside || pearl <= 0.0 {
+        return f;
+    }
+    let a = rgb2hsv(to_srgb(c));
+    let k = smoothstep(0.12, 0.3, a.y) * pearl * s.bank.x;
+    let warm = max(1.0 - smoothstep(60.0, 90.0, a.x), smoothstep(320.0, 345.0, a.x));
+    let lilac = smoothstep(190.0, 215.0, a.x) * (1.0 - smoothstep(320.0, 345.0, a.x));
+    let v = max(fs.r, max(fs.g, fs.b));
+    let hw = modp(clamp(select(a.x, a.x - 360.0, a.x > 200.0), -10.0, 45.0), 360.0);
+    let hl = clamp(a.x, 240.0, 290.0);
+    var o = mix(f, to_linear(hsv2rgb(vec3(hw, 0.1, v))), warm * k);
+    o = mix(o, to_linear(hsv2rgb(vec3(hl, 0.1, v))), lilac * k);
+    return o;
+}
+
 fn hex_lin(r: f32, g: f32, b: f32) -> vec3<f32> {
     return to_linear(vec3(r, g, b) / 255.0);
 }
@@ -282,7 +304,7 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         }
         let dist_fog = 1.0 - exp(-s.fog.w * max(d - s.sky_top.w, 0.0));
         let fog = 1.0 - (1.0 - dist_fog) * (1.0 - bank * s.bank.x);
-        var ink = fog_mix(s.outline.xyz, s.fog.xyz, fog);
+        var ink = fog_mix(s.outline.xyz, bank_fog(s.outline.xyz, wy < top), fog);
         // Ink is always darker than what it outlines (a storm-dark cliff keeps a dark line,
         // never a light hairline over a darker fill).
         var iv = rgb2hsv(to_srgb(ink));
@@ -297,7 +319,22 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
                 col = mix(ink, s.rim.xyz, s.rim.w * (1.0 - fog));
             }
         } else if crease && cls == 3 {
-            col = mix(col, ink, s.depth.w);
+            // In the sea-fog bank the ink has taken a pale fog's hue, far from that of warm
+            // stone: a plain half mix of the two is grey (DESIGN A0.3), so the crease goes
+            // through the fog mix's saturation hold.
+            col = select(mix(col, ink, s.depth.w), fog_mix(col, ink, s.depth.w), s.bank.x > 0.0);
+        }
+        // A pale stake under fogged ink, or its crease, lands on a mid-value grey-lilac in sea
+        // fog, and a pearl-veiled thatch eave under its crease on a brown: never under S 0.3
+        // there (the 5-bit dither keeps it above 0.2), nor a dark brown under the A3 anti-mud
+        // S 0.4 (DESIGN A0.3). Pale fog itself (V >= 0.65) is untouched.
+        if s.bank.x > 0.0 && cls != 0 {
+            var cc = rgb2hsv(to_srgb(col));
+            if cc.z < 0.65 {
+                let mud = cc.z < 0.45 && cc.x >= 15.0 && cc.x < 100.0;
+                cc.y = max(cc.y, select(0.3, 0.4, mud));
+                col = to_linear(hsv2rgb(cc));
+            }
         }
     }
 
