@@ -1,3 +1,0 @@
-# Frozen prototype. Shares the build cache at the repo root (archive/ is one level down).
-[build]
-target-dir = "../../target"

@@ -34,5 +34,6 @@ repository root.
 
 ## Archive
 
-[`archive/`](archive) holds two early prototypes, `hollow-acre` and
-`concrete-glade`. They are frozen: kept for history, not built or maintained.
+Two early prototypes, `hollow-acre` and `concrete-glade`, were removed from the
+tree. They survive in git history: `git checkout 850c319 -- archive/`
+restores them.
