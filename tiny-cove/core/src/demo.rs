@@ -290,7 +290,7 @@ pub fn demo_document(seed: u64) -> Document {
     // ------------------------------------------------------------------ windbreaks
     let fence = |pts: Vec<Vec2>, kind: FenceKind, c: Colors| Structure::Fence(Fence { points: pts, kind, colors: c });
     for (b0, b1, trim) in [(-5.5, -8.5, 0u8), (-11.5, -14.5, 3)] {
-        let line = vec![f.local(shore_a(t, &f, b0) - 3.2, b0), f.local(shore_a(t, &f, b1) - 3.2, b1)];
+        let line = vec![f.local(shore_a(t, &f, b0) - 2.4, b0), f.local(shore_a(t, &f, b1) - 2.4, b1)];
         d.add(fence(line, FenceKind::NetLine, colors(0, 0, trim)));
     }
     d.add(fence(vec![s(-3.0, -5.5), s(3.5, -5.5), s(4.5, -8.5)], FenceKind::Wattle, colors(0, 0, 0)));

@@ -471,7 +471,17 @@ pub fn cursor_ray(
 ) -> Option<Ray3d> {
     let physical = window.physical_size();
     let p = window_to_low_res(window_cursor * window.scale_factor(), display_scale(physical.y), display_offset(physical));
-    cam.viewport_to_world(cam_tf, p.clamp(Vec2::ZERO, low_res.as_vec2())).ok()
+    // The letterbox bars are not part of the image: no ray there, so tools ignore them.
+    if !(p.cmpge(Vec2::ZERO).all() && p.cmple(low_res.as_vec2()).all()) {
+        return None;
+    }
+    cam.viewport_to_world(cam_tf, p).ok()
+}
+
+/// Height in logical px of the shown (letterboxed) image: the [`VIEW_HEIGHT`] metres span
+/// this many px, not the whole window.
+pub fn image_height(window: &Window) -> f32 {
+    (LOW_RES_HEIGHT * display_scale(window.physical_size().y)) as f32 / window.scale_factor()
 }
 
 /// Saves `image` (PNG by extension), creating parent directories.

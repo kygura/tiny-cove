@@ -1138,7 +1138,7 @@ fn drive_tools(
             steps,
             dt: time.delta_secs(),
         };
-        let win_h = window.as_ref().map_or(720.0, |w| w.height()).max(1.0);
+        let win_h = window.as_ref().map_or(720.0, |w| crate::render::image_height(w)).max(1.0);
         let mut cx = Cx {
             s: &mut s,
             glade: g,

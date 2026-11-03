@@ -166,7 +166,7 @@ fn drive_camera(
     let f = axis(&[KeyCode::KeyW, KeyCode::ArrowUp], &[KeyCode::KeyS, KeyCode::ArrowDown]);
     let mut delta = (right * k + up * f) * PAN_SPEED * rig.zoom * dt;
     if pan {
-        let h = window.map_or(720.0, |w| w.height()).max(1.0);
+        let h = window.map_or(720.0, |w| crate::render::image_height(&w)).max(1.0);
         let per_px = crate::render::VIEW_HEIGHT * rig.zoom / h;
         let sin_p = rig.pitch_deg.to_radians().sin().max(0.2);
         delta += -right * motion.delta.x * per_px + up * (motion.delta.y * per_px / sin_p);

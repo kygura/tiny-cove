@@ -58,6 +58,16 @@ to `main`.
   seafog 5, snow 7.5. Fix loop 2 targets the look (fog, storm, dusk, sky band, lantern pools),
   shallow-angle dyke cuts, the camera clamp and the emissive rule.
 - SPEC/DESIGN amended to match the shipped trim rows and the jetty mooring depth (63ac7c9).
+- Final gate (after fix loop 2): Done 1–4 pass except smoke 79/80, broken by the new 30° camera
+  (the Dye clicks aimed over a 0.35 m firepit and at a causeway that huts now hide). Look
+  scores: noon 7.5, dusk-rain 6.5, night 7, storm 6, seafog 6, snow 7.5, hud 7.5, hero 8.
+- Fix loop 3 (last): Dye smoke steps re-aimed and split so each one actually recolours its
+  target (smoke 81/81); clicks in the letterbox bars no longer build; pan and raise drags track
+  the shown image height; windbreak gaps are sized by crossing angle like dykes (demo nets moved
+  0.8 m seaward so a parallel beach track no longer swallows one).
+- Known issues left open: neighbouring huts the terrace rule keeps apart can leave floors
+  0.3–0.6 m uneven; a track through a roofed ring raises the whole ring about 2 m; dusk-rain
+  sand reads rust rather than honey; storm land is dark; sea fog washes out the back roofs.
 
 ## Tasks
 | # | Task | Files | Model | Deps | State |
@@ -72,4 +82,4 @@ to `main`.
 | F | Look: atlas, palette, sea, wind, weather, sky | src/render/*, core/src/palette.rs, src/weather.rs, src/env.rs | frontier | 0,1 | done |
 | G | Tools, HUD, smoke | src/tools.rs, src/tools/smoke.rs, src/ui.rs, src/ui/strip.rs, src/camera.rs | mid-tier | 0,1 | done |
 | H | Life: gulls, crabs, fish, boats, smoke, fire | src/life.rs | mid-tier | 0 | done |
-| V | Verification gate | — | mixed tiers | A–H | loop 2 of 3 |
+| V | Verification gate | — | mixed tiers | A–H | done (3 of 3 loops) |

@@ -136,6 +136,22 @@ fn raise(a: Vec2, b: Vec2, px: f32) -> Vec<Act> {
     v
 }
 
+/// Check for a plain Dye click: exactly one structure changed, it now matches `dyed`, and no
+/// prop or bridge changed kind or hangings.
+fn dye_kept_kinds(b: &Document, a: &Document, dyed: impl Fn(&Structure) -> bool) -> Result<(), String> {
+    ok_if(a.structures.len() == b.structures.len(), || "structure count changed".into())?;
+    let changed: Vec<_> = b.structures.iter().zip(&a.structures).filter(|(x, y)| x != y).collect();
+    for ((_, x), (_, y)) in &changed {
+        match (x, y) {
+            (Structure::Placed(p), Structure::Placed(q)) => ok_if(p.kind == q.kind, || format!("prop {:?} -> {:?}", p.kind, q.kind))?,
+            (Structure::Bridge(p), Structure::Bridge(q)) => ok_if(p.kind == q.kind && p.hanging == q.hanging, || format!("bridge {:?} -> {:?}", p.kind, q.kind))?,
+            _ => {}
+        }
+    }
+    let names: Vec<String> = changed.iter().map(|((_, x), _)| format!("{x:?}").chars().take(80).collect()).collect();
+    ok_if(changed.len() == 1 && dyed(&changed[0].1.1), || format!("dyed {names:?}"))
+}
+
 fn count(d: &Document, f: impl Fn(&Structure) -> bool) -> usize {
     d.structures.iter().filter(|(_, s)| f(s)).count()
 }
@@ -310,6 +326,16 @@ fn steps() -> Vec<Step> {
         ));
     }
 
+    // Dye a bridge while nothing stands in front of it yet (the huts built later hide the
+    // bridges from a 30 degree camera): the causeway keeps its kind and hangings although the
+    // Dye settings hold a rope bridge with lanterns. (The log bridge in front lies flush with
+    // flat ground, so the ray clears it.) The click lands on the solid end, not over the arch.
+    v.push(step(
+        "dye click keeps bridge kind",
+        with(vec![key(Tool::Dye), set(|s| { s.bridge = BridgeKind::Rope { railing: 0 }; s.hanging = Hanging::Lanterns; s.colors.trim = 3; s.dye = None; })], click(sd(5.0, -19.0), 0.3)),
+        |b, a, _| dye_kept_kinds(b, a, |s| matches!(s, Structure::Bridge(p) if p.kind == BridgeKind::Causeway && p.colors.trim == 3)),
+    ));
+
     // Windbreaks.
     for (i, kind) in [FenceKind::Driftwood, FenceKind::Wattle, FenceKind::NetLine, FenceKind::Reed].into_iter().enumerate() {
         let s0 = 2.0 + 2.0 * i as f32;
@@ -478,24 +504,12 @@ fn steps() -> Vec<Step> {
         ok_if(a.structures.len() + 1 == b.structures.len() && cairns(a) + 1 == cairns(b), || format!("{} -> {} structures", b.structures.len(), a.structures.len()))
     }));
 
-    // Dye recolours only: a click on a prop, a causeway and a firepit keeps their kinds.
+    // Dye recolours only: a click on a firepit keeps its kind (the Dye settings hold a canoe).
+    // The firepit stands ~0.35 m tall: aim into its logs.
     v.push(step(
-        "dye click keeps prop and bridge kinds",
-        with(
-            vec![key(Tool::Dye), set(|s| { s.clutter = ClutterKind::Canoe; s.bridge = BridgeKind::Rope { railing: 0 }; s.hanging = Hanging::Lanterns; s.tree = TreeKind::Palm; s.colors.trim = 3; s.dye = None; })],
-            with(click(slot(7), 0.5), click(sd(5.0, -16.5), 0.5)),
-        ),
-        |b, a, _| {
-            ok_if(a.structures.len() == b.structures.len() && a != b, || "nothing dyed".into())?;
-            for ((_, x), (_, y)) in b.structures.iter().zip(&a.structures) {
-                match (x, y) {
-                    (Structure::Placed(p), Structure::Placed(q)) => ok_if(p.kind == q.kind, || format!("prop {:?} -> {:?}", p.kind, q.kind))?,
-                    (Structure::Bridge(p), Structure::Bridge(q)) => ok_if(p.kind == q.kind && p.hanging == q.hanging, || format!("bridge {:?} -> {:?}", p.kind, q.kind))?,
-                    _ => {}
-                }
-            }
-            ok_if(count(a, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Firepit) && p.colors.trim == 3)) == 1, || "firepit not recoloured".into())
-        },
+        "dye click keeps prop kind",
+        with(vec![key(Tool::Dye), set(|s| { s.clutter = ClutterKind::Canoe; s.tree = TreeKind::Palm; s.colors.trim = 3; s.dye = None; })], click(slot(7), 0.2)),
+        |b, a, _| dye_kept_kinds(b, a, |s| matches!(s, Structure::Placed(p) if p.kind == PropKind::Clutter(ClutterKind::Firepit) && p.colors.trim == 3)),
     ));
 
     // Tree drag scatters trees along the path; one undo takes the whole scatter back.

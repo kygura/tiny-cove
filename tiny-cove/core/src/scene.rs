@@ -143,7 +143,7 @@ pub fn build(doc: &Document) -> Scene {
                 house_mesh(h, &cuts, &terrain, seed)
             }
             Structure::Fence(f) => {
-                let cuts = cuts_through(&f.points, 0.4, None, 3.0);
+                let cuts = cuts_through(&f.points, 0.4, Some(FENCE_DEPTH), 3.0);
                 blockers.push(ribbon(&f.points, 0.6));
                 fence_mesh(f, &cuts, &terrain, seed)
             }
@@ -305,6 +305,9 @@ pub struct Hit {
     /// closest to the hit; 0 for other structures and terrain.
     pub along: f32,
 }
+
+/// Depth of a windbreak for sizing a track gap by its crossing angle (posts and panels).
+const FENCE_DEPTH: f32 = 0.3;
 
 /// How close (metres, on the water plane) a ray must pass to a mesh-less floating prop.
 const FLOAT_PICK_RADIUS: f32 = 1.5;
@@ -506,6 +509,27 @@ mod tests {
                     }
                 }
                 assert!(blocked(&doc, &s, wall, Vec2::new(-17.0, -5.0), Vec2::new(-17.0, 5.0)), "{deg} {thickness}");
+            }
+        }
+    }
+
+    /// A windbreak crossed at a shallow angle opens wide enough for the track too.
+    #[test]
+    fn shallow_crossings_of_windbreaks_pass() {
+        for kind in [FenceKind::Wattle, FenceKind::Driftwood, FenceKind::NetLine, FenceKind::Reed] {
+            for deg in [15.0_f32, 20.0, 45.0] {
+                let mut doc = flat_doc(3);
+                let fence = doc.add(Structure::Fence(Fence { points: vec![Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0)], kind, colors: Colors::default() }));
+                let d = Vec2::from_angle(deg.to_radians());
+                track(&mut doc, -d * 9.0, d * 9.0);
+                let s = build(&doc);
+                for lift in [0.4, 1.0] {
+                    for lat in [-0.4, 0.0, 0.4] {
+                        let what = format!("{kind:?} {deg} deg, {lift} m up, {lat} m aside");
+                        assert!(!blocked_at(&doc, &s, fence, -d * 9.0, d * 9.0, lift, lat), "{what}");
+                        assert!(!blocked_at(&doc, &s, fence, d * 9.0, -d * 9.0, lift, lat), "{what}, back");
+                    }
+                }
             }
         }
     }
