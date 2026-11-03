@@ -409,6 +409,34 @@ fn fog_amount(depth: f32, y: f32) -> f32 {
     return 1.0 - (1.0 - dist) * (1.0 - b * bank);
 }
 
+// The colour the sea-fog bank veils linear colour `c` toward at height `y` (DESIGN A8, a
+// mint-pearl bank). fog_mix holds a pale fog's own hue, so one mint swallowed every board,
+// strake and sand bar into a single H172 wash. In a day bank greens, water and the sea fade
+// to the mint, warm albedos (sand, boards, thatch, madder) to a warm pearl of their own hue
+// (0-45) and cool ones (stone, woad, ink) to a lilac pearl (240-290): each fades into a pastel
+// of its own family, never across the complement, and the cove reads through the bank (SPEC
+// Done #3). Mirrored for the ink in post.wesl.
+fn bank_fog(c: vec3<f32>, y: f32) -> vec3<f32> {
+    let f = g.fog_start.xyz;
+    let fs = to_srgb(f);
+    // Only a day (mint) bank: 0 for the dawn, golden, dusk and night fogs.
+    let pearl = clamp((fs.g - fs.r) / 0.15, 0.0, 1.0)
+        * smoothstep(0.55, 0.75, min(fs.r, min(fs.g, fs.b)));
+    if g.sea1.w < 0.05 || y >= g.sea2.w || pearl <= 0.0 {
+        return f;
+    }
+    let a = rgb2hsv(to_srgb(c));
+    let k = smoothstep(0.12, 0.3, a.y) * pearl * g.sea1.w;
+    let warm = max(1.0 - smoothstep(60.0, 90.0, a.x), smoothstep(320.0, 345.0, a.x));
+    let lilac = smoothstep(190.0, 215.0, a.x) * (1.0 - smoothstep(320.0, 345.0, a.x));
+    let v = max(fs.r, max(fs.g, fs.b));
+    let hw = modp(clamp(select(a.x, a.x - 360.0, a.x > 200.0), -10.0, 45.0), 360.0);
+    let hl = clamp(a.x, 240.0, 290.0);
+    var o = mix(f, to_linear(hsv2rgb(vec3(hw, 0.1, v))), warm * k);
+    o = mix(o, to_linear(hsv2rgb(vec3(hl, 0.1, v))), lilac * k);
+    return o;
+}
+
 fn sun_shadow(world: vec4<f32>, n: vec3<f32>, frag_xy: vec2<f32>) -> f32 {
     if lights.n_directional_lights == 0u {
         return 1.0;
@@ -675,7 +703,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     }
 
     let fog = fog_amount(view_depth(world), world.y);
-    var out = fog_mix(col, g.fog_start.xyz, fog) + emissive * (1.0 - 0.5 * fog);
+    var out = fog_mix(col, bank_fog(col, world.y), fog) + emissive * (1.0 - 0.5 * fog);
     let halo = fog_halo(world, in.clip);
     if any(halo > vec3(0.0)) {
         out = halo;
