@@ -4,10 +4,12 @@
 # even where rendering is slow (software Vulkan in CI or a container).
 #
 # Output (default tiny-cove/docs/footage/):
-#   <clip>.mp4        one clip each: H.264, yuv420p, CRF 20 (env CRF overrides), 30 fps, 1280x720 native pixels
-#   tiny-cove.mp4     every clip back to back
+#   tiny-cove.mp4     every clip back to back: H.264, yuv420p, CRF 29 (env CRF overrides),
+#                     30 fps, 1280x720 native pixels, encoded once from the lossless clips
 #   tiny-cove.gif     README preview, 640x360 at 15 fps (sped-up spans of the clips, <= ~8 MB)
 #   stills/<clip>-N.png  lossless frames picked from each clip
+# Each clip's own preview mp4 and lossless copy stay in the work folder: they would only repeat
+# tiny-cove.mp4 in the repository.
 #
 # usage: tools/footage.sh [options] [clip ...]
 #   clips: day harbour weather night build (default: all of them)
@@ -29,7 +31,7 @@ WORK=${TMPDIR:-/tmp}/tiny-cove-footage
 OUT=$here/docs/footage
 BIN=${CARGO_TARGET_DIR:-$here/../target}/release/tiny-cove
 CAP=""
-CRF=${CRF:-20}
+CRF=${CRF:-29}
 KEEP=0
 GIF=1
 CONCAT=1
@@ -136,7 +138,7 @@ encode() {
         unset IFS
     fi
     ffmpeg -hide_banner -loglevel error -y -framerate "$FPS" -i "$frames/frame_%05d.png" "${vf[@]}" \
-        -c:v libx264 -preset slow -crf "$CRF" -pix_fmt yuv420p -r "$FPS" -movflags +faststart "$OUT/$name.mp4"
+        -c:v libx264 -preset slow -tune animation -crf "$CRF" -pix_fmt yuv420p -r "$FPS" -movflags +faststart "$WORK/$name.mp4"
     # A lossless RGB copy for the GIF: H.264 4:2:0 noise defeats GIF frame differencing and
     # roughly doubles its size.
     ffmpeg -hide_banner -loglevel error -y -framerate "$FPS" -i "$frames/frame_%05d.png" "${vf[@]}" \
@@ -150,7 +152,7 @@ encode() {
         ((k < 1)) && k=1
         cp "$(printf '%s/frame_%05d.png' "$frames" "$k")" "$OUT/stills/$name-$((i + 1)).png"
     done
-    echo "footage: $name: encoded $OUT/$name.mp4 ($(du -h "$OUT/$name.mp4" | cut -f1), ${step}x, $(since "$t0") s), ${#at[@]} stills"
+    echo "footage: $name: encoded $WORK/$name.mp4 ($(du -h "$WORK/$name.mp4" | cut -f1), ${step}x, $(since "$t0") s), ${#at[@]} stills"
     ((KEEP)) || rm -rf "$frames"
 }
 
@@ -159,10 +161,13 @@ concat() {
     t0=$(now)
     : >"$list"
     for name in "${ALL_CLIPS[@]}"; do
-        [[ -f $OUT/$name.mp4 ]] && printf "file '%s'\n" "$OUT/$name.mp4" >>"$list"
+        [[ -f $WORK/$name.lossless.mkv ]] && printf "file '%s'\n" "$WORK/$name.lossless.mkv" >>"$list"
     done
     [[ -s $list ]] || return 0
-    ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i "$list" -c copy -movflags +faststart "$OUT/tiny-cove.mp4"
+    # One encode from the lossless clips (not a stream copy of the previews): a single rate
+    # control pass over the whole video keeps it near 30 MB at CRF 29.
+    ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i "$list" \
+        -c:v libx264 -preset slow -tune animation -crf "$CRF" -pix_fmt yuv420p -r "$FPS" -movflags +faststart "$OUT/tiny-cove.mp4"
     echo "footage: tiny-cove.mp4: $(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT/tiny-cove.mp4") s, $(du -h "$OUT/tiny-cove.mp4" | cut -f1) ($(since "$t0") s)"
 }
 
@@ -177,7 +182,7 @@ make_gif() {
         inputs=() chains="" labels="" k=0
         for span in "${GIF_SPANS[@]}"; do
             read -r name start dur speed <<<"$span"
-            src=$OUT/$name.mp4 lossless=$WORK/$name.lossless.mkv
+            src=$WORK/$name.mp4 lossless=$WORK/$name.lossless.mkv
             [[ -f $src ]] || continue
             # The lossless copy, unless the MP4 came from a later run.
             [[ -f $lossless && ! $src -nt $lossless ]] && src=$lossless
