@@ -140,6 +140,11 @@ fn row(sun: (u32, f32), fill: (u32, f32), tint: u32, lit_rot: f32, rim: u32, sky
     }
 }
 
+/// Storm lit-band rotation of greens toward the tint (degrees; glade.wesl `storm_lit` stops
+/// them at jade H 152) and the storm's cold crest glint.
+const STORM_LIT_ROT: f32 = 44.0;
+const STORM_GLINT: u32 = 0xCEF7FF;
+
 const OUTLINE_DAY: u32 = 0x31217B;
 const OUTLINE_NIGHT: u32 = 0x10104A;
 
@@ -290,18 +295,27 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
                 *c = c.lerp(h(hx), day * (1.0 - hold));
             }
             r.fog = set(r.fog, 0x6B9CE6);
-            r.fog_density *= 2.0;
+            // DESIGN A4: density x1.4. The blue haze walks warm land toward brick (the far
+            // wet sand into the cliffs' and soil's hue), so it stays no thicker than that.
+            r.fog_density *= 1.4;
             r.sea[1] = set(r.sea[1], 0x08A5C5);
             r.outline = r.outline.lerp(h(OUTLINE_NIGHT), 0.5 * day);
         }
         WeatherKind::Storm => {
-            // DESIGN: sun ×0.30, fill ×0.90. Lifted (×0.45, ×1.3) so the storm frame stays
-            // readable at 240p: warm albedos go plum and slate, not near-black mud.
+            // DESIGN: sun ×0.30, fill #5A7BDE ×0.90. Lifted (×0.45, a lilac #6B7BDE ×1.5) so
+            // the storm frame stays readable at 240p. The fill outshines the sun, so it lights
+            // every band; under that cobalt light a warm albedo (wet honey sand, ochre dirt,
+            // thatch, boards) lands at hue 340-10, V 0.3: brick-brown mud, which the anti-mud
+            // floor (S < 0.35, or hue 15-100) never catches. So the storm lit band takes a set
+            // hue instead (glade.wesl `storm_lit`): greens rotate STORM_LIT_ROT toward the
+            // tint but stop at jade, warm albedos rotate on to plum (wet sand, dirt, thatch)
+            // and violet (cliffs).
             r.sun = set(r.sun, 0x8CEFE6);
             r.sun_i = base.sun_i * 0.45;
-            r.fill = set(r.fill, 0x5A7BDE);
-            r.fill_i = seti(r.fill_i, 1.3);
+            r.fill = set(r.fill, 0x6B7BDE);
+            r.fill_i = seti(r.fill_i, 1.5);
             r.tint = set(r.tint, 0x31107B);
+            r.lit_rot = seti(r.lit_rot, STORM_LIT_ROT);
             r.rim = h(0x42FFE6);
             // Night ink: the day keyline (#31217B) is lighter than the storm-dark land.
             r.outline = h(OUTLINE_NIGHT);
@@ -310,17 +324,29 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
             for (i, hx) in [0x10C5B5, 0x1084AD, 0x103A9C, 0x10216B].into_iter().enumerate() {
                 r.sea[i] = set(r.sea[i], hx);
             }
+            // Cold crest glint (the hour's cream #FFFFDE would be a warm spark; A8: the
+            // beacon is the only warm point).
+            r.sea[5] = set(r.sea[5], STORM_GLINT);
             r.fog_density = 0.009;
         }
         WeatherKind::Fog => {
             r.sun_i *= 0.65;
             r.fog = base.sea_fog;
-            r.fill = base.sea_fog;
+            // Fill = fog colour × 0.85, but a mint fog lends the fill its pearl end: the fill
+            // outshines the dimmed sun and lights every band, and a mint light turns buff
+            // stone, thatch and sand olive, which the anti-mud floor then pushes to lime. The
+            // bank and the sky keep the mint; what pokes out of it keeps its own hue. The
+            // pearl is a cream white: a peach one (#FFF7EF) tipped the lilac roof pink.
+            const FOG_PEARL: u32 = 0xFFFFF7;
+            let mint = ((base.sea_fog.y - base.sea_fog.x) / 0.15).clamp(0.0, 1.0) * day;
+            r.fill = base.sea_fog.lerp(h(FOG_PEARL), 0.85 * mint);
             r.fill_i = 0.85 + 0.15 * (1.0 - day);
             for c in r.sky.iter_mut() {
                 *c = c.lerp(base.sea_fog, 0.4);
             }
-            r.fog_density = 0.012;
+            // The height bank (dense below 3 m) does the swallowing; distance fog stays near
+            // a clear day's, so roofs, palms and beacons above the bank keep their chroma.
+            r.fog_density = 0.004;
             r.bank = 1.0;
         }
         WeatherKind::Snow => {
@@ -897,6 +923,23 @@ mod tests {
         let storm = environment(12.0, &WeatherMix::settled(WeatherKind::Storm));
         assert!(fog.night > 0.5 && storm.night > 0.5, "beacons burn in fog and storms");
         assert_eq!(environment(12.0, &WeatherMix::settled(WeatherKind::Clear)).night, 0.0);
+    }
+
+    #[test]
+    fn sea_fog_fill_keeps_warm_albedos_warm() {
+        // The bank stays mint, but the fill that lights what pokes out is a cream pearl: buff
+        // stone (#E6CE9C) under it keeps a buff hue instead of going olive / lime, and the
+        // lilac roof (#AD73AD, hue 300 under the white noon sun) does not drift pink.
+        for hour in [8.0, 12.0] {
+            let fog = environment(hour, &WeatherMix::settled(WeatherKind::Fog));
+            let f = fog_unit(fog.fog_color);
+            assert!(f.y - f.x > 0.1, "mint bank at {hour}");
+            let light = fog.fill_color.max(fog.sun_color);
+            let hue = rgb_to_hsv(light * hex_to_unit(0xE6CE9C)).x;
+            assert!((25.0..50.0).contains(&hue), "buff under the sea-fog fill at {hour}: hue {hue}");
+            let hue = rgb_to_hsv(light * hex_to_unit(0xAD73AD)).x;
+            assert!((295.0..305.0).contains(&hue), "lilac roof under the sea-fog fill at {hour}: hue {hue}");
+        }
     }
 
     #[test]

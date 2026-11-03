@@ -186,6 +186,36 @@ fn rot_lit(c: vec3<f32>, tint: vec3<f32>, deg: f32) -> vec3<f32> {
     return hsv2rgb(a);
 }
 
+// Storm lit band (DESIGN A3 litRot, A8 storm). The storm's cobalt fill outshines its sun, so
+// `rot_lit(a) * light` takes its hue from the fill: greens go the lagoon's teal (cooler than
+// their own shadow band) and honey sand goes raspberry. In a storm the lit band keeps that
+// light's value but takes a set hue: greens rotate `deg` toward the tint but stop at jade
+// (STORM_JADE, over 20 deg short of the storm shallows #10C5B5, H 175), cyans and blues keep
+// their own hue, and warm albedos turn STORM_WARM_ROT along the warm path to plum (wet sand
+// H 300, the cliffs' family) and violet (rust cliffs H 269). A plum keeps only the chroma the
+// cobalt light leaves it (S of a * light, at least STORM_WARM_S); the nearer a warm albedo
+// lands to the tint, the more of the light's own chroma it keeps (violet cliffs stay vivid).
+// `c` = rot_lit(a) * light. CPU port: cairn_cove_core::palette::storm_lit.
+const STORM_JADE: f32 = 152.0;
+const STORM_WARM_ROT: f32 = 97.0;
+const STORM_WARM_S: f32 = 0.5;
+fn storm_lit(a: vec3<f32>, c: vec3<f32>, light: vec3<f32>, tint: vec3<f32>, deg: f32) -> vec3<f32> {
+    let s = rgb2hsv(a);
+    if s.y < 0.15 {
+        return c;
+    }
+    let t = rgb2hsv(tint).x;
+    var o = rgb2hsv(min(c, vec3(1.0)));
+    if s.x >= WARM_EDGE && s.x < t {
+        o.x = s.x + clamp(STORM_JADE - s.x, 0.0, max(deg, 0.0));
+    } else {
+        o.x = rotate_toward(s.x, t, STORM_WARM_ROT);
+        let plum = min(max(rgb2hsv(min(a * light, vec3(1.0))).y, STORM_WARM_S), o.y);
+        o.y = mix(o.y, plum, clamp(modp(o.x - t, 360.0) / 40.0, 0.0, 1.0));
+    }
+    return hsv2rgb(o);
+}
+
 fn tint_dist(h: f32, t: f32) -> f32 {
     if h >= WARM_EDGE && h < t {
         return t - h;
@@ -239,9 +269,12 @@ fn fog_mix(c: vec3<f32>, fog: vec3<f32>, k: f32) -> vec3<f32> {
     // The mix's own hue is kept while it still carries one (analogous inputs); only a
     // near-grey mix (complementary inputs) takes the walked hue.
     var h = select(f.x, o.x, o.y >= 0.5 * s_min);
-    if f.y < 0.3 {
+    if f.y < 0.3 || a.y < 0.15 {
+        // A pale fog, or a near-white input (A3 near-white: S < 0.15, a glint or foam that
+        // carries no hue of its own): the held pixel takes the fog's hue, so a cream glint
+        // never walks through orange into a blue storm fog.
         h = f.x;
-    } else if a.y > 0.08 && o.y < 0.5 * s_min {
+    } else if o.y < 0.5 * s_min {
         var dist = modp(a.x - f.x, 360.0);
         if a.x >= WARM_EDGE && a.x < f.x {
             dist = f.x - a.x;
@@ -269,7 +302,17 @@ fn lamp_pool(c: vec3<f32>, albedo: vec3<f32>, pl: vec3<f32>) -> vec3<f32> {
         o.y = max(o.y, 0.72);
         o.z = clamp(o.z * 1.3, 0.62, 0.95);
     }
-    return hsv2rgb(o);
+    let pool = hsv2rgb(o);
+    // Storm (DESIGN A8: the beacon is the only warm point): fire light added to the storm's
+    // plum and violet land sums to rose, the beach's own hue family. A storm pool takes the
+    // light's own hue (fire_light #FF8C29 is H 28, lantern_light H 35), bright as a glow
+    // (two bands, V 0.78-0.97) so the storm fog cannot brown it.
+    let storm = g.sea0.w;
+    if storm > 0.0 {
+        let f = vec3(rgb2hsv(to_srgb(pl)).x, max(o.y, 0.8), clamp(o.z * 1.15, 0.78, 0.97));
+        return mix(pool, hsv2rgb(f), storm);
+    }
+    return pool;
 }
 
 // Strength (0..1) of a `g.lights` entry: w is the warm_light weight, +2 for a fire.
@@ -406,6 +449,34 @@ fn fog_amount(depth: f32, y: f32) -> f32 {
     return 1.0 - (1.0 - dist) * (1.0 - b * bank);
 }
 
+// The colour the sea-fog bank veils linear colour `c` toward at height `y` (DESIGN A8, a
+// mint-pearl bank). fog_mix holds a pale fog's own hue, so one mint swallowed every board,
+// strake and sand bar into a single H172 wash. In a day bank greens, water and the sea fade
+// to the mint, warm albedos (sand, boards, thatch, madder) to a warm pearl of their own hue
+// (0-45) and cool ones (stone, woad, ink) to a lilac pearl (240-290): each fades into a pastel
+// of its own family, never across the complement, and the cove reads through the bank (SPEC
+// Done #3). Mirrored for the ink in post.wesl.
+fn bank_fog(c: vec3<f32>, y: f32) -> vec3<f32> {
+    let f = g.fog_start.xyz;
+    let fs = to_srgb(f);
+    // Only a day (mint) bank: 0 for the dawn, golden, dusk and night fogs.
+    let pearl = clamp((fs.g - fs.r) / 0.15, 0.0, 1.0)
+        * smoothstep(0.55, 0.75, min(fs.r, min(fs.g, fs.b)));
+    if g.sea1.w < 0.05 || y >= g.sea2.w || pearl <= 0.0 {
+        return f;
+    }
+    let a = rgb2hsv(to_srgb(c));
+    let k = smoothstep(0.12, 0.3, a.y) * pearl * g.sea1.w;
+    let warm = max(1.0 - smoothstep(60.0, 90.0, a.x), smoothstep(320.0, 345.0, a.x));
+    let lilac = smoothstep(190.0, 215.0, a.x) * (1.0 - smoothstep(320.0, 345.0, a.x));
+    let v = max(fs.r, max(fs.g, fs.b));
+    let hw = modp(clamp(select(a.x, a.x - 360.0, a.x > 200.0), -10.0, 45.0), 360.0);
+    let hl = clamp(a.x, 240.0, 290.0);
+    var o = mix(f, to_linear(hsv2rgb(vec3(hw, 0.1, v))), warm * k);
+    o = mix(o, to_linear(hsv2rgb(vec3(hl, 0.1, v))), lilac * k);
+    return o;
+}
+
 fn sun_shadow(world: vec4<f32>, n: vec3<f32>, frag_xy: vec2<f32>) -> f32 {
     if lights.n_directional_lights == 0u {
         return 1.0;
@@ -494,6 +565,10 @@ fn cel(a: vec3<f32>, light: f32) -> vec3<f32> {
     var c: vec3<f32>;
     if light >= 0.30 {
         c = rot_lit(a, tint, g.wind_tide.w) * k[0];
+        let storm = g.sea0.w;
+        if storm > 0.0 {
+            c = mix(c, storm_lit(a, c, k[0], tint, g.wind_tide.w), storm);
+        }
     } else if light >= 0.08 {
         c = shade_band(a, 1u, tint) * k[1];
     } else {
@@ -591,6 +666,10 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     // sand gets. Under a storm's cold light honey would go brown: storm sand stays sand and
     // takes the slate-blue of the storm.
     let honey = s == S_SAND && n.y > 0.5 && wet > 0.0 && g.sea0.w < 0.5;
+    // Every rain-wet honey surface: soaked sand, and the tide band on any shore (same token).
+    let wet_honey = honey || (shore_wet && wet > 0.0 && g.sea0.w < 0.5);
+    // Lowest hue the lit band of rain-soaked sand may take (wet_sand #DEA54A is 37).
+    const HONEY_HUE: f32 = 34.0;
     if honey {
         a = mix(a, vec3(222.0, 165.0, 74.0) / 255.0, clamp(wet, 0.0, 1.0));
     }
@@ -598,7 +677,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     if wet > 0.0 && !slot {
         var w = rgb2hsv(a);
         w.y = min(w.y * (1.0 + 0.15 * wet), 1.0);
-        w.z *= 1.0 - select(0.18, 0.0, honey) * wet;
+        w.z *= 1.0 - select(0.18, 0.0, wet_honey) * wet;
         a = hsv2rgb(w);
     }
 
@@ -629,6 +708,40 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
         c = anti_mud(min(c, vec3(1.0)), tint);
     } else {
         c = cel(a, light);
+        // Rain-soaked sand stays wet honey under a warm sky (DESIGN A8 dusk rain). There every
+        // band is lit by the pink-violet fill, which takes honey to rust (lit, hue 20), the
+        // lit-cliff brick (mid, hue 6) and the soil's oxblood (shadow, 354): the beach merges
+        // into the cliffs and the dirt. Instead the bands step down from the lit colour held at
+        // the honey edge along the warm path, with A3's V x0.90 / x0.78 (S x1.2 in shadow) but
+        // only 7 / 15 deg of hue, so the dirt's hues (340-10) stay free: at 18:30 lit #B5843A,
+        // mid #A5633A, shadow #8C4219 (honey, terracotta, rust). The rain haze (a blue fog)
+        // walks a dark amber back through brick, so far sand is pre-turned by 0.6 of what the
+        // fog will take off: it lands on terracotta, still paled by the haze (the full turn
+        // leaves a grey khaki, A0.3). Faded by wetness (no snap as the sand dries), the sun's
+        // warmth (off under noon's white and the moon's blue) and the lit value (a dim honey is
+        // mud), then anti-mud again. CPU port: tests/wet_honey.rs.
+        if wet_honey {
+            let sun = g.sun_wet.xyz;
+            let warm = smoothstep(0.02, 0.15, (sun.r - sun.b) / max(sun.r, 1e-3));
+            var hv = rgb2hsv(cel(a, 1.0));
+            if hv.x < HONEY_HUE || hv.x > 270.0 {
+                hv.x = HONEY_HUE;
+            }
+            let k = clamp(wet, 0.0, 1.0) * warm * smoothstep(0.50, 0.62, hv.z);
+            if k > 0.0 {
+                if light < 0.08 {
+                    hv = vec3(hv.x - 15.0, min(hv.y * 1.2, 1.0), hv.z * 0.78);
+                } else if light < 0.30 {
+                    hv = vec3(hv.x - 7.0, hv.y, hv.z * 0.90);
+                }
+                let haze = fog_amount(view_depth(world), world.y);
+                if haze > 0.001 {
+                    let seen = rgb2hsv(to_srgb(fog_mix(to_linear(hsv2rgb(hv)), g.fog_start.xyz, haze)));
+                    hv.x += 0.6 * clamp(modp(hv.x - seen.x + 180.0, 360.0) - 180.0, 0.0, 20.0);
+                }
+                c = anti_mud(mix(c, hsv2rgb(hv), k), tint);
+            }
+        }
     }
 
     // Glistening wet sand while the tide goes out; puddle glints in the rain.
@@ -660,7 +773,7 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
     }
 
     let fog = fog_amount(view_depth(world), world.y);
-    var out = fog_mix(col, g.fog_start.xyz, fog) + emissive * (1.0 - 0.5 * fog);
+    var out = fog_mix(col, bank_fog(col, world.y), fog) + emissive * (1.0 - 0.5 * fog);
     let halo = fog_halo(world, in.clip);
     if any(halo > vec3(0.0)) {
         out = halo;

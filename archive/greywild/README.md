@@ -33,7 +33,7 @@ cargo run --release -- --demo  # start in the showcase valley
 
 The Linux build needs `libudev-dev`, `libasound2-dev`, `libwayland-dev` and
 `libxkbcommon-dev`. The build cache is shared with the sibling projects through
-`../target`.
+`../../target`.
 
 ## Controls
 
@@ -57,8 +57,8 @@ cargo test --release --workspace
 cargo build --release
 # headless (Mesa lavapipe + Xvfb):
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan
-xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/greywild --demo-shot out.png --time 18.5 --weather rain [--hud]
-xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/greywild --tool-smoke smoke.png   # drives all 18 tools, exits 0 on pass
+xvfb-run -a -s "-screen 0 1280x720x24" ../../target/release/greywild --demo-shot out.png --time 18.5 --weather rain [--hud]
+xvfb-run -a -s "-screen 0 1280x720x24" ../../target/release/greywild --tool-smoke smoke.png   # drives all 18 tools, exits 0 on pass
 ```
 
 ## Layout

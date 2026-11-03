@@ -31,8 +31,8 @@ Weather names: `clear`, `overcast`, `rain`, `storm`, `mist`. `--time` is hours 0
 
 Linux needs the usual Bevy system packages (`libasound2-dev libudev-dev
 libxkbcommon-dev libwayland-dev`). Bevy 0.20 needs a recent stable Rust.
-The build shares `../target` with the other projects in this repo
-(see `.cargo/config.toml`), so the binary lands in `../target/release/`.
+The build shares `../../target` with the other projects in this repo
+(see `.cargo/config.toml`), so the binary lands in `../../target/release/`.
 
 Headless, with Mesa's software Vulkan driver:
 

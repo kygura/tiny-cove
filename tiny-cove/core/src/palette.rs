@@ -457,6 +457,38 @@ pub fn rot(c: Vec3, tint: Vec3, deg: f32) -> Vec3 {
     hsv_to_rgb(a)
 }
 
+/// Storm lit greens stop rotating at jade, over 20° short of the storm shallows `#10C5B5` (H 175).
+pub const STORM_JADE: f32 = 152.0;
+/// Storm lit-band rotation of warm albedos along the warm path (wet sand H 37 lands at plum H 300).
+pub const STORM_WARM_ROT: f32 = 97.0;
+/// Least saturation a storm-lit warm albedo keeps.
+pub const STORM_WARM_S: f32 = 0.5;
+
+/// Storm lit band (DESIGN A8 storm), the CPU port of `glade.wesl` `storm_lit`, before the
+/// anti-mud floor: `rot(c, tint, deg) ⊙ light` for its value, but a set hue. Greens rotate
+/// `deg` toward the tint and stop at [`STORM_JADE`]; cyans and blues keep their own hue; warm
+/// albedos turn [`STORM_WARM_ROT`] to plum and violet. A plum (40° or more past the tint) keeps
+/// only the chroma the cobalt light leaves it (S of `c ⊙ light`, at least [`STORM_WARM_S`]);
+/// nearer the tint it keeps more of `rot ⊙ light`'s. Near-whites keep `rot ⊙ light`.
+pub fn storm_lit(c: Vec3, light: Vec3, tint: Vec3, deg: f32) -> Vec3 {
+    let lit = rot(c, tint, deg) * light;
+    let s = rgb_to_hsv(c);
+    if s.y < 0.15 {
+        return lit;
+    }
+    let t = rgb_to_hsv(tint).x;
+    let mut o = rgb_to_hsv(lit.min(Vec3::ONE));
+    if (WARM_EDGE..t).contains(&s.x) {
+        o.x = s.x + (STORM_JADE - s.x).clamp(0.0, deg.max(0.0));
+    } else {
+        o.x = rotate_toward(s.x, t, STORM_WARM_ROT).0;
+        let plum = rgb_to_hsv((c * light).min(Vec3::ONE)).y.max(STORM_WARM_S).min(o.y);
+        let k = ((o.x - t).rem_euclid(360.0) / 40.0).clamp(0.0, 1.0);
+        o.y += (plum - o.y) * k;
+    }
+    hsv_to_rgb(o)
+}
+
 /// DESIGN A3 `shade(c, band, tint)` in sRGB 0..1: hue-shifted, saturated mid / shadow
 /// colour of albedo `c` toward the shadow `tint`. `Lit` returns `c` unchanged.
 pub fn shade(c: Vec3, band: Band, tint: Vec3) -> Vec3 {
@@ -696,6 +728,33 @@ mod tests {
             let hsv = rgb_to_hsv(c);
             assert!(hsv.x < 55.0 || hsv.x > 300.0, "{band:?}: {:06X} is olive ({hsv:?})", unit_to_hex(c));
             assert!(hsv.y > 0.4 && hsv.z > 0.4, "{band:?}: {hsv:?}");
+        }
+    }
+
+    /// Storm lit band (DESIGN A8): wet grass stays jade, clear of the storm shallows (H 175)
+    /// and warmer than its own shadow band; wet sand is plum, the cliffs' family, not
+    /// raspberry; no warm albedo comes out as mud.
+    #[test]
+    fn storm_lit_band() {
+        let light = hex_to_unit(0x6B7BDE) * 1.5; // the storm fill outshines its sun (×0.45)
+        let tint = hex_to_unit(0x31107B);
+        let wet = |hex: u32| {
+            let mut a = rgb_to_hsv(hex_to_unit(hex));
+            a.y = (a.y * 1.15).min(1.0);
+            a.z *= 0.82;
+            hsv_to_rgb(a)
+        };
+        let lit = |hex: u32| rgb_to_hsv(quantise15(anti_mud(storm_lit(wet(hex), light, tint, 44.0).min(Vec3::ONE), tint)));
+        for hex in [0x6BD642, 0x5ADE4A] {
+            let (l, s) = (lit(hex), rgb_to_hsv(anti_mud((shade(wet(hex), Band::Shadow, tint) * light).min(Vec3::ONE), tint)));
+            assert!((145.0..=157.0).contains(&l.x), "#{hex:06X} lit {l:?}");
+            assert!(l.x < s.x, "#{hex:06X} lit {l:?} cooler than shadow {s:?}");
+        }
+        let sand = lit(0xDEA54A);
+        assert!((295.0..=310.0).contains(&sand.x) && (0.45..=0.56).contains(&sand.y) && sand.z >= 0.38, "wet sand {sand:?}");
+        for (name, hex) in TOKENS {
+            let l = lit(*hex);
+            assert!(!(MUD_HUES.contains(&l.x) && l.z < MUD_V) && l.y >= 0.3 && l.z >= 0.219, "{name} storm lit {l:?}");
         }
     }
 

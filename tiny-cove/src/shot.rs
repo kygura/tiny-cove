@@ -5,8 +5,12 @@
 //! saves a screenshot and exits (status 1 if the PNG could not be written). `--zoom` below 1
 //! and `--focus` (ground x,z in metres) frame close-ups. Tool gizmos (the hover ring) are hidden
 //! in shots. `--demo` just starts interactively with the demo glade.
+//!
+//! `--record DIR [--seconds S] [--fps F] [--orbit DEG] [--zoom-to Z] [--hours H] [--weathers a,b]`
+//! records a deterministic clip of the demo glade frame by frame (see [`crate::record`]); with
+//! `--tool-smoke` it records the scripted build run instead.
 
-use crate::camera::CameraRig;
+use crate::camera::{CameraRig, MAX_ZOOM, MIN_ZOOM};
 use crate::render::LowResDisplay;
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::BuiltScene;
@@ -23,11 +27,11 @@ use std::sync::{
 };
 
 /// Frames to wait after the scene exists before capturing (shadows, fog, smoothing settle).
-const SETTLE_FRAMES: u32 = 30;
+pub(crate) const SETTLE_FRAMES: u32 = 30;
 /// Give up if the screenshot never arrives.
-const TIMEOUT_FRAMES: u32 = 600;
+pub(crate) const TIMEOUT_FRAMES: u32 = 600;
 /// Consecutive frames with no pipeline compiling before capturing (render runs a frame behind).
-const READY_FRAMES: u32 = 5;
+pub(crate) const READY_FRAMES: u32 = 5;
 
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct Cli {
@@ -42,7 +46,40 @@ pub struct Cli {
     pub focus: Option<Vec2>,
     /// Keep the HUD in the demo shot (default: glade only).
     pub hud: bool,
+    /// `--record DIR` and its clip options.
+    pub record: Option<Record>,
+    /// Problems with the command line; `main` prints them and exits non-zero.
+    pub errors: Vec<String>,
 }
+
+/// A `--record` clip: `frames()` frames at `fps`, frame `n` showing clip time `n / fps`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Record {
+    pub dir: PathBuf,
+    pub seconds: f32,
+    pub fps: u32,
+    /// Total yaw sweep across the clip in degrees (eased in and out).
+    pub orbit: f32,
+    /// Zoom at the end of the clip (eased from the starting zoom).
+    pub zoom_to: Option<f32>,
+    /// Time-lapse: game hours the clock covers across the clip (else normal game speed).
+    pub hours: Option<f32>,
+    /// Weathers switched to at even intervals (the weather system blends between them).
+    pub weathers: Vec<WeatherKind>,
+}
+
+impl Record {
+    pub const DEFAULT_SECONDS: f32 = 8.0;
+    pub const DEFAULT_FPS: u32 = 30;
+
+    /// Number of frames in the clip (at least one).
+    pub fn frames(&self) -> u32 {
+        (self.seconds * self.fps as f32).round().max(1.0) as u32
+    }
+}
+
+/// Flags that only make sense with `--record`.
+const RECORD_FLAGS: [&str; 6] = ["--seconds", "--fps", "--orbit", "--zoom-to", "--hours", "--weathers"];
 
 impl Cli {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Self {
@@ -51,8 +88,15 @@ impl Cli {
         fn num<T: std::str::FromStr>(v: Option<&String>) -> Option<T> {
             v?.parse().ok()
         }
+        let has = |flag: &str| args.iter().any(|a| a == flag);
+        let mut errors = Vec::new();
+        let record = Self::parse_record(&args, &mut errors);
+        if record.is_some() && has("--demo-shot") {
+            errors.push("--record and --demo-shot cannot be combined".into());
+        }
         Self {
-            demo: args.iter().any(|a| a == "--demo"),
+            // A recorded clip shows the demo glade (the smoke run builds its own).
+            demo: has("--demo") || (record.is_some() && !has("--tool-smoke")),
             shot: value("--demo-shot").map(PathBuf::from),
             time: num(value("--time")),
             weather: value("--weather").and_then(|w| WeatherKind::parse(w)),
@@ -65,13 +109,88 @@ impl Cli {
                 p.is_finite().then_some(p)
             }),
             hud: args.iter().any(|a| a == "--hud"),
+            record,
+            errors,
         }
+    }
+
+    /// `--record DIR` plus its options; bad or stray values go to `errors`.
+    fn parse_record(args: &[String], errors: &mut Vec<String>) -> Option<Record> {
+        let value = |flag: &str| args.iter().position(|a| a == flag).map(|i| args.get(i + 1).filter(|v| !v.starts_with("--")));
+        let Some(dir) = value("--record") else {
+            for flag in RECORD_FLAGS.iter().filter(|f| args.iter().any(|a| a == *f)) {
+                errors.push(format!("{flag} needs --record DIR"));
+            }
+            return None;
+        };
+        let mut bad = |msg: String| errors.push(msg);
+        let dir = dir.cloned().map(PathBuf::from);
+        if dir.is_none() {
+            bad("--record needs an output folder".into());
+        }
+        // `Ok(None)`: flag absent. `Err`: present with a missing or invalid value.
+        let number = |flag: &str, ok: &dyn Fn(f32) -> bool| -> Result<Option<f32>, ()> {
+            match value(flag) {
+                None => Ok(None),
+                Some(v) => v.and_then(|v| v.parse::<f32>().ok()).filter(|x| x.is_finite() && ok(*x)).map(Some).ok_or(()),
+            }
+        };
+        let seconds = number("--seconds", &|s| s > 0.0 && s <= 3600.0).unwrap_or_else(|_| {
+            bad("--seconds expects a number of seconds in (0, 3600]".into());
+            None
+        });
+        let fps = match value("--fps") {
+            None => None,
+            Some(v) => {
+                let fps = v.and_then(|v| v.parse::<u32>().ok()).filter(|f| (1..=120).contains(f));
+                if fps.is_none() {
+                    bad("--fps expects a whole number from 1 to 120".into());
+                }
+                fps
+            }
+        };
+        let orbit = number("--orbit", &|d| d.abs() <= 3600.0).unwrap_or_else(|_| {
+            bad("--orbit expects degrees within ±3600".into());
+            None
+        });
+        // Inside the camera's own range, or the eased move would stall at its clamp.
+        let zoom_to = number("--zoom-to", &|z| (MIN_ZOOM..=MAX_ZOOM).contains(&z)).unwrap_or_else(|_| {
+            bad(format!("--zoom-to expects a zoom from {MIN_ZOOM} to {MAX_ZOOM}"));
+            None
+        });
+        let hours = number("--hours", &|h| h.abs() <= 240.0).unwrap_or_else(|_| {
+            bad("--hours expects game hours within ±240".into());
+            None
+        });
+        let weathers = match value("--weathers") {
+            None => Vec::new(),
+            Some(v) => {
+                let names: Vec<&str> = v.map_or(vec![""], |v| v.split(',').map(str::trim).collect());
+                let kinds: Vec<_> = names.iter().map(|n| WeatherKind::parse(n)).collect();
+                if names.iter().any(|n| n.is_empty()) || kinds.iter().any(Option::is_none) {
+                    let names: Vec<&str> = WeatherKind::ALL.iter().map(|k| k.name()).collect();
+                    bad(format!("--weathers expects a comma list of {}", names.join(", ")));
+                    Vec::new()
+                } else {
+                    kinds.into_iter().flatten().collect()
+                }
+            }
+        };
+        Some(Record {
+            dir: dir?,
+            seconds: seconds.unwrap_or(Record::DEFAULT_SECONDS),
+            fps: fps.unwrap_or(Record::DEFAULT_FPS),
+            orbit: orbit.unwrap_or(0.0),
+            zoom_to,
+            hours,
+            weathers,
+        })
     }
 
     /// `--seed`, else fixed for reproducible shots, else derived from the clock.
     pub fn seed(&self) -> u64 {
         self.seed.unwrap_or_else(|| {
-            if self.shot.is_some() {
+            if self.shot.is_some() || self.record.is_some() {
                 7
             } else {
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_millis() as u64)
@@ -114,15 +233,22 @@ struct ShotState {
 /// taken while e.g. the UI image pipeline that shows the low-res target is still
 /// compiling comes out all black.
 #[derive(Resource, Clone, Default)]
-struct PendingPipelines(Arc<AtomicU32>);
+pub(crate) struct PendingPipelines(pub(crate) Arc<AtomicU32>);
 
-fn count_pending(cache: Res<PipelineCache>, pending: Res<PendingPipelines>) {
+impl PendingPipelines {
+    /// Pipelines the render world reported as still compiling last frame.
+    pub(crate) fn waiting(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+pub(crate) fn count_pending(cache: Res<PipelineCache>, pending: Res<PendingPipelines>) {
     let n = cache.pipelines().filter(|p| matches!(p.state, CachedPipelineState::Queued | CachedPipelineState::Creating(_))).count()
         + cache.waiting_pipelines().count();
     pending.0.store(n as u32, Ordering::Relaxed);
 }
 
-fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weather>, mut rig: ResMut<CameraRig>) {
+pub(crate) fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weather>, mut rig: ResMut<CameraRig>) {
     clock.hour = cli.time.unwrap_or(12.0).rem_euclid(24.0);
     clock.paused = true;
     weather.kind = cli.weather.unwrap_or_default();
@@ -140,14 +266,14 @@ fn apply_cli(cli: Res<Cli>, mut clock: ResMut<Clock>, mut weather: ResMut<Weathe
 }
 
 /// Demo shots show the glade only: no tool hover ring or other gizmos.
-fn hide_gizmos(store: Option<ResMut<GizmoConfigStore>>) {
+pub(crate) fn hide_gizmos(store: Option<ResMut<GizmoConfigStore>>) {
     for (_, config, _) in store.into_iter().flat_map(|s| s.into_inner().iter_mut()) {
         config.enabled = false;
     }
 }
 
 /// Demo shots show the glade only: hide every root UI node (the HUD).
-fn hide_hud(mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>, Without<LowResDisplay>)>) {
+pub(crate) fn hide_hud(mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>, Without<LowResDisplay>)>) {
     for mut v in &mut roots {
         if *v != Visibility::Hidden {
             *v = Visibility::Hidden;
@@ -166,7 +292,7 @@ fn capture(
         return;
     }
     st.frames += 1;
-    let waiting = pending.0.load(Ordering::Relaxed);
+    let waiting = pending.waiting();
     st.ready_frames = if waiting == 0 { st.ready_frames + 1 } else { 0 };
     if st.frames == SETTLE_FRAMES && waiting > 0 {
         info!("demo shot: {waiting} pipelines still compiling after {SETTLE_FRAMES} frames, waiting");
@@ -194,7 +320,7 @@ fn capture(
 }
 
 /// Writes `image` as a PNG to `path`, creating its folder.
-fn save_png(image: Image, path: &Path) -> Result<(), String> {
+pub(crate) fn save_png(image: Image, path: &Path) -> Result<(), String> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
@@ -240,6 +366,65 @@ mod tests {
         let ok = std::env::temp_dir().join(format!("cairn-shot-{}.png", std::process::id()));
         assert!(save_png(img, &ok).is_ok() && ok.exists());
         let _ = std::fs::remove_file(ok);
+    }
+
+    #[test]
+    fn parses_record_defaults() {
+        let c = Cli::parse(a("bin --record out/frames --time 17.5 --yaw 90"));
+        let r = c.record.clone().expect("record");
+        assert_eq!(r, Record { dir: "out/frames".into(), seconds: 8.0, fps: 30, orbit: 0.0, zoom_to: None, hours: None, weathers: vec![] });
+        assert_eq!(r.frames(), 240);
+        assert!(c.errors.is_empty() && c.demo && c.shot.is_none());
+        assert_eq!((c.time, c.yaw, c.seed()), (Some(17.5), Some(90.0), 7));
+        // The smoke run builds its own scene.
+        assert!(!Cli::parse(a("bin --tool-smoke s.png --record f")).demo);
+    }
+
+    #[test]
+    fn parses_record_options() {
+        let c = Cli::parse(a("bin --record f --seconds 1.5 --fps 24 --orbit -60 --zoom-to 0.8 --hours 17 --weathers clear,Rain,seafog,snow"));
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        let r = c.record.unwrap();
+        assert_eq!((r.seconds, r.fps, r.orbit, r.zoom_to, r.hours), (1.5, 24, -60.0, Some(0.8), Some(17.0)));
+        assert_eq!(r.weathers, vec![WeatherKind::Clear, WeatherKind::Rain, WeatherKind::Fog, WeatherKind::Snow]);
+        assert_eq!(r.frames(), 36);
+        assert_eq!(Cli::parse(a("bin --record f --seconds 0.01 --fps 1")).record.unwrap().frames(), 1);
+    }
+
+    #[test]
+    fn rejects_bad_record_values() {
+        for bad in [
+            "--seconds 0",
+            "--seconds -2",
+            "--seconds abc",
+            "--seconds NaN",
+            "--seconds 99999",
+            "--seconds",
+            "--fps 0",
+            "--fps 2.5",
+            "--fps 500",
+            "--fps x",
+            "--orbit inf",
+            "--orbit spin",
+            "--zoom-to 0",
+            "--zoom-to -1",
+            "--zoom-to 0.1",
+            "--zoom-to 10",
+            "--hours 1e9",
+            "--hours later",
+            "--weathers clear,hail",
+            "--weathers clear,,rain",
+            "--weathers",
+        ] {
+            let c = Cli::parse(a(&format!("bin --record f {bad}")));
+            assert_eq!(c.errors.len(), 1, "{bad}: {:?}", c.errors);
+        }
+        // Options without --record, --record without a folder, and --record with --demo-shot.
+        assert_eq!(Cli::parse(a("bin --seconds 3 --orbit 20")).errors.len(), 2);
+        assert_eq!(Cli::parse(a("bin --record")).errors.len(), 1);
+        assert_eq!(Cli::parse(a("bin --record --seconds 2")).errors.len(), 1);
+        assert_eq!(Cli::parse(a("bin --record f --demo-shot x.png")).errors.len(), 1);
+        assert!(Cli::parse(a("bin --demo-shot x.png --weather rain")).errors.is_empty());
     }
 
     #[test]
