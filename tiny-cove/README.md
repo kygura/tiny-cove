@@ -37,7 +37,7 @@ game speed even though this container renders in software (see
 | ![](docs/footage/stills/day-2.png) | ![](docs/footage/stills/harbour-2.png) |
 | **Weather tour** | **Night** |
 | ![](docs/footage/stills/weather-2.png) | ![](docs/footage/stills/night-2.png) |
-| **Build run (HUD)** | **Day, dusk** |
+| **Build run (HUD)** | **Day, nightfall** |
 | ![](docs/footage/stills/build-3.png) | ![](docs/footage/stills/day-3.png) |
 
 All 15 stills are in [`docs/footage/stills`](docs/footage/stills).
@@ -72,8 +72,8 @@ cargo run --release -- --demo  # start in the showcase cove
 ```
 
 On Linux the build needs `libudev-dev`, `libasound2-dev`, `libwayland-dev` and
-`libxkbcommon-dev`, plus Rust 1.97.1 or newer. The build cache is shared with the
-sibling projects through `../target`.
+`libxkbcommon-dev`, plus Rust 1.97.1 or newer. The build cache lives in `../target`
+at the repository root.
 
 ## Building kit
 
@@ -173,5 +173,5 @@ xvfb-run -a -s "-screen 0 1280x720x24" ../target/release/tiny-cove --tool-smoke 
   uneven.
 - A track through a roofed ring raises the whole ring by about 2 m.
 
-The engine started as a fork of the sibling `greywild` prototype and was rebuilt for
-the coast.
+The engine started as a fork of the `greywild` prototype (now in `../archive/greywild`)
+and was rebuilt for the coast.
