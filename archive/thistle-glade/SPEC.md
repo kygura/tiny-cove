@@ -18,7 +18,7 @@ and zooms.
 
 ## Layout
 
-Cargo workspace in `thistle-glade/`, sharing `../target` with sibling projects
+Cargo workspace in `thistle-glade/`, sharing `../../target` with sibling projects
 (`.cargo/config.toml`).
 
 - `core/` — crate `glade_core`, **no Bevy dependency**. Document model, history,

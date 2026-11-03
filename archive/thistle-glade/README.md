@@ -33,14 +33,14 @@ cargo test --release --lib               # game-side tests
 Weather names: `clear`, `overcast`, `rain`, `storm`, `fog`, `snow`. `--time` is hours 0–24.
 
 Linux needs the usual Bevy packages (`libasound2-dev libudev-dev libxkbcommon-dev
-libwayland-dev`). The build shares `../target` with the other projects in this repo.
+libwayland-dev`). The build shares `../../target` with the other projects in this repo.
 
 Headless, with Mesa's software Vulkan driver:
 
 ```sh
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan \
   xvfb-run -a -s "-screen 0 1280x720x24" cargo run --release -- --demo-shot out.png
-scripts/drive-ui.sh ../target/release/thistle_glade   # real mouse/keyboard smoke test (xdotool)
+scripts/drive-ui.sh ../../target/release/thistle_glade   # real mouse/keyboard smoke test (xdotool)
 ```
 
 ## Tools

@@ -1,0 +1,3 @@
+# Share the build cache with the other projects in this repo (archive/ is one level down).
+[build]
+target-dir = "../../target"

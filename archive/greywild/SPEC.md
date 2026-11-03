@@ -21,7 +21,7 @@ snow). Orthographic isometric camera that orbits in 45° steps and zooms.
 ## Layout
 
 Cargo workspace in `greywild/`, build cache shared with sibling projects
-through `.cargo/config.toml` (`../target`).
+through `.cargo/config.toml` (`../../target`).
 
 - `core/` — crate `greywild_core`, **no Bevy dependency**. Document model,
   undo history, terrain heightfield, procedural mesh generation for every
