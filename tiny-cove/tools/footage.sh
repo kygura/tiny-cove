@@ -6,7 +6,7 @@
 # Output (default tiny-cove/docs/footage/):
 #   tiny-cove.mp4     every clip back to back: H.264, yuv420p, CRF 29 (env CRF overrides),
 #                     30 fps, 1280x720 native pixels, encoded once from the lossless clips
-#   tiny-cove.gif     README preview, 640x360 at 15 fps (sped-up spans of the clips, <= ~8 MB)
+#   tiny-cove.gif     README preview, 640x360 at 15 fps (sped-up spans of the clips, <= 8 MB)
 #   stills/<clip>-N.png  lossless frames picked from each clip
 # Each clip's own preview mp4 and lossless copy stay in the work folder: they would only repeat
 # tiny-cove.mp4 in the repository.
@@ -42,10 +42,15 @@ usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'
 clips=()
 while (($#)); do
     case $1 in
-        -w | --work) WORK=$2; shift 2 ;;
-        -o | --out) OUT=$2; shift 2 ;;
-        -b | --bin) BIN=$2; shift 2 ;;
-        -s | --seconds) CAP=$2; shift 2 ;;
+        -w | --work | -o | --out | -b | --bin | -s | --seconds)
+            (($# >= 2)) || { echo "footage: $1 needs a value" >&2; usage >&2; exit 2; }
+            case $1 in
+                -w | --work) WORK=$2 ;;
+                -o | --out) OUT=$2 ;;
+                -b | --bin) BIN=$2 ;;
+                -s | --seconds) CAP=$2 ;;
+            esac
+            shift 2 ;;
         --keep-frames) KEEP=1; shift ;;
         --no-gif) GIF=0; shift ;;
         --no-concat) CONCAT=0; shift ;;
@@ -173,12 +178,18 @@ concat() {
 
 # Spans of the clips that go into the README GIF: "clip start seconds speed" (video time).
 # A moving camera costs ~0.8 MB per GIF second, the still harbour shot ~0.25 MB.
-GIF_SPANS=("day 0 12 3" "harbour 1 4 1" "weather 0 15 5" "night 0 3 1.5" "build 2 24 8")
+# The weather tour holds each weather for 7 s (clear, rain, storm, fog, snow) and a change takes
+# ~6 s to blend in, so the GIF takes the last 1.6 s of each one. With the day at 4x this comes
+# to ~7.5 MB, a little under the old 15 s weather span at 5x.
+GIF_SPANS=("day 0 12 4" "harbour 1 4 1"
+    "weather 5.4 1.6 2" "weather 12.4 1.6 2" "weather 19.4 1.6 2" "weather 26.4 1.6 2" "weather 33.4 1.6 2"
+    "night 0 3 1.5" "build 2 24 8")
+GIF_TRIES=5
 
 make_gif() {
-    local t0 scale=1 try span name start dur speed src lossless inputs=() chains="" labels="" k=0 bytes
+    local t0 scale=1 try span name start dur speed src lossless length inputs=() chains="" labels="" k=0 bytes
     t0=$(now)
-    for try in 1 2 3 4 5; do
+    for ((try = 1; try <= GIF_TRIES; try++)); do
         inputs=() chains="" labels="" k=0
         for span in "${GIF_SPANS[@]}"; do
             read -r name start dur speed <<<"$span"
@@ -186,7 +197,13 @@ make_gif() {
             [[ -f $src ]] || continue
             # The lossless copy, unless the MP4 came from a later run.
             [[ -f $lossless && ! $src -nt $lossless ]] && src=$lossless
+            # A shortened span keeps its end: the weather fully blended in, the finished build.
+            start=$(awk -v a="$start" -v d="$dur" -v s="$scale" 'BEGIN { printf "%.2f", a + d * (1 - s) }')
             dur=$(awk -v d="$dur" -v s="$scale" 'BEGIN { printf "%.2f", d * s }')
+            # A clip cut short by --seconds may end before the span starts: take its last
+            # seconds instead, so quick runs still make a GIF.
+            length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")
+            start=$(awk -v a="$start" -v d="$dur" -v l="$length" 'BEGIN { if (a + 0 >= l + 0) a = (l > d) ? l - d : 0; printf "%.2f", a }')
             inputs+=(-ss "$start" -t "$dur" -i "$src")
             chains+="[$k:v]setpts=(PTS-STARTPTS)/$speed,fps=15,scale=640:360:flags=neighbor,setsar=1[v$k];"
             labels+="[v$k]"
@@ -198,9 +215,15 @@ make_gif() {
             "$OUT/tiny-cove.gif"
         bytes=$(stat -c %s "$OUT/tiny-cove.gif")
         ((bytes <= GIF_MAX_BYTES)) && break
+        ((try < GIF_TRIES)) || break
         echo "footage: tiny-cove.gif is $((bytes / 1024)) KiB, shortening its spans"
         scale=$(awk -v s="$scale" 'BEGIN { print s * 0.75 }')
     done
+    if ((bytes > GIF_MAX_BYTES)); then
+        echo "footage: tiny-cove.gif is still $((bytes / 1024)) KiB after $GIF_TRIES tries, over the" \
+            "$((GIF_MAX_BYTES / 1024)) KiB budget: shorten GIF_SPANS ($OUT/tiny-cove.gif left for a look)" >&2
+        exit 1
+    fi
     echo "footage: tiny-cove.gif: $((bytes / 1024)) KiB from $k spans ($(since "$t0") s)"
 }
 

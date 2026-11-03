@@ -10,7 +10,7 @@
 //! records a deterministic clip of the demo glade frame by frame (see [`crate::record`]); with
 //! `--tool-smoke` it records the scripted build run instead.
 
-use crate::camera::CameraRig;
+use crate::camera::{CameraRig, MAX_ZOOM, MIN_ZOOM};
 use crate::render::LowResDisplay;
 use crate::weather::{Clock, Weather, WeatherKind};
 use crate::world::BuiltScene;
@@ -153,8 +153,9 @@ impl Cli {
             bad("--orbit expects degrees within ±3600".into());
             None
         });
-        let zoom_to = number("--zoom-to", &|z| z > 0.0).unwrap_or_else(|_| {
-            bad("--zoom-to expects a positive zoom".into());
+        // Inside the camera's own range, or the eased move would stall at its clamp.
+        let zoom_to = number("--zoom-to", &|z| (MIN_ZOOM..=MAX_ZOOM).contains(&z)).unwrap_or_else(|_| {
+            bad(format!("--zoom-to expects a zoom from {MIN_ZOOM} to {MAX_ZOOM}"));
             None
         });
         let hours = number("--hours", &|h| h.abs() <= 240.0).unwrap_or_else(|_| {
@@ -407,6 +408,8 @@ mod tests {
             "--orbit spin",
             "--zoom-to 0",
             "--zoom-to -1",
+            "--zoom-to 0.1",
+            "--zoom-to 10",
             "--hours 1e9",
             "--hours later",
             "--weathers clear,hail",

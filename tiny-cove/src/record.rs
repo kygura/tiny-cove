@@ -111,6 +111,8 @@ pub struct Recorder {
     requested: u32,
     /// Frames whose screenshot was not taken on the update that requested it.
     missed: u32,
+    /// A smoke recording was cut off at [`MAX_SMOKE_FRAMES`].
+    truncated: bool,
     last_shot: Option<Entity>,
     saves: Arc<Saves>,
     start: Option<Start>,
@@ -129,6 +131,7 @@ impl Recorder {
             drain_frames: 0,
             requested: 0,
             missed: 0,
+            truncated: false,
             last_shot: None,
             saves: Arc::default(),
             start: None,
@@ -150,7 +153,25 @@ impl Recorder {
     /// `Some(ok)` once recording stopped and every requested frame is on disk (or failed).
     pub fn finished(&self) -> Option<bool> {
         let (ok, failed) = (self.saves.ok.load(Ordering::Acquire), self.saves.failed.load(Ordering::Acquire));
-        (self.phase == Phase::Draining && ok + failed >= self.requested).then_some(failed == 0 && self.missed == 0)
+        (self.phase == Phase::Draining && ok + failed >= self.requested).then_some(failed == 0 && self.missed == 0 && !self.truncated)
+    }
+
+    /// Whether frame `k` lies past the end of the recording. A smoke run that reaches
+    /// [`MAX_SMOKE_FRAMES`] is cut off and marked truncated, so it fails rather than passing
+    /// with incomplete footage.
+    fn past_end(&mut self, k: u32) -> bool {
+        if self.stop {
+            return true;
+        }
+        if !self.smoke {
+            return k > self.spec.frames();
+        }
+        if k > MAX_SMOKE_FRAMES {
+            error!("record: the smoke recording reached its cap of {MAX_SMOKE_FRAMES} frames and was cut off");
+            self.truncated = true;
+            return true;
+        }
+        false
     }
 
     /// Gave up waiting for the files.
@@ -271,8 +292,7 @@ fn capture(
             }
         }
         Phase::Recording(k) => {
-            let limit = if rec.smoke { MAX_SMOKE_FRAMES } else { rec.spec.frames() };
-            if rec.stop || k > limit {
+            if rec.past_end(k) {
                 rec.phase = Phase::Draining;
             } else {
                 let path = rec.spec.dir.join(format!("frame_{k:05}.png"));
@@ -370,5 +390,26 @@ mod tests {
         let at = |k| pose(&s, START, 0.0, k).weather;
         assert_eq!([at(0), at(1), at(10), at(11), at(20), at(21), at(30)], [Some(0), Some(0), Some(0), Some(1), Some(1), Some(2), Some(2)]);
         assert_eq!(pose(&spec(1.0, 30), START, 0.0, 3).weather, None);
+    }
+
+    #[test]
+    fn smoke_cap_fails_the_recording() {
+        // A smoke run that hits the frame cap is cut off and reported as failed.
+        let mut capped = Recorder::new(spec(1.0, 30), true);
+        assert!(!capped.past_end(MAX_SMOKE_FRAMES));
+        assert!(capped.past_end(MAX_SMOKE_FRAMES + 1));
+        capped.phase = Phase::Draining;
+        assert_eq!(capped.finished(), Some(false));
+        // A smoke run whose script stops before the cap passes.
+        let mut stopped = Recorder::new(spec(1.0, 30), true);
+        stopped.stop();
+        assert!(stopped.past_end(5));
+        stopped.phase = Phase::Draining;
+        assert_eq!(stopped.finished(), Some(true));
+        // A clip ends after its last frame.
+        let mut clip = Recorder::new(spec(1.0, 30), false);
+        assert!(!clip.past_end(30) && clip.past_end(31));
+        clip.phase = Phase::Draining;
+        assert_eq!(clip.finished(), Some(true));
     }
 }

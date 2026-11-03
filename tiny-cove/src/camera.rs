@@ -10,9 +10,9 @@ use bevy::{
 };
 use cairn_cove_core::GLADE_HALF;
 
-const MIN_ZOOM: f32 = 0.3;
+pub(crate) const MIN_ZOOM: f32 = 0.3;
 /// Far enough out to see the whole 64 m island plus open sea around it.
-const MAX_ZOOM: f32 = 3.2;
+pub(crate) const MAX_ZOOM: f32 = 3.2;
 /// Default framing: the whole island and a margin of sea (see `default_frames_the_island`).
 const DEFAULT_ZOOM: f32 = 2.3;
 const MIN_PITCH: f32 = 25.0;
