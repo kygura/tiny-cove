@@ -1,0 +1,25 @@
+[workspace]
+members = ["core"]
+
+[package]
+name = "tiny-cove"
+version = "0.1.0"
+edition = "2024"
+default-run = "tiny-cove"
+
+# The game is branded Tiny Cove; internal crate names keep the original cairn_cove prefix.
+[lib]
+name = "cairn_cove"
+
+[dependencies]
+bevy = "0.20"
+cairn_cove_core = { path = "core" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 16
