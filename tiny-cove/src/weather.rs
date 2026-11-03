@@ -294,7 +294,9 @@ pub fn apply_weather(base: &Rig, kind: WeatherKind, day: f32, warm: f32) -> Rig 
                 *c = c.lerp(h(hx), day * (1.0 - hold));
             }
             r.fog = set(r.fog, 0x6B9CE6);
-            r.fog_density *= 2.0;
+            // DESIGN A4: density x1.4. The blue haze walks warm land toward brick (the far
+            // wet sand into the cliffs' and soil's hue), so it stays no thicker than that.
+            r.fog_density *= 1.4;
             r.sea[1] = set(r.sea[1], 0x08A5C5);
             r.outline = r.outline.lerp(h(OUTLINE_NIGHT), 0.5 * day);
         }
