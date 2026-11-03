@@ -35,5 +35,5 @@ repository root.
 ## Archive
 
 Two early prototypes, `hollow-acre` and `concrete-glade`, were removed from the
-tree. They survive in git history: `git checkout 850c319 -- archive/`
-restores them.
+tree. They survive in git history: 
+`git checkout 941895f -- archive/hollow-acre archive/concrete-glade` restores them.
