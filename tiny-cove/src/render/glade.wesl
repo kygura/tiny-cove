@@ -186,6 +186,36 @@ fn rot_lit(c: vec3<f32>, tint: vec3<f32>, deg: f32) -> vec3<f32> {
     return hsv2rgb(a);
 }
 
+// Storm lit band (DESIGN A3 litRot, A8 storm). The storm's cobalt fill outshines its sun, so
+// `rot_lit(a) * light` takes its hue from the fill: greens go the lagoon's teal (cooler than
+// their own shadow band) and honey sand goes raspberry. In a storm the lit band keeps that
+// light's value but takes a set hue: greens rotate `deg` toward the tint but stop at jade
+// (STORM_JADE, over 20 deg short of the storm shallows #10C5B5, H 175), cyans and blues keep
+// their own hue, and warm albedos turn STORM_WARM_ROT along the warm path to plum (wet sand
+// H 300, the cliffs' family) and violet (rust cliffs H 269). A plum keeps only the chroma the
+// cobalt light leaves it (S of a * light, at least STORM_WARM_S); the nearer a warm albedo
+// lands to the tint, the more of the light's own chroma it keeps (violet cliffs stay vivid).
+// `c` = rot_lit(a) * light. CPU port: cairn_cove_core::palette::storm_lit.
+const STORM_JADE: f32 = 152.0;
+const STORM_WARM_ROT: f32 = 97.0;
+const STORM_WARM_S: f32 = 0.5;
+fn storm_lit(a: vec3<f32>, c: vec3<f32>, light: vec3<f32>, tint: vec3<f32>, deg: f32) -> vec3<f32> {
+    let s = rgb2hsv(a);
+    if s.y < 0.15 {
+        return c;
+    }
+    let t = rgb2hsv(tint).x;
+    var o = rgb2hsv(min(c, vec3(1.0)));
+    if s.x >= WARM_EDGE && s.x < t {
+        o.x = s.x + clamp(STORM_JADE - s.x, 0.0, max(deg, 0.0));
+    } else {
+        o.x = rotate_toward(s.x, t, STORM_WARM_ROT);
+        let plum = min(max(rgb2hsv(min(a * light, vec3(1.0))).y, STORM_WARM_S), o.y);
+        o.y = mix(o.y, plum, clamp(modp(o.x - t, 360.0) / 40.0, 0.0, 1.0));
+    }
+    return hsv2rgb(o);
+}
+
 fn tint_dist(h: f32, t: f32) -> f32 {
     if h >= WARM_EDGE && h < t {
         return t - h;
@@ -272,7 +302,17 @@ fn lamp_pool(c: vec3<f32>, albedo: vec3<f32>, pl: vec3<f32>) -> vec3<f32> {
         o.y = max(o.y, 0.72);
         o.z = clamp(o.z * 1.3, 0.62, 0.95);
     }
-    return hsv2rgb(o);
+    let pool = hsv2rgb(o);
+    // Storm (DESIGN A8: the beacon is the only warm point): fire light added to the storm's
+    // plum and violet land sums to rose, the beach's own hue family. A storm pool takes the
+    // light's own hue (fire_light #FF8C29 is H 28, lantern_light H 35), bright as a glow
+    // (two bands, V 0.78-0.97) so the storm fog cannot brown it.
+    let storm = g.sea0.w;
+    if storm > 0.0 {
+        let f = vec3(rgb2hsv(to_srgb(pl)).x, max(o.y, 0.8), clamp(o.z * 1.15, 0.78, 0.97));
+        return mix(pool, hsv2rgb(f), storm);
+    }
+    return pool;
 }
 
 // Strength (0..1) of a `g.lights` entry: w is the warm_light weight, +2 for a fire.
@@ -497,6 +537,10 @@ fn cel(a: vec3<f32>, light: f32) -> vec3<f32> {
     var c: vec3<f32>;
     if light >= 0.30 {
         c = rot_lit(a, tint, g.wind_tide.w) * k[0];
+        let storm = g.sea0.w;
+        if storm > 0.0 {
+            c = mix(c, storm_lit(a, c, k[0], tint, g.wind_tide.w), storm);
+        }
     } else if light >= 0.08 {
         c = shade_band(a, 1u, tint) * k[1];
     } else {
